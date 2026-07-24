@@ -14,6 +14,7 @@ from dynars.schema import (
     Str,
     keyword,
     parse_keyword,
+    rows,
 )
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     # schema authoring
     "keyword",
     "parse_keyword",
+    "rows",
     "Card",
     "Int",
     "Float",

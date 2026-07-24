@@ -124,3 +124,20 @@ def parse_keyword(kf, schema):
         cls = schema
     name, cards, repeat = cls._dynars_schema
     return kf.parse_schema(name, cards, repeat)
+
+
+def rows(columns):
+    """Iterate a parsed keyword's columns as per-row dicts — handy for
+    low-volume keywords (materials, sections, ...):
+
+        for mat in dynars.rows(dynars.parse_keyword(kf, "MAT_ELASTIC")):
+            print(mat["MID"], mat["E"])
+
+    The columns stay columnar/numpy; this is a lazy view, so bulk keywords
+    should index the arrays directly rather than materialize millions of dicts.
+    """
+    if not columns:
+        return
+    n = len(next(iter(columns.values())))
+    for i in range(n):
+        yield {k: v[i] for k, v in columns.items()}

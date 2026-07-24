@@ -32,6 +32,46 @@ pub mod names;
 #[cfg(feature = "typed-keywords")]
 pub mod typed;
 
+/// Shared row behaviour for the generated typed keyword structs. A keyword's
+/// "columns" struct implements just `len` + `row`; `is_empty` and `iter` (and
+/// any future row behaviour) are provided here, once, instead of being
+/// generated into every struct.
+pub trait Columns {
+    /// The per-row struct for this keyword.
+    type Row;
+    fn len(&self) -> usize;
+    fn row(&self, i: usize) -> Self::Row;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Iterate rows as owned row structs (array-of-structs view).
+    fn iter(&self) -> RowIter<'_, Self>
+    where
+        Self: Sized,
+    {
+        RowIter { cols: self, i: 0 }
+    }
+}
+
+/// Iterator returned by [`Columns::iter`].
+pub struct RowIter<'a, C: Columns> {
+    cols: &'a C,
+    i: usize,
+}
+
+impl<C: Columns> Iterator for RowIter<'_, C> {
+    type Item = C::Row;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i < self.cols.len() {
+            let r = self.cols.row(self.i);
+            self.i += 1;
+            Some(r)
+        } else {
+            None
+        }
+    }
+}
+
 /// Field type in the compact static table.
 #[derive(Debug, Clone, Copy)]
 pub enum T {

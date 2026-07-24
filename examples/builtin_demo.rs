@@ -54,14 +54,14 @@ fn main() {
     // With `--features typed-keywords`, every keyword also has a typed struct.
     #[cfg(feature = "typed-keywords")]
     {
-        // Same aggregation, now with a typed struct (fields are Vec<i64>/Vec<f64>).
+        use dynars::keywords::Columns; // brings .iter()/.len() (shared trait) into scope
         let m = dynars::keywords::typed::MAT_ELASTIC::parse(&parsed);
-        println!(
-            "\ntyped MAT_ELASTIC struct — {} rows: mid={:?} e={:?}",
-            m.mid.len(),
-            m.mid,
-            m.e
-        );
+        // Columnar (struct-of-arrays): m.mid is Vec<i64>, m.e is Vec<f64>.
+        println!("\ntyped MAT_ELASTIC — {} rows; columns mid={:?} e={:?}", m.len(), m.mid, m.e);
+        // ...or iterate as row objects (array-of-structs) — one per material:
+        for mat in m.iter() {
+            println!("  material: MID={} E={}", mat.mid, mat.e);
+        }
     }
     #[cfg(not(feature = "typed-keywords"))]
     println!("\n(build with --features typed-keywords for typed structs: MAT_ELASTIC::parse(&p).e)");

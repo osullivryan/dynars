@@ -245,6 +245,42 @@ impl Table {
             .position(|(n, _)| n == name)
             .map(|i| self.columns.remove(i).1)
     }
+
+    /// Iterate rows as lightweight views — convenient for low-volume keywords
+    /// (materials, sections, ...). Costs nothing until used; the columns stay
+    /// columnar, so bulk keywords should read them (or numpy) directly.
+    pub fn iter(&self) -> impl Iterator<Item = Row<'_>> + '_ {
+        (0..self.rows()).map(move |idx| Row { table: self, idx })
+    }
+}
+
+/// A single-row view into a [`Table`], with scalar field access by name.
+pub struct Row<'a> {
+    table: &'a Table,
+    idx: usize,
+}
+
+impl<'a> Row<'a> {
+    pub fn int(&self, name: &str) -> Option<i64> {
+        match self.table.column(name) {
+            Some(Column::Int { data, ncols }) if *ncols == 1 => data.get(self.idx).copied(),
+            _ => None,
+        }
+    }
+    pub fn float(&self, name: &str) -> Option<f64> {
+        match self.table.column(name) {
+            Some(Column::Float { data, ncols }) if *ncols == 1 => data.get(self.idx).copied(),
+            _ => None,
+        }
+    }
+    pub fn str(&self, name: &str) -> Option<&'a str> {
+        match self.table.column(name) {
+            Some(Column::Str { data, ncols }) if *ncols == 1 => {
+                data.get(self.idx).map(|s| s.as_str())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Implemented by `#[derive(Keyword)]`: provides a keyword's [`Schema`] (for
@@ -520,6 +556,18 @@ mod tests {
         let nodes = t.column("nodes").unwrap();
         assert_eq!(nodes.rows(), 2);
         assert_eq!(nodes.as_int().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8]); // row-major 2x4
+    }
+
+    #[test]
+    fn table_iter_yields_row_views() {
+        let src = b"*MAT_ELASTIC\n1,7.85e-9,210000.0,0.3\n*MAT_ELASTIC\n2,2.7e-9,70000.0,0.33\n";
+        let p = parsed(src);
+        let schema = Schema::new("MAT_ELASTIC").card(
+            Card::new().int("mid", 8).float("ro", 16).float("e", 16).float("pr", 16),
+        );
+        let t = parse_schema(&p, &schema);
+        let rows: Vec<_> = t.iter().map(|r| (r.int("mid").unwrap(), r.float("e").unwrap())).collect();
+        assert_eq!(rows, vec![(1, 210000.0), (2, 70000.0)]);
     }
 
     #[test]

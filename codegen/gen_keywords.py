@@ -113,7 +113,8 @@ def gen_typed(kwd, keywords):
            "#![cfg_attr(rustfmt, rustfmt::skip)]",
            "#![allow(non_camel_case_types, non_snake_case)]",
            "use crate::keyword::ParsedFile;",
-           "use crate::schema::parse_schema;", ""]
+           "use crate::schema::parse_schema;",
+           "use super::Columns;", ""]
     struct_names = uniquify([const_ident(n) for n in keywords])
     for name, sid in zip(keywords, struct_names):
         cols, tags = [], []
@@ -133,6 +134,23 @@ def gen_typed(kwd, keywords):
         for fid, col, t in zip(fids, cols, tags):
             out.append(f'            {fid}: t.take("{esc(col)}").and_then(|c| c.{INTO[t]}()).unwrap_or_default(),')
         out.append("        }\n    }\n}")
+        # Only the irreducible per-keyword bits: len + row. is_empty / iter come
+        # from the shared `Columns` trait (behaviour lives once, not per struct).
+        row_sid = f"{sid}_Row"
+        first = fids[0] if fids else None
+        len_expr = f"self.{first}.len()" if first else "0"
+        out.append(f"impl Columns for {sid} {{")
+        out.append(f"    type Row = {row_sid};")
+        out.append(f"    fn len(&self) -> usize {{ {len_expr} }}")
+        out.append(f"    fn row(&self, i: usize) -> {row_sid} {{ {row_sid} {{")
+        for fid, t in zip(fids, tags):
+            val = f"self.{fid}[i].clone()" if t == "S" else f"self.{fid}[i]"
+            out.append(f"        {fid}: {val},")
+        out.append("    } }")
+        out.append("}")
+        out.append(f"pub struct {row_sid} {{")
+        out += [f"    pub {fid}: {RUST_TY[t]}," for fid, t in zip(fids, tags)]
+        out.append("}")
         out.append("")
     (ROOT / "src" / "keywords" / "typed.rs").write_text("\n".join(out))
     print(f"wrote src/keywords/typed.rs ({len(keywords)} typed structs)")
