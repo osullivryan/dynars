@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" alt="dynars" width="520">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+    <img src="assets/logo.png" alt="dynars" width="520">
+  </picture>
 </p>
 
 High-performance LS-DYNA keyword file parser, written in Rust with first-class
