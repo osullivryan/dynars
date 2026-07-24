@@ -16,9 +16,75 @@
 
 use rayon::prelude::*;
 
-use crate::bulk::{collect_chunks, is_skippable, strip_eol};
 use crate::keyword::{CardFormat, ParsedFile};
 use crate::parser::Field;
+
+// --- shared chunking infrastructure (parallel splitting of block bodies) ---
+
+/// Minimum bytes per parallel chunk; below this a block stays one chunk.
+const MIN_CHUNK: usize = 256 * 1024;
+
+/// Split a block body into line-aligned chunks for parallel parsing. Each chunk
+/// holds only whole lines, so concatenating their output preserves file order.
+fn line_chunks(body: &[u8], max_chunks: usize) -> Vec<&[u8]> {
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let n = (body.len() / MIN_CHUNK).clamp(1, max_chunks.max(1));
+    if n <= 1 {
+        return vec![body];
+    }
+    let mut bounds = Vec::with_capacity(n + 1);
+    bounds.push(0usize);
+    for i in 1..n {
+        let target = body.len() * i / n;
+        let cut = match memchr::memchr(b'\n', &body[target..]) {
+            Some(off) => target + off + 1,
+            None => body.len(),
+        };
+        if cut > *bounds.last().unwrap() && cut < body.len() {
+            bounds.push(cut);
+        }
+    }
+    bounds.push(body.len());
+    bounds.windows(2).map(|w| &body[w[0]..w[1]]).collect()
+}
+
+/// Collect line-aligned chunks (with their format) across every block whose
+/// name matches `keyword` — a single huge block fans out into many chunks, many
+/// small blocks each contribute one.
+fn collect_chunks<'a>(parsed: &'a ParsedFile, keyword: &str) -> Vec<(&'a [u8], CardFormat)> {
+    let max_chunks = rayon::current_num_threads() * 4;
+    let mut chunks = Vec::new();
+    for block in &parsed.blocks {
+        if !parsed.keyword_name(block).eq_ignore_ascii_case(keyword) {
+            continue;
+        }
+        for c in line_chunks(parsed.body(block), max_chunks) {
+            chunks.push((c, block.format));
+        }
+    }
+    chunks
+}
+
+/// True for comment (`$`) and blank lines, which carry no card data.
+#[inline]
+fn is_skippable(line: &[u8]) -> bool {
+    let indent = line.iter().take_while(|&&c| c == b' ' || c == b'\t').count();
+    line.is_empty()
+        || line.get(indent) == Some(&b'$')
+        || strip_eol(&line[indent..]).is_empty()
+}
+
+/// Strip a trailing `\r`/`\n` without touching interior or leading bytes.
+#[inline]
+fn strip_eol(s: &[u8]) -> &[u8] {
+    let mut end = s.len();
+    while end > 0 && matches!(s[end - 1], b'\r' | b'\n') {
+        end -= 1;
+    }
+    &s[..end]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldType {
@@ -179,12 +245,12 @@ pub trait KeywordSchema {
 #[inline]
 #[doc(hidden)]
 pub fn __is_skippable(line: &[u8]) -> bool {
-    crate::bulk::is_skippable(line)
+    is_skippable(line)
 }
 #[inline]
 #[doc(hidden)]
 pub fn __strip_eol(line: &[u8]) -> &[u8] {
-    crate::bulk::strip_eol(line)
+    strip_eol(line)
 }
 #[inline]
 #[doc(hidden)]

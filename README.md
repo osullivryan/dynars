@@ -19,8 +19,8 @@ Python bindings.
   nodes/s across 10 cores.
 - **Lossless.** A parse → write cycle of an unedited deck is a no-op diff.
   Edits are tracked per keyword block; untouched blocks are re-emitted verbatim.
-- **Zero-copy to numpy.** `*NODE` coordinates and element connectivity cross the
-  FFI boundary as numpy arrays without a copy.
+- **Zero-copy to numpy.** Numeric schema columns (node coords, element
+  connectivity, …) cross the FFI boundary as numpy arrays without a copy.
 - **Handles the awkward formats.** Fixed-width (8-col), long (`*KEYWORD LONG`),
   and free (comma-separated) cards; Fortran float quirks (`1.5D+3`, `1.234-5`).
 
@@ -79,16 +79,8 @@ import dynars
 kf = dynars.parse_keyword_file("deck.k")
 print(kf.num_blocks, kf.block_names())
 
-# Bulk geometry as numpy arrays (zero-copy)
-ids, coords = kf.nodes()               # int64[N], float64[N, 3]
-eids, pids, conn = kf.elements_shell() # int64[N], int64[N], int64[N, 4]
-
-# Edit node coordinates and write back; untouched blocks stay byte-identical
-import numpy as np
-new = coords.copy()
-new[:, 2] += 5.0
-kf.set_node_coords(new)
-kf.write("deck_shifted.k")
+# Columnar geometry via a schema (see "User-defined keyword schemas" below)
+nodes = dynars.parse_keyword(kf, "NODE")   # {"nid": int64[N], "x": ..., ...}
 
 # Generic access + edit for any of the ~2000 keywords
 i = kf.block_names().index("MAT_ELASTIC")
@@ -98,6 +90,7 @@ kw_cards[0][2] = "70000.0"              # change Young's modulus
 kf.set_keyword(i, "MAT_ELASTIC", kw_cards)
 
 raw = kf.to_bytes()                     # the (edited) deck as bytes
+kf.write("deck_edited.k")
 ```
 
 ## Rust API
@@ -105,15 +98,12 @@ raw = kf.to_bytes()                     # the (edited) deck as bytes
 ```rust
 use dynars::include_tree::build_include_tree;
 use dynars::parser::parse_file_blocks;
-use dynars::bulk::{parse_nodes, parse_element_shell};
 
 // Include tree
 let tree = build_include_tree(std::path::Path::new("root.k")).unwrap();
 
-// Marshalling
+// Marshalling: split into keyword blocks, parse via schemas (below)
 let parsed = parse_file_blocks(std::path::Path::new("deck.k")).unwrap();
-let nodes = parse_nodes(&parsed);          // NodeArrays { ids, coords }
-let shells = parse_element_shell(&parsed);  // ElementArrays { eids, pids, nodes, .. }
 
 // Lossless round-trip: no edits -> identical bytes
 assert_eq!(parsed.to_bytes(), std::fs::read("deck.k").unwrap());
@@ -121,10 +111,9 @@ assert_eq!(parsed.to_bytes(), std::fs::read("deck.k").unwrap());
 
 ## User-defined keyword schemas
 
-Beyond the built-in `*NODE`/`*ELEMENT_*` parsers, you can declare how to marshal
-*any* keyword — no recompile — and get the same columnar output. The declaration
-is data (field layout), executed by the Rust hot loop; it never calls back into
-Python per card, so it stays fast.
+Declare how to marshal *any* keyword — no recompile — into columnar output. The
+declaration is data (field layout), executed by the Rust hot loop; it never
+calls back into Python per card, so it stays fast.
 
 **Python** — a keyword is a class; fields on the class are one card, or a
 `cards` list composes several. Reusable card classes and array fields included:
@@ -229,22 +218,21 @@ the include-tree path is unchanged and pays nothing for the new features.
   `Source` (mapped or owned) so both parse and construct-from-bytes work.
 - **Tokenizer** (`Field`, `split_fields`, `CardIter`): lazy, format-aware field
   splitting for the long tail of keywords. Nothing is parsed until read.
-- **Columnar parsers** (`bulk`): struct-of-arrays parsers for `*NODE` and
-  `*ELEMENT_*`, parallelized with rayon over line-aligned chunks, using
-  `lexical` for fast float/int conversion. These map straight onto numpy.
 - **Owned model + typed structs** (`parser::Keyword`, `typed`): an editable,
   allocation-backed view for round-trip editing, plus example typed structs
   (`Part`, `MatElastic`) that any keyword can follow.
-- **Schemas** (`schema`, `dynars-derive`): a declarative keyword layout (cards →
-  typed fields) parsed into columnar `Table`s. Single-card repeating keywords
-  parse in parallel like the built-ins; multi-card ones parse sequentially. Three
-  front ends lower to one `Schema`: the Rust builder, `#[derive(Keyword)]`
-  structs (proc-macro in the `dynars-derive` workspace crate), and the Python
-  `@keyword` classes.
+- **Schemas** (`schema`, `dynars-derive`): the single columnar parsing path — a
+  declarative keyword layout (cards → typed fields) parsed into `Table`s,
+  parallelized with rayon over line-aligned chunks using `lexical` for fast
+  float/int conversion, mapping straight onto numpy. Single-card repeating
+  keywords parse in parallel; multi-card ones sequentially. Three front ends
+  lower to one `Schema`: the Rust builder, `#[derive(Keyword)]` structs
+  (proc-macro in the `dynars-derive` workspace crate), and the Python `@keyword`
+  classes; the derive additionally emits specialized per-keyword code.
 
 ### Card formats
 
-Fixed-width is the default (8-col; `*NODE` uses its exact I8/E16 widths). Long
+Fixed-width is the default (per-field widths from the schema). Long
 format is detected from `*KEYWORD LONG=Y|S`. Free format is decided per line —
 a line switches to comma-splitting the moment it contains a comma, matching
 LS-DYNA's own rule.
@@ -259,17 +247,13 @@ nodes), warm page cache:
 | `*INCLUDE` scan, single large file (macOS, fault-bound) | ~15 GB/s |
 | `*INCLUDE` scan, many warm files (mmap, no copy) | ~45 GB/s |
 | Block index (mmap + split) | ~15 GB/s |
-| Node parse → arrays (Rust) | ~97 M nodes/s (51 ms) |
-| Node parse → numpy (Python) | ~82 M nodes/s (61 ms) |
 | Node parse, `#[derive(Keyword)]` (specialized) | ~70 M nodes/s |
 | Node parse, builder / Python (interpreted) | ~57–64 M nodes/s |
 
-`#[derive(Keyword)]` emits monomorphized code (offsets known at compile time,
-no per-field enum dispatch), so its `parse()` runs ~20% faster than the
-interpreted builder/Python path. It doesn't fully match the hand-specialized
-`parse_nodes` (~97 M/s), which packs `xyz` into one array; the schema path emits
-one column per field. All three are tens of millions of entities per second.
-Reproduce with `cargo run --release --example bench_schema`.
+Schema parsing is the single columnar path. `#[derive(Keyword)]` emits
+monomorphized code (offsets known at compile time, no per-field enum dispatch),
+so its `parse()` runs ~20% faster than the interpreted builder/Python path —
+both tens of millions of entities per second.
 
 The multi-file number roughly doubled after switching the scanner from `read()`
 to `mmap` (eliminating a copy of every file). Single-file parallel scanning is
@@ -278,12 +262,6 @@ memory bandwidth.
 
 Cold decks larger than RAM are limited by disk bandwidth (~2 GB/s sustained
 NVMe), not CPU — the scanner is ~7× faster than the disk can deliver bytes.
-
-Reproduce the marshalling numbers:
-
-```bash
-cargo run --release --example bench_marshal
-```
 
 ## Development
 

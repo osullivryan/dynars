@@ -1,4 +1,3 @@
-pub mod bulk;
 pub mod include_tree;
 pub mod keyword;
 pub mod parser;
@@ -84,7 +83,7 @@ mod python_bindings {
 
     // -- Phase 4: keyword-file marshalling ---------------------------------
 
-    use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray2};
+    use numpy::IntoPyArray;
     use pyo3::types::{PyDict, PyList};
     use pyo3::Bound;
 
@@ -114,44 +113,6 @@ mod python_bindings {
                 .iter()
                 .map(|b| self.inner.keyword_name(b).to_string())
                 .collect()
-        }
-
-        /// `*NODE` data as `(ids: int64[N], coords: float64[N, 3])`, zero-copy.
-        fn nodes<'py>(
-            &self,
-            py: Python<'py>,
-        ) -> (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray2<f64>>) {
-            let n = py.detach(|| crate::bulk::parse_nodes(&self.inner));
-            let count = n.ids.len();
-            let coords = numpy::ndarray::Array2::from_shape_vec((count, 3), n.coords)
-                .expect("coords length is 3 * node count");
-            (n.ids.into_pyarray(py), coords.into_pyarray(py))
-        }
-
-        /// `*ELEMENT_SHELL` as `(eids, pids, nodes: int64[N, 4])`.
-        fn elements_shell<'py>(
-            &self,
-            py: Python<'py>,
-        ) -> (
-            Bound<'py, PyArray1<i64>>,
-            Bound<'py, PyArray1<i64>>,
-            Bound<'py, PyArray2<i64>>,
-        ) {
-            let e = py.detach(|| crate::bulk::parse_element_shell(&self.inner));
-            elements_to_py(py, e)
-        }
-
-        /// `*ELEMENT_SOLID` as `(eids, pids, nodes: int64[N, 8])`.
-        fn elements_solid<'py>(
-            &self,
-            py: Python<'py>,
-        ) -> (
-            Bound<'py, PyArray1<i64>>,
-            Bound<'py, PyArray1<i64>>,
-            Bound<'py, PyArray2<i64>>,
-        ) {
-            let e = py.detach(|| crate::bulk::parse_element_solid(&self.inner));
-            elements_to_py(py, e)
         }
 
         /// A block as a dict: `{"name": str, "options": [str], "cards": [[str]]}`.
@@ -194,14 +155,6 @@ mod python_bindings {
             };
             self.inner.set_keyword(index, &kw);
             Ok(())
-        }
-
-        /// Rewrite all `*NODE` blocks from a new `(N, 3)` coordinate array.
-        fn set_node_coords(&mut self, coords: PyReadonlyArray2<f64>) -> PyResult<()> {
-            let arr = coords.as_array();
-            let flat: Vec<f64> = arr.iter().copied().collect();
-            crate::bulk::update_node_coords(&mut self.inner, &flat)
-                .map_err(pyo3::exceptions::PyValueError::new_err)
         }
 
         /// Parse a keyword against a user-defined schema, returning a dict of
@@ -304,25 +257,6 @@ mod python_bindings {
                 if self.inner.is_dirty() { ", edited" } else { "" },
             )
         }
-    }
-
-    fn elements_to_py<'py>(
-        py: Python<'py>,
-        e: crate::bulk::ElementArrays,
-    ) -> (
-        Bound<'py, PyArray1<i64>>,
-        Bound<'py, PyArray1<i64>>,
-        Bound<'py, PyArray2<i64>>,
-    ) {
-        let count = e.eids.len();
-        let npe = e.nodes_per_elem;
-        let conn = numpy::ndarray::Array2::from_shape_vec((count, npe), e.nodes)
-            .expect("connectivity length is count * nodes_per_elem");
-        (
-            e.eids.into_pyarray(py),
-            e.pids.into_pyarray(py),
-            conn.into_pyarray(py),
-        )
     }
 
     /// Parse an LS-DYNA keyword file into an editable [`PyKeywordFile`].

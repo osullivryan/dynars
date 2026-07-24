@@ -2,7 +2,6 @@
 High-performance LS-DYNA keyword file include tree parser.
 """
 
-from _typeshed import Incomplete
 from collections.abc import Sequence
 from typing import final
 
@@ -42,21 +41,9 @@ class KeywordFile:
         """
         Whether any block has a pending edit.
         """
-    def elements_shell(self, /) -> tuple[Incomplete, Incomplete, Incomplete]:
-        """
-        `*ELEMENT_SHELL` as `(eids, pids, nodes: int64[N, 4])`.
-        """
-    def elements_solid(self, /) -> tuple[Incomplete, Incomplete, Incomplete]:
-        """
-        `*ELEMENT_SOLID` as `(eids, pids, nodes: int64[N, 8])`.
-        """
     def keyword(self, /, index: int) -> dict:
         """
         A block as a dict: `{"name": str, "options": [str], "cards": [[str]]}`.
-        """
-    def nodes(self, /) -> tuple[Incomplete, Incomplete]:
-        """
-        `*NODE` data as `(ids: int64[N], coords: float64[N, 3])`, zero-copy.
         """
     @property
     def num_blocks(self, /) -> int:
@@ -76,10 +63,6 @@ class KeywordFile:
         """
         Replace a block's keyword. Cards are re-emitted in free format; the
         rest of the file stays byte-for-byte intact.
-        """
-    def set_node_coords(self, /, coords: Incomplete) -> None:
-        """
-        Rewrite all `*NODE` blocks from a new `(N, 3)` coordinate array.
         """
     def to_bytes(self, /) -> bytes:
         """
