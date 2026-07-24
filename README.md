@@ -133,10 +133,11 @@ the include-tree path is unchanged and pays nothing for the new features.
   by file. (mmap parallel scanning scales on Linux, where page faults resolve
   concurrently; on macOS minor faults serialize, so single-file scans there are
   bounded near single-thread speed — but the copy-elimination still helps.)
-- **Block index** (`parser::parse_file_blocks`): owns the file buffer and splits
-  it into keyword blocks that *tile the source exactly*. This is the lossless
-  round-trip guarantee — re-emitting every block reproduces the input. Edits are
-  an overlay keyed by block index.
+- **Block index** (`parser::parse_file_blocks`): memory-maps the file and splits
+  it into keyword blocks that *tile the source exactly* (no read() copy). This is
+  the lossless round-trip guarantee — re-emitting every block reproduces the
+  input. Edits are an overlay keyed by block index; the backing bytes are a
+  `Source` (mapped or owned) so both parse and construct-from-bytes work.
 - **Tokenizer** (`Field`, `split_fields`, `CardIter`): lazy, format-aware field
   splitting for the long tail of keywords. Nothing is parsed until read.
 - **Columnar parsers** (`bulk`): struct-of-arrays parsers for `*NODE` and
@@ -162,7 +163,7 @@ nodes), warm page cache:
 |-----------|-----------|
 | `*INCLUDE` scan, single large file (macOS, fault-bound) | ~15 GB/s |
 | `*INCLUDE` scan, many warm files (mmap, no copy) | ~45 GB/s |
-| Block index (read + split) | ~12 GB/s |
+| Block index (mmap + split) | ~15 GB/s |
 | Node parse → arrays (Rust) | ~73 M nodes/s (68 ms) |
 | Node parse → numpy (Python) | ~64 M nodes/s (78 ms) |
 

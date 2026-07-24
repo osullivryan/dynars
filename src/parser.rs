@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use rayon::slice::ParallelSlice;
 
 use crate::keyword::{
-    Block, CardFormat, FileParseResult, IncludeDirective, IncludeKind, ParsedFile,
+    Block, CardFormat, FileParseResult, IncludeDirective, IncludeKind, ParsedFile, Source,
 };
 
 #[inline(always)]
@@ -300,9 +300,25 @@ fn resolve_include_path(raw: &str, parent_dir: &Path, include_paths: &[PathBuf])
 /// The blocks tile the source exactly, so `ParsedFile::to_bytes()` reproduces
 /// the input byte-for-byte.
 pub fn parse_file_blocks(file_path: &Path) -> std::io::Result<ParsedFile> {
-    let source = std::fs::read(file_path)?;
-    let blocks = split_blocks(&source);
-    Ok(ParsedFile::new(file_path.to_path_buf(), source, blocks))
+    let file = File::open(file_path)?;
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+    // mmap of a zero-length file fails on some platforms; use an empty buffer.
+    if file_size == 0 {
+        return Ok(ParsedFile::new(file_path.to_path_buf(), Vec::new(), Vec::new()));
+    }
+
+    // SAFETY: standard mmap caveat — undefined behaviour if the file is
+    // truncated/modified by another process while mapped.
+    let mmap = unsafe { Mmap::map(&file)? };
+    #[cfg(unix)]
+    let _ = mmap.advise(memmap2::Advice::Sequential);
+    let blocks = split_blocks(&mmap);
+    Ok(ParsedFile::from_source(
+        file_path.to_path_buf(),
+        Source::Mapped(mmap),
+        blocks,
+    ))
 }
 
 /// Split raw file bytes into keyword blocks that tile the input.

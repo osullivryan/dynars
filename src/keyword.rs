@@ -2,6 +2,28 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
 
+use memmap2::Mmap;
+
+/// Backing bytes for a [`ParsedFile`]: either a memory-mapped file (the fast
+/// path from `parse_file_blocks`) or an owned buffer (constructed from bytes,
+/// e.g. in tests). Both deref to `&[u8]`, so the rest of the code is agnostic.
+#[derive(Debug)]
+pub enum Source {
+    Mapped(Mmap),
+    Owned(Vec<u8>),
+}
+
+impl std::ops::Deref for Source {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        match self {
+            Source::Mapped(m) => m,
+            Source::Owned(v) => v,
+        }
+    }
+}
+
 /// How a keyword block's data cards are laid out.
 ///
 /// LS-DYNA supports three field layouts. `Fixed` is the default 8-column
@@ -45,16 +67,27 @@ pub struct Block {
 #[derive(Debug)]
 pub struct ParsedFile {
     pub path: PathBuf,
-    pub source: Vec<u8>,
+    pub(crate) source: Source,
     pub blocks: Vec<Block>,
     /// block index -> replacement bytes for that block's whole span.
     pub(crate) edits: HashMap<usize, Vec<u8>>,
 }
 
 impl ParsedFile {
-    /// Construct from raw parts with no pending edits.
+    /// Construct from an owned byte buffer with no pending edits.
     pub fn new(path: PathBuf, source: Vec<u8>, blocks: Vec<Block>) -> Self {
+        Self::from_source(path, Source::Owned(source), blocks)
+    }
+
+    /// Construct from any [`Source`] (e.g. a memory map) with no pending edits.
+    pub fn from_source(path: PathBuf, source: Source, blocks: Vec<Block>) -> Self {
         ParsedFile { path, source, blocks, edits: HashMap::new() }
+    }
+
+    /// The backing bytes.
+    #[inline]
+    pub fn src(&self) -> &[u8] {
+        &self.source
     }
 
     /// Replace a block's bytes. Subsequent `to_bytes()` emits these instead of
@@ -69,17 +102,17 @@ impl ParsedFile {
     }
     /// Leading trivia (comments / blank lines) attached to a block.
     pub fn trivia(&self, b: &Block) -> &[u8] {
-        &self.source[b.span.start..b.name_start]
+        &self.src()[b.span.start..b.name_start]
     }
 
     /// The keyword line itself, including its trailing newline (if any).
     pub fn name_line(&self, b: &Block) -> &[u8] {
-        &self.source[b.name_start..b.body_start]
+        &self.src()[b.name_start..b.body_start]
     }
 
     /// The data cards following the keyword line.
     pub fn body(&self, b: &Block) -> &[u8] {
-        &self.source[b.body_start..b.span.end]
+        &self.src()[b.body_start..b.span.end]
     }
 
     /// The keyword name without the leading `*` or any options/whitespace,
@@ -100,13 +133,13 @@ impl ParsedFile {
     /// gaps or overlaps.
     pub fn to_bytes(&self) -> Vec<u8> {
         if self.blocks.is_empty() {
-            return self.source.clone();
+            return self.src().to_vec();
         }
-        let mut out = Vec::with_capacity(self.source.len());
+        let mut out = Vec::with_capacity(self.src().len());
         for (i, b) in self.blocks.iter().enumerate() {
             match self.edits.get(&i) {
                 Some(bytes) => out.extend_from_slice(bytes),
-                None => out.extend_from_slice(&self.source[b.span.clone()]),
+                None => out.extend_from_slice(&self.src()[b.span.clone()]),
             }
         }
         out
