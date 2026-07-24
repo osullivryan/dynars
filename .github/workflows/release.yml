@@ -1,6 +1,7 @@
 name: Release
 
-# Build wheels for Windows / macOS / Linux and publish to PyPI on tag.
+# Build wheels for Linux + Windows and publish to PyPI on tag.
+# (macOS is omitted to save CI minutes; mac users install from the sdist.)
 # Because the extension is built with pyo3 `abi3-py39`, each job produces a
 # single wheel per platform that works on CPython 3.9+ (no per-version matrix).
 
