@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240">
+  <title>dynars icon</title>
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FB923C"/>
+      <stop offset="0.55" stop-color="#EA580C"/>
+      <stop offset="1" stop-color="#C2410C"/>
+    </linearGradient>
+    <pattern id="mesh" width="20" height="17" patternUnits="userSpaceOnUse">
+      <path d="M0 17 L10 0 L20 17 M-10 0 L30 0" fill="none"
+            stroke="#7C2D12" stroke-opacity="0.30" stroke-width="1"/>
+    </pattern>
+    <path id="dino" d="
+      M 8 96
+      C 34 86 52 82 66 84 C 74 70 84 58 104 54 C 128 49 150 55 162 68
+      C 170 76 178 82 186 86 C 191 88 191 93 186 95 C 179 97 173 99 166 104
+      L 150 104 C 146 110 146 118 150 126 C 140 124 132 120 128 112
+      C 128 130 126 150 122 166 C 121 174 112 174 110 166 C 108 150 110 132 108 118
+      C 100 120 92 120 84 118 C 82 132 80 152 76 166 C 75 174 66 174 64 166
+      C 62 150 64 132 62 116 C 48 112 30 106 8 96 Z"/>
+  </defs>
+
+  <!-- badge -->
+  <rect x="0" y="0" width="240" height="240" rx="52" fill="#1E293B"/>
+  <rect x="6" y="6" width="228" height="228" rx="46" fill="none" stroke="#EA580C" stroke-opacity="0.35" stroke-width="2"/>
+
+  <g transform="translate(26,26) scale(1.0)">
+    <g fill="#FDBA74">
+      <polygon points="78,70 90,70 84,56"/>
+      <polygon points="93,62 105,60 99,47"/>
+      <polygon points="109,58 122,58 116,45"/>
+      <polygon points="127,60 140,63 134,50"/>
+    </g>
+    <use href="#dino" fill="url(#body)"/>
+    <use href="#dino" fill="url(#mesh)"/>
+    <use href="#dino" fill="none" stroke="#F97316" stroke-width="2.5"/>
+    <path d="M128 108 C136 110 141 114 140 120 C138 116 133 114 129 115 Z"
+          fill="#C2410C" stroke="#F97316" stroke-width="1.5" stroke-linejoin="round"/>
+    <g fill="#FFF7ED">
+      <polygon points="150,104 155,104 152,109"/>
+      <polygon points="157,104 162,104 159,108"/>
+    </g>
+    <circle cx="150" cy="76" r="6.5" fill="#FFF7ED"/>
+    <circle cx="152" cy="77" r="3.2" fill="#1F2937"/>
+    <circle cx="180" cy="89" r="1.8" fill="#7C2D12"/>
+  </g>
+</svg>
