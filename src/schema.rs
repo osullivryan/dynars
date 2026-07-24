@@ -163,6 +163,25 @@ impl Table {
     }
 }
 
+/// Implemented by `#[derive(Keyword)]`: provides a keyword's [`Schema`] and a
+/// convenience parse. Mirrors the Python `@keyword` class.
+pub trait KeywordSchema {
+    fn schema() -> Schema;
+    /// Parse this keyword out of a file into a columnar [`Table`].
+    fn parse(parsed: &ParsedFile) -> Table
+    where
+        Self: Sized,
+    {
+        parse_schema(parsed, &Self::schema())
+    }
+}
+
+/// Implemented by `#[derive(Card)]`: provides one card's field layout, so cards
+/// can be composed into multi-card keywords.
+pub trait CardLayout {
+    fn card() -> Card;
+}
+
 /// Parse every block matching `schema.keyword` into a columnar [`Table`].
 ///
 /// Single-card repeating keywords (the bulk ones, `*NODE` / `*ELEMENT_*`) are

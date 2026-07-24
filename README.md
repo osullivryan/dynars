@@ -155,18 +155,53 @@ cols = parse_keyword(kf, Node)        # {"nid": int64[N], "x": float64[N], ...}
 conn = parse_keyword(kf, "ElementShell")["nodes"]   # int64[N, 4]
 ```
 
-**Rust** — the same schema via a builder (what the Python classes lower to):
+**Rust** — the mirror of the Python class is `#[derive(Keyword)]` on a struct;
+field *types* imply Int/Float/Str, so you only annotate widths:
+
+```rust
+use dynars::{Card, Keyword, KeywordSchema};
+
+#[derive(Keyword)]
+#[keyword("NODE")]                        // repeat defaults to true
+struct Node {
+    #[field(8)]  nid: i64,                // i64 -> Int, f64 -> Float, String -> Str
+    #[field(16)] x: f64,
+    #[field(16)] y: f64,
+    #[field(16)] z: f64,
+}
+
+#[derive(Keyword)]
+#[keyword("ELEMENT_SHELL")]
+struct ElementShell {
+    #[field(8)] eid: i64,
+    #[field(8)] pid: i64,
+    #[field(8)] nodes: [i64; 4],          // -> one (N, 4) column
+}
+
+#[derive(Card)] struct Heading  { #[field(80)] title: String }
+#[derive(Card)] struct PartData { #[field(8)] pid: i64, #[field(8)] secid: i64, #[field(8)] mid: i64 }
+
+#[derive(Keyword)]
+#[keyword("PART")]
+#[cards(Heading, PartData)]               // multi-card by composition
+struct Part;
+
+let nodes = Node::parse(&parsed);         // columnar Table
+let ids = nodes.column("nid").unwrap().as_int().unwrap();
+```
+
+Or, for dynamic construction, the underlying builder that the derive and the
+Python classes both lower to:
 
 ```rust
 use dynars::schema::{parse_schema, Card, Schema};
-
 let node = Schema::new("NODE")
     .card(Card::new().int("nid", 8).float("x", 16).float("y", 16).float("z", 16));
 let t = parse_schema(&parsed, &node);
-let ids = t.column("nid").unwrap().as_int().unwrap();
 ```
 
-Runnable examples: `examples/schema_demo.rs` and `examples/schema_demo.py`.
+Runnable examples: `examples/derive_demo.rs`, `examples/schema_demo.rs`,
+`examples/schema_demo.py`.
 
 Scope: fixed `K`-cards-per-entity layouts (repeating or single-entity),
 `int`/`float`/`str` and array fields, fixed/long/free formats. *Conditional* or
@@ -200,10 +235,12 @@ the include-tree path is unchanged and pays nothing for the new features.
 - **Owned model + typed structs** (`parser::Keyword`, `typed`): an editable,
   allocation-backed view for round-trip editing, plus example typed structs
   (`Part`, `MatElastic`) that any keyword can follow.
-- **Schemas** (`schema`): a declarative keyword layout (cards → typed fields)
-  parsed into columnar `Table`s. Single-card repeating keywords parse in parallel
-  like the built-ins; multi-card ones parse sequentially. The Python `@keyword`
-  classes lower to the exact same `Schema`, so there is one parser underneath.
+- **Schemas** (`schema`, `dynars-derive`): a declarative keyword layout (cards →
+  typed fields) parsed into columnar `Table`s. Single-card repeating keywords
+  parse in parallel like the built-ins; multi-card ones parse sequentially. Three
+  front ends lower to one `Schema`: the Rust builder, `#[derive(Keyword)]`
+  structs (proc-macro in the `dynars-derive` workspace crate), and the Python
+  `@keyword` classes.
 
 ### Card formats
 

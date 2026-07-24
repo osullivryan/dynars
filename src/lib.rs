@@ -6,6 +6,11 @@ pub mod schema;
 pub mod testgen;
 pub mod typed;
 
+/// `#[derive(Keyword)]` / `#[derive(Card)]` for declaring keyword schemas as
+/// structs (see [`schema`]).
+pub use dynars_derive::{Card, Keyword};
+pub use schema::{CardLayout, KeywordSchema};
+
 #[cfg(feature = "python")]
 mod python_bindings {
     use std::path::Path;
