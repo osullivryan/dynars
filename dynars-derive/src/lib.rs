@@ -27,7 +27,7 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
@@ -86,6 +86,22 @@ pub fn derive_keyword(input: TokenStream) -> TokenStream {
         quote! { __s.once() }
     };
 
+    // The single parse entry point on the struct. For a single-card keyword it
+    // is specialized (monomorphized) code; for multi-card it interprets the
+    // schema (those are low volume). Either way it returns a `Table`.
+    let parse_body = match single_card_fields(&input) {
+        Some(fields) => match specialized_parse(&kw_name, fields) {
+            Ok(body) => body,
+            Err(e) => return e.to_compile_error().into(),
+        },
+        None => quote! {
+            ::dynars::schema::parse_schema(
+                parsed,
+                &<Self as ::dynars::schema::KeywordSchema>::schema(),
+            )
+        },
+    };
+
     quote! {
         impl ::dynars::schema::KeywordSchema for #name {
             fn schema() -> ::dynars::schema::Schema {
@@ -93,8 +109,112 @@ pub fn derive_keyword(input: TokenStream) -> TokenStream {
                 #finish
             }
         }
+
+        impl #name {
+            /// Parse this keyword from a file into a columnar `Table`.
+            pub fn parse(parsed: &::dynars::keyword::ParsedFile) -> ::dynars::schema::Table {
+                #parse_body
+            }
+        }
     }
     .into()
+}
+
+/// The named fields for a single-card keyword (no `#[cards(...)]`), or `None`
+/// for the multi-card / interpreted case.
+fn single_card_fields(input: &DeriveInput) -> Option<&Punctuated<Field, Token![,]>> {
+    if input.attrs.iter().any(|a| a.path().is_ident("cards")) {
+        return None;
+    }
+    match &input.data {
+        Data::Struct(s) => match &s.fields {
+            Fields::Named(n) => Some(&n.named),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Generate the specialized single-card parse body: typed column vecs filled by
+/// a per-line loop with compile-time-known field layout (no enum dispatch),
+/// driven in parallel by the shared chunk driver.
+fn specialized_parse(
+    keyword: &str,
+    fields: &Punctuated<Field, Token![,]>,
+) -> syn::Result<TokenStream2> {
+    let mut decls = Vec::new();
+    let mut width_decls = Vec::new();
+    let mut free_pushes = Vec::new();
+    let mut fixed_pushes = Vec::new();
+    let mut wraps = Vec::new();
+    let mut names = Vec::new();
+
+    for (i, f) in fields.iter().enumerate() {
+        let fname = f.ident.as_ref().unwrap().to_string();
+        let var = format_ident!("__c_{}", f.ident.as_ref().unwrap());
+        let wvar = format_ident!("__w_{}", i);
+        let width = field_width(f)?;
+        // Hoist effective width (base * long-scale) out of the per-line loop.
+        width_decls.push(quote! { let #wvar: usize = #width * __scale; });
+
+        let (elem_ty, to_fn, variant, count, is_str_array) = match &f.ty {
+            Type::Array(arr) => {
+                let count = &arr.len;
+                match base_kind(&arr.elem)? {
+                    Kind::Int => (quote!(i64), quote!(__to_int), quote!(Int), quote!(#count), false),
+                    Kind::Float => {
+                        (quote!(f64), quote!(__to_float), quote!(Float), quote!(#count), false)
+                    }
+                    Kind::Str => (quote!(String), quote!(__to_str), quote!(Str), quote!(#count), true),
+                }
+            }
+            ty => match base_kind(ty)? {
+                Kind::Int => (quote!(i64), quote!(__to_int), quote!(Int), quote!(1usize), false),
+                Kind::Float => (quote!(f64), quote!(__to_float), quote!(Float), quote!(1usize), false),
+                Kind::Str => (quote!(String), quote!(__to_str), quote!(Str), quote!(1usize), false),
+            },
+        };
+        if is_str_array {
+            return Err(syn::Error::new_spanned(&f.ty, "string arrays are not supported"));
+        }
+
+        decls.push(quote! { let mut #var: ::std::vec::Vec<#elem_ty> = ::std::vec::Vec::new(); });
+        free_pushes.push(quote! {
+            for _ in 0..#count {
+                #var.push(::dynars::schema::#to_fn(__t.next().unwrap_or(&b""[..])));
+            }
+        });
+        fixed_pushes.push(quote! {
+            for _ in 0..#count {
+                #var.push(::dynars::schema::#to_fn(::dynars::schema::__slice(__line, __off, #wvar)));
+                __off += #wvar;
+            }
+        });
+        wraps.push(quote! { ::dynars::schema::Column::#variant { data: #var, ncols: #count } });
+        names.push(quote! { #fname });
+    }
+
+    Ok(quote! {
+        let __cols = ::dynars::schema::__drive_single_card(parsed, #keyword, |__chunk, __fmt| {
+            let __scale: usize =
+                if __fmt == ::dynars::keyword::CardFormat::Long { 2 } else { 1 };
+            #(#width_decls)*
+            #(#decls)*
+            for __line in __chunk.split(|&__b| __b == b'\n') {
+                if ::dynars::schema::__is_skippable(__line) { continue; }
+                let __line = ::dynars::schema::__strip_eol(__line);
+                if ::dynars::schema::__is_free(__line, __fmt) {
+                    let mut __t = __line.split(|&__b| __b == b',');
+                    #(#free_pushes)*
+                } else {
+                    let mut __off = 0usize;
+                    #(#fixed_pushes)*
+                }
+            }
+            ::std::vec![ #(#wraps),* ]
+        });
+        ::dynars::schema::__table(::std::vec![ #(#names),* ], __cols)
+    })
 }
 
 /// Build a `Card::new().int(..).float(..)...` expression from a struct's fields.

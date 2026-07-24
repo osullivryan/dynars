@@ -9,7 +9,7 @@
 #![allow(dead_code)] // schema structs are declarations; their fields are never read
 
 use dynars::parser::parse_file_blocks;
-use dynars::{Card, Keyword, KeywordSchema};
+use dynars::{Card, Keyword};
 
 #[derive(Keyword)]
 #[keyword("NODE")] // repeat defaults to true

@@ -520,20 +520,24 @@ pub struct Field<'a> {
 
 impl<'a> Field<'a> {
     /// The field with surrounding whitespace removed.
+    #[inline]
     pub fn trimmed(&self) -> &'a [u8] {
         trim(self.raw)
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.trimmed().is_empty()
     }
 
     /// Trimmed field as UTF-8 (empty string if the field is not valid UTF-8).
+    #[inline]
     pub fn as_str(&self) -> &'a str {
         std::str::from_utf8(self.trimmed()).unwrap_or("")
     }
 
     /// Parse as an integer, tolerating surrounding whitespace and a leading `+`.
+    #[inline]
     pub fn as_i64(&self) -> Option<i64> {
         let t = self.trimmed();
         if t.is_empty() {
@@ -550,6 +554,7 @@ impl<'a> Field<'a> {
 
     /// Parse as a float, tolerating LS-DYNA / Fortran quirks (see
     /// [`parse_dyna_float`]).
+    #[inline]
     pub fn as_f64(&self) -> Option<f64> {
         let t = self.trimmed();
         if t.is_empty() {

@@ -163,17 +163,82 @@ impl Table {
     }
 }
 
-/// Implemented by `#[derive(Keyword)]`: provides a keyword's [`Schema`] and a
-/// convenience parse. Mirrors the Python `@keyword` class.
+/// Implemented by `#[derive(Keyword)]`: provides a keyword's [`Schema`] (for
+/// introspection and the runtime/dynamic path). The single parsing entry point
+/// on a derived struct is its generated inherent `parse()`, which for the bulk
+/// single-card case is specialized code — not this schema being interpreted.
 pub trait KeywordSchema {
     fn schema() -> Schema;
-    /// Parse this keyword out of a file into a columnar [`Table`].
-    fn parse(parsed: &ParsedFile) -> Table
-    where
-        Self: Sized,
-    {
-        parse_schema(parsed, &Self::schema())
+}
+
+// --- runtime hooks used by the code `#[derive(Keyword)]` generates ---
+// These let the macro emit a specialized, monomorphized per-line parser (no
+// Column enum dispatch, offsets known at expansion time) while reusing the
+// shared chunking/parallel/merge driver. Not part of the stable surface.
+
+#[inline]
+#[doc(hidden)]
+pub fn __is_skippable(line: &[u8]) -> bool {
+    crate::bulk::is_skippable(line)
+}
+#[inline]
+#[doc(hidden)]
+pub fn __strip_eol(line: &[u8]) -> &[u8] {
+    crate::bulk::strip_eol(line)
+}
+#[inline]
+#[doc(hidden)]
+pub fn __is_free(line: &[u8], fmt: CardFormat) -> bool {
+    fmt == CardFormat::Free || memchr::memchr(b',', line).is_some()
+}
+#[inline]
+#[doc(hidden)]
+pub fn __slice(line: &[u8], off: usize, w: usize) -> &[u8] {
+    if off >= line.len() { &[] } else { &line[off..(off + w).min(line.len())] }
+}
+#[inline]
+#[doc(hidden)]
+pub fn __to_int(raw: &[u8]) -> i64 {
+    Field { raw }.as_i64().unwrap_or(0)
+}
+#[inline]
+#[doc(hidden)]
+pub fn __to_float(raw: &[u8]) -> f64 {
+    Field { raw }.as_f64().unwrap_or(0.0)
+}
+#[inline]
+#[doc(hidden)]
+pub fn __to_str(raw: &[u8]) -> String {
+    Field { raw }.as_str().to_string()
+}
+
+/// Drive a generated per-chunk parser across all matching blocks in parallel
+/// and merge the columns. The `per_chunk` closure is specialized by the derive.
+#[doc(hidden)]
+pub fn __drive_single_card<F>(parsed: &ParsedFile, keyword: &str, per_chunk: F) -> Vec<Column>
+where
+    F: Fn(&[u8], CardFormat) -> Vec<Column> + Sync + Send,
+{
+    let chunks = collect_chunks(parsed, keyword);
+    if chunks.is_empty() {
+        // Run once on empty input to get the (empty) column template.
+        return per_chunk(&[], CardFormat::Fixed);
     }
+    let partials: Vec<Vec<Column>> = chunks.par_iter().map(|(c, f)| per_chunk(c, *f)).collect();
+    let mut it = partials.into_iter();
+    let mut base = it.next().unwrap();
+    for part in it {
+        for (a, b) in base.iter_mut().zip(part) {
+            a.extend(b);
+        }
+    }
+    base
+}
+
+/// Assemble a [`Table`] from parallel column names and data.
+#[doc(hidden)]
+pub fn __table(names: Vec<&'static str>, cols: Vec<Column>) -> Table {
+    Table { columns: names.into_iter().map(|n| n.to_string()).zip(cols).collect() }
 }
 
 /// Implemented by `#[derive(Card)]`: provides one card's field layout, so cards

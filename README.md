@@ -261,12 +261,15 @@ nodes), warm page cache:
 | Block index (mmap + split) | ~15 GB/s |
 | Node parse → arrays (Rust) | ~97 M nodes/s (51 ms) |
 | Node parse → numpy (Python) | ~82 M nodes/s (61 ms) |
-| Node parse via **schema** (Rust) | ~56 M nodes/s (~1.7× hardcoded) |
-| Node parse via **schema** (Python) | ~64 M nodes/s (~1.3× hardcoded) |
+| Node parse, `#[derive(Keyword)]` (specialized) | ~70 M nodes/s |
+| Node parse, builder / Python (interpreted) | ~57–64 M nodes/s |
 
-Schema parsing trades ~1.3–1.7× against the hand-specialized parsers for the
-ability to marshal any keyword with no recompile — still tens of millions of
-entities per second. Reproduce with `cargo run --release --example bench_schema`.
+`#[derive(Keyword)]` emits monomorphized code (offsets known at compile time,
+no per-field enum dispatch), so its `parse()` runs ~20% faster than the
+interpreted builder/Python path. It doesn't fully match the hand-specialized
+`parse_nodes` (~97 M/s), which packs `xyz` into one array; the schema path emits
+one column per field. All three are tens of millions of entities per second.
+Reproduce with `cargo run --release --example bench_schema`.
 
 The multi-file number roughly doubled after switching the scanner from `read()`
 to `mmap` (eliminating a copy of every file). Single-file parallel scanning is
