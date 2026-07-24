@@ -218,6 +218,18 @@ To avoid magic strings, every keyword name is also a generated, autocompletable
 constant — `dynars.kw.MAT_ELASTIC` in Python, `dynars::keywords::names::MAT_ELASTIC`
 in Rust.
 
+For fully typed Rust access, the opt-in `typed-keywords` feature generates a
+struct per keyword with named typed column fields (copy-free `parse()`):
+
+```rust
+// Cargo.toml: dynars = { ..., features = ["typed-keywords"] }
+let m = dynars::keywords::typed::MAT_ELASTIC::parse(&parsed);
+let (mid, e) = (m.mid, m.e);   // Vec<i64>, Vec<f64>
+```
+
+It's off by default — enabling it compiles ~3,170 structs (a one-time, cached
+cost), so the base build stays fast.
+
 Scope: fixed `K`-cards-per-entity layouts (repeating or single-entity),
 `int`/`float`/`str` and array fields, fixed/long/free formats. *Conditional* or
 *count-driven* cards (e.g. `*DEFINE_CURVE`) are out of scope and stay in Rust or

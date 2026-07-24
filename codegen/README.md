@@ -11,9 +11,15 @@ maps each LS-DYNA keyword to its cards and per-field `{name, type, width}`.
 curl -sSL -o codegen/kwd.json \
   https://raw.githubusercontent.com/ansys/pydyna/main/codegen/kwd.json
 
-python codegen/gen_keywords.py            # -> src/keywords/data.rs
+python codegen/gen_keywords.py            # -> src/keywords/data.rs, names.rs, python/dynars/kw.py
+python codegen/gen_keywords.py codegen/kwd.json --typed   # + src/keywords/typed.rs (typed-keywords feature)
 cargo test keywords                       # sanity-check the registry
 ```
+
+`--typed` emits `src/keywords/typed.rs` (~6.8 MB, one struct per keyword). It's
+gated behind the `typed-keywords` Cargo feature — off by default because it adds
+a one-time compile. Identifiers are sanitized (Rust reserved words, dedup) so
+some field names are lightly mangled (`do` → `do_`).
 
 ## What's covered
 

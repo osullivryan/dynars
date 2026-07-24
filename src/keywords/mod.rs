@@ -27,6 +27,11 @@ mod data;
 /// `dynars::keywords::names::MAT_ELASTIC`.
 pub mod names;
 
+/// Generated typed struct per keyword (opt-in — `typed-keywords` feature).
+/// E.g. `dynars::keywords::typed::MAT_ELASTIC::parse(&parsed).mid`.
+#[cfg(feature = "typed-keywords")]
+pub mod typed;
+
 /// Field type in the compact static table.
 #[derive(Debug, Clone, Copy)]
 pub enum T {

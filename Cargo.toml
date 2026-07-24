@@ -17,6 +17,8 @@ path = "src/main.rs"
 [features]
 default = []
 python = ["pyo3", "numpy"]
+# Generated typed struct per keyword (~3170). Opt-in — adds a one-time compile.
+typed-keywords = []
 
 [dependencies]
 rayon = "1.10"

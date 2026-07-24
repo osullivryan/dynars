@@ -195,6 +195,16 @@ impl Column {
     pub fn as_str(&self) -> Option<&[String]> {
         if let Column::Str { data, .. } = self { Some(data) } else { None }
     }
+    /// Move the integer data out (for building typed structs without a copy).
+    pub fn into_int(self) -> Option<Vec<i64>> {
+        if let Column::Int { data, .. } = self { Some(data) } else { None }
+    }
+    pub fn into_float(self) -> Option<Vec<f64>> {
+        if let Column::Float { data, .. } = self { Some(data) } else { None }
+    }
+    pub fn into_str(self) -> Option<Vec<String>> {
+        if let Column::Str { data, .. } = self { Some(data) } else { None }
+    }
     #[inline]
     fn push(&mut self, raw: &[u8]) {
         match self {
@@ -226,6 +236,14 @@ impl Table {
     }
     pub fn column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|(n, _)| n == name).map(|(_, c)| c)
+    }
+    /// Remove and return a column by name (used by generated typed structs to
+    /// move data out without copying).
+    pub fn take(&mut self, name: &str) -> Option<Column> {
+        self.columns
+            .iter()
+            .position(|(n, _)| n == name)
+            .map(|i| self.columns.remove(i).1)
     }
 }
 
