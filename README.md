@@ -189,8 +189,9 @@ let node = Schema::new("NODE")
 let t = parse_schema(&parsed, &node);
 ```
 
-Runnable examples: `examples/derive_demo.rs`, `examples/schema_demo.rs`,
-`examples/schema_demo.py`.
+Runnable examples: `examples/schema_demo.{rs,py}` (declared schemas),
+`examples/derive_demo.rs` (`#[derive(Keyword)]`), and
+`examples/builtin_demo.{rs,py}` (parse by name from the built-in library).
 
 ### Built-in keyword library
 
