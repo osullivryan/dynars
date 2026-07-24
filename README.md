@@ -124,10 +124,15 @@ assert_eq!(parsed.to_bytes(), std::fs::read("deck.k").unwrap());
 The two capabilities are deliberately separate, and marshalling is additive —
 the include-tree path is unchanged and pays nothing for the new features.
 
-- **Streaming scanner** (`parser::parse_file_from_path`): reads a file in 4 MB
-  chunks (not `mmap` — macOS page faults are single-threaded), scans for `*` at
-  line starts with SIMD `memchr`, and finds includes anywhere in the file.
-  Parallelism is across files via a work-stealing pool (`include_tree`).
+- **Scanner** (`parser::parse_file_from_path`): memory-maps the file (no read()
+  copy) and scans for `*` at line starts with SIMD `memchr`, finding includes
+  anywhere in the file. Files ≥ 8 MB are scanned in parallel over line-aligned
+  chunks; because the mapping is contiguous, a chunk that finds a keyword near
+  its end reads forward for the filename, so straddling lines need no overlap
+  buffer. Across many files, a work-stealing pool (`include_tree`) parallelizes
+  by file. (mmap parallel scanning scales on Linux, where page faults resolve
+  concurrently; on macOS minor faults serialize, so single-file scans there are
+  bounded near single-thread speed — but the copy-elimination still helps.)
 - **Block index** (`parser::parse_file_blocks`): owns the file buffer and splits
   it into keyword blocks that *tile the source exactly*. This is the lossless
   round-trip guarantee — re-emitting every block reproduces the input. Edits are
@@ -155,10 +160,16 @@ nodes), warm page cache:
 
 | Operation | Throughput |
 |-----------|-----------|
-| `*INCLUDE` scan (streaming, per core) | ~15 GB/s |
+| `*INCLUDE` scan, single large file (macOS, fault-bound) | ~15 GB/s |
+| `*INCLUDE` scan, many warm files (mmap, no copy) | ~45 GB/s |
 | Block index (read + split) | ~12 GB/s |
 | Node parse → arrays (Rust) | ~73 M nodes/s (68 ms) |
 | Node parse → numpy (Python) | ~64 M nodes/s (78 ms) |
+
+The multi-file number roughly doubled after switching the scanner from `read()`
+to `mmap` (eliminating a copy of every file). Single-file parallel scanning is
+bounded by macOS's serialized page faults here; on Linux it should scale toward
+memory bandwidth.
 
 Cold decks larger than RAM are limited by disk bandwidth (~2 GB/s sustained
 NVMe), not CPU — the scanner is ~7× faster than the disk can deliver bytes.

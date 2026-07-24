@@ -1,8 +1,10 @@
 use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use memchr::{memchr, memrchr};
+use memmap2::Mmap;
+use rayon::prelude::*;
+use rayon::slice::ParallelSlice;
 
 use crate::keyword::{
     Block, CardFormat, FileParseResult, IncludeDirective, IncludeKind, ParsedFile,
@@ -105,31 +107,32 @@ fn get_line(data: &[u8], start: usize, end: usize) -> &[u8] {
     }
 }
 
-/// Read buffer size for streaming.
-const CHUNK_SIZE: usize = 4 * 1024 * 1024; // 4MB
-
-/// Overlap between streaming chunks so keyword+filename lines that
-/// straddle a boundary are seen whole. Stars are only processed in the
-/// non-overlap portion to avoid duplicates.
-const OVERLAP: usize = 4096;
+/// Files at or above this size get their scan split across cores; smaller
+/// files scan on one thread (chunking overhead isn't worth it, and it avoids
+/// oversubscribing when the include-tree pool is already parsing many files).
+const MIN_PARALLEL_SCAN: usize = 8 * 1024 * 1024; // 8MB
 
 /// Parse a file for include directives.
 ///
-/// Streams the file in 4MB chunks using read() (not mmap — macOS page
-/// faults are single-threaded and slow). Each chunk is scanned for '*'
-/// at line starts using SIMD memchr. '*' almost never appears in numeric
-/// data, so millions of NODE/ELEMENT lines are skipped in 32-byte strides.
+/// The file is memory-mapped (no read() copy) and scanned for '*' at line
+/// starts with SIMD memchr — '*' almost never appears in numeric data, so
+/// millions of NODE/ELEMENT lines are skipped in 32-byte strides. Large files
+/// are scanned in parallel over line-aligned chunks; because the whole file is
+/// one contiguous mapping, a chunk that finds a keyword near its end reads
+/// forward past the boundary for the filename, so straddling lines are handled
+/// with no duplication.
 ///
-/// The worker pool in include_tree.rs handles parallelism across files.
-/// Within a single file this is sequential — which is fine because each
-/// file's I/O is sequential and the OS does readahead.
+/// mmap (rather than streaming read) wins on Linux, where page faults resolve
+/// in parallel and madvise drives readahead; on macOS cold faults are
+/// single-threaded, but warm data is unaffected and cold huge files are
+/// disk-bound regardless.
 ///
-/// Finds includes ANYWHERE in the file — correct because every byte is read.
+/// Finds includes ANYWHERE in the file — correct because every byte is scanned.
 pub fn parse_file_from_path(file_path: &Path, include_paths: &[PathBuf]) -> FileParseResult {
     let parent_dir = file_path.parent().unwrap_or(Path::new("."));
 
-    let mut file = File::open(file_path).expect("Cannot open file");
-    let file_size = file.metadata().expect("Cannot stat").len() as usize;
+    let file = File::open(file_path).expect("Cannot open file");
+    let file_size = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
 
     if file_size == 0 {
         return FileParseResult {
@@ -139,56 +142,82 @@ pub fn parse_file_from_path(file_path: &Path, include_paths: &[PathBuf]) -> File
         };
     }
 
-    let mut includes = Vec::new();
-    let mut buf = vec![0u8; CHUNK_SIZE + OVERLAP];
-    let mut carry_len: usize = 0;
-    let mut byte_count: usize = 0;
-    let mut prev_byte: u8 = b'\n'; // so '*' at byte 0 counts as line start
+    // SAFETY: standard mmap caveat — undefined behaviour if the file is
+    // truncated/modified by another process while mapped.
+    let mmap = unsafe { Mmap::map(&file) }.expect("Cannot mmap file");
+    #[cfg(unix)]
+    let _ = mmap.advise(memmap2::Advice::Sequential);
+    let data: &[u8] = &mmap;
 
-    loop {
-        // Fill the buffer after any carried-over bytes.
-        let mut filled = carry_len;
-        while filled < buf.len() {
-            match file.read(&mut buf[filled..]) {
-                Ok(0) => break,
-                Ok(n) => filled += n,
-                Err(e) => panic!("Read error on {}: {}", file_path.display(), e),
-            }
-        }
-        byte_count += filled - carry_len;
-        let eof = filled < buf.len();
-        let data = &buf[..filled];
-
-        // Process everything except the overlap tail (unless EOF).
-        let process_end = if eof { filled } else { filled - OVERLAP };
-
-        for star_pos in memchr::memchr_iter(b'*', &data[..process_end]) {
-            let at_line_start = if star_pos == 0 {
-                prev_byte == b'\n'
-            } else {
-                data[star_pos - 1] == b'\n'
-            };
-            if at_line_start {
-                // Process against full data (including overlap) so the
-                // filename line after the keyword is always accessible.
-                process_star_line(data, star_pos, parent_dir, include_paths, &mut includes);
-            }
-        }
-
-        if eof {
-            break;
-        }
-
-        prev_byte = data[process_end - 1];
-        buf.copy_within(process_end..filled, 0);
-        carry_len = filled - process_end;
-    }
+    let includes = scan_includes(data, parent_dir, include_paths);
 
     FileParseResult {
         path: file_path.to_path_buf(),
-        byte_count,
+        byte_count: data.len(),
         includes,
     }
+}
+
+/// Scan mapped file bytes for include directives, splitting large files across
+/// cores. Results are returned in file order.
+fn scan_includes(
+    data: &[u8],
+    parent_dir: &Path,
+    include_paths: &[PathBuf],
+) -> Vec<IncludeDirective> {
+    if data.len() < MIN_PARALLEL_SCAN {
+        return scan_range(data, 0, data.len(), parent_dir, include_paths);
+    }
+
+    let bounds = line_aligned_bounds(data, rayon::current_num_threads());
+    bounds
+        .par_windows(2)
+        .map(|w| scan_range(data, w[0], w[1], parent_dir, include_paths))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Scan `data[start..end]` for `*` at line starts. Every chunk boundary is a
+/// line start, so `data[pos - 1] == '\n'` correctly identifies line starts even
+/// at `pos == start`. `process_star_line` reads forward into the full `data`
+/// slice, so a keyword whose filename lands in the next chunk is still resolved.
+fn scan_range(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    parent_dir: &Path,
+    include_paths: &[PathBuf],
+) -> Vec<IncludeDirective> {
+    let mut includes = Vec::new();
+    for off in memchr::memchr_iter(b'*', &data[start..end]) {
+        let pos = start + off;
+        if pos == 0 || data[pos - 1] == b'\n' {
+            process_star_line(data, pos, parent_dir, include_paths, &mut includes);
+        }
+    }
+    includes
+}
+
+/// Split `data` into up to `n` boundaries, each snapped forward to the start of
+/// a line, so chunks contain only whole lines.
+fn line_aligned_bounds(data: &[u8], n: usize) -> Vec<usize> {
+    let n = n.max(1);
+    let mut bounds = Vec::with_capacity(n + 1);
+    bounds.push(0usize);
+    for i in 1..n {
+        let target = data.len() * i / n;
+        let cut = match memchr(b'\n', &data[target..]) {
+            Some(off) => target + off + 1,
+            None => data.len(),
+        };
+        if cut > *bounds.last().unwrap() && cut < data.len() {
+            bounds.push(cut);
+        }
+    }
+    bounds.push(data.len());
+    bounds
 }
 
 #[inline]

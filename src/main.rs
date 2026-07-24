@@ -67,11 +67,6 @@ fn cmd_generate(depth: usize, breadth: usize, nodes: usize, output: &str) {
 }
 
 fn cmd_parse(file_path: &PathBuf) {
-    if !file_path.exists() {
-        eprintln!("Error: file not found: {}", file_path.display());
-        std::process::exit(1);
-    }
-
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
 
     println!("Parsing: {}", file_path.display());

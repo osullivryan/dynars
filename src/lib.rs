@@ -68,12 +68,6 @@ mod python_bindings {
     pub fn parse_include_tree(path: String) -> PyResult<PyIncludeNode> {
         let file_path = Path::new(&path);
 
-        if !file_path.exists() {
-            return Err(pyo3::exceptions::PyFileNotFoundError::new_err(
-                format!("File not found: {}", path),
-            ));
-        }
-
         let result = crate::include_tree::build_include_tree(file_path);
 
         match result {
@@ -257,12 +251,6 @@ mod python_bindings {
     #[pyo3(signature = (path))]
     pub fn parse_keyword_file(py: Python<'_>, path: String) -> PyResult<PyKeywordFile> {
         let file_path = Path::new(&path);
-        if !file_path.exists() {
-            return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!(
-                "File not found: {}",
-                path
-            )));
-        }
         let inner = py
             .detach(|| crate::parser::parse_file_blocks(file_path))
             .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))?;
