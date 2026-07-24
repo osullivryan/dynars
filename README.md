@@ -192,6 +192,28 @@ let t = parse_schema(&parsed, &node);
 Runnable examples: `examples/derive_demo.rs`, `examples/schema_demo.rs`,
 `examples/schema_demo.py`.
 
+### Built-in keyword library
+
+You don't have to declare the common keywords at all — dynars ships schemas for
+**~3,170 LS-DYNA keywords**, generated from the [Ansys pyDYNA](https://github.com/ansys/pydyna)
+field database (`codegen/`), plus hand-written `*NODE`/`*PART` that pyDYNA omits.
+Pass a keyword *name* and it resolves from the library:
+
+```python
+kf = dynars.parse_keyword_file("deck.k")
+nodes = dynars.parse_keyword(kf, "NODE")          # {"nid": ..., "x": ..., ...}
+mats  = dynars.parse_keyword(kf, "MAT_ELASTIC")   # no declaration needed
+```
+
+```rust
+let schema = dynars::keywords::schema("MAT_ELASTIC").unwrap();
+let table = dynars::schema::parse_schema(&parsed, &schema);
+```
+
+A `@keyword` class / `#[derive(Keyword)]` with the same name overrides the
+built-in. The library covers each keyword's *static* card layout; keywords with
+conditional or count-driven cards parse their base layout (see `codegen/README.md`).
+
 Scope: fixed `K`-cards-per-entity layouts (repeating or single-entity),
 `int`/`float`/`str` and array fields, fixed/long/free formats. *Conditional* or
 *count-driven* cards (e.g. `*DEFINE_CURVE`) are out of scope and stay in Rust or

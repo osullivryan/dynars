@@ -50,6 +50,12 @@ class KeywordFile:
         """
         Number of keyword blocks in the file.
         """
+    def parse_builtin(self, /, keyword: str) -> dict:
+        """
+        Parse a keyword using dynars' built-in library (generated from the
+        pyDYNA field database), returning the same column dict. Errors if the
+        keyword is not in the library.
+        """
     def parse_schema(self, /, keyword: str, cards: Sequence[Sequence[tuple[str, str, int, int]]], repeat: bool = False) -> dict:
         """
         Parse a keyword against a user-defined schema, returning a dict of

@@ -12,3 +12,6 @@ dist/
 
 # IDE
 /.idea
+
+# codegen input (large; fetch with codegen/gen_keywords.py docstring)
+/codegen/kwd.json

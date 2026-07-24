@@ -1,5 +1,6 @@
 pub mod include_tree;
 pub mod keyword;
+pub mod keywords;
 pub mod parser;
 pub mod schema;
 pub mod testgen;
@@ -193,42 +194,25 @@ mod python_bindings {
             }
 
             let table = py.detach(|| crate::schema::parse_schema(&self.inner, &schema));
+            table_to_pydict(py, table)
+        }
 
-            let d = PyDict::new(py);
-            for (name, col) in table.columns {
-                match col {
-                    Column::Int { data, ncols } => {
-                        if ncols <= 1 {
-                            d.set_item(name, data.into_pyarray(py))?;
-                        } else {
-                            let rows = data.len() / ncols;
-                            let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
-                                .expect("int column shape");
-                            d.set_item(name, a.into_pyarray(py))?;
-                        }
-                    }
-                    Column::Float { data, ncols } => {
-                        if ncols <= 1 {
-                            d.set_item(name, data.into_pyarray(py))?;
-                        } else {
-                            let rows = data.len() / ncols;
-                            let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
-                                .expect("float column shape");
-                            d.set_item(name, a.into_pyarray(py))?;
-                        }
-                    }
-                    Column::Str { data, ncols } => {
-                        if ncols <= 1 {
-                            d.set_item(name, data)?;
-                        } else {
-                            let rows: Vec<Vec<String>> =
-                                data.chunks(ncols).map(|c| c.to_vec()).collect();
-                            d.set_item(name, rows)?;
-                        }
-                    }
-                }
-            }
-            Ok(d)
+        /// Parse a keyword using dynars' built-in library (generated from the
+        /// pyDYNA field database), returning the same column dict. Errors if the
+        /// keyword is not in the library.
+        fn parse_builtin<'py>(
+            &self,
+            py: Python<'py>,
+            keyword: String,
+        ) -> PyResult<Bound<'py, PyDict>> {
+            let schema = crate::keywords::schema(&keyword).ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!(
+                    "'{}' is not in the built-in keyword library",
+                    keyword
+                ))
+            })?;
+            let table = py.detach(|| crate::schema::parse_schema(&self.inner, &schema));
+            table_to_pydict(py, table)
         }
 
         /// Whether any block has a pending edit.
@@ -257,6 +241,49 @@ mod python_bindings {
                 if self.inner.is_dirty() { ", edited" } else { "" },
             )
         }
+    }
+
+    /// Convert a columnar [`Table`](crate::schema::Table) into a Python dict of
+    /// numpy arrays (2-D for array fields) and string lists.
+    fn table_to_pydict<'py>(
+        py: Python<'py>,
+        table: crate::schema::Table,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        for (name, col) in table.columns {
+            match col {
+                Column::Int { data, ncols } => {
+                    if ncols <= 1 {
+                        d.set_item(name, data.into_pyarray(py))?;
+                    } else {
+                        let rows = data.len() / ncols;
+                        let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
+                            .expect("int column shape");
+                        d.set_item(name, a.into_pyarray(py))?;
+                    }
+                }
+                Column::Float { data, ncols } => {
+                    if ncols <= 1 {
+                        d.set_item(name, data.into_pyarray(py))?;
+                    } else {
+                        let rows = data.len() / ncols;
+                        let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
+                            .expect("float column shape");
+                        d.set_item(name, a.into_pyarray(py))?;
+                    }
+                }
+                Column::Str { data, ncols } => {
+                    if ncols <= 1 {
+                        d.set_item(name, data)?;
+                    } else {
+                        let rows: Vec<Vec<String>> =
+                            data.chunks(ncols).map(|c| c.to_vec()).collect();
+                        d.set_item(name, rows)?;
+                    }
+                }
+            }
+        }
+        Ok(d)
     }
 
     /// Parse an LS-DYNA keyword file into an editable [`PyKeywordFile`].

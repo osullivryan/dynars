@@ -108,14 +108,18 @@ def keyword(name: str, repeat: bool = True):
 
 
 def parse_keyword(kf, schema):
-    """Parse a keyword from `kf` (a `KeywordFile`) using a `@keyword` class or a
-    registered keyword name. Returns a dict of columns: numpy arrays for numeric
-    fields, lists for string fields.
+    """Parse a keyword from `kf` (a `KeywordFile`) and return a dict of columns:
+    numpy arrays for numeric fields, lists for string fields.
+
+    `schema` may be a `@keyword` class, or a keyword name (str). A name is first
+    looked up among your registered `@keyword` classes, then falls back to
+    dynars' built-in keyword library (generated from the pyDYNA field database),
+    so common keywords parse with no declaration at all.
     """
     if isinstance(schema, str):
         cls = _REGISTRY.get(schema.upper())
         if cls is None:
-            raise KeyError(f"no keyword schema registered for '{schema}'")
+            return kf.parse_builtin(schema)  # fall back to the built-in library
     else:
         cls = schema
     name, cards, repeat = cls._dynars_schema
