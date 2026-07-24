@@ -119,6 +119,60 @@ let shells = parse_element_shell(&parsed);  // ElementArrays { eids, pids, nodes
 assert_eq!(parsed.to_bytes(), std::fs::read("deck.k").unwrap());
 ```
 
+## User-defined keyword schemas
+
+Beyond the built-in `*NODE`/`*ELEMENT_*` parsers, you can declare how to marshal
+*any* keyword — no recompile — and get the same columnar output. The declaration
+is data (field layout), executed by the Rust hot loop; it never calls back into
+Python per card, so it stays fast.
+
+**Python** — a keyword is a class; fields on the class are one card, or a
+`cards` list composes several. Reusable card classes and array fields included:
+
+```python
+from dynars import keyword, Card, Int, Float, Str, IntArray, parse_keyword
+
+@keyword("NODE")                      # one card, repeats over the block
+class Node(Card):
+    nid = Int(8)
+    x = Float(16); y = Float(16); z = Float(16)
+
+@keyword("ELEMENT_SHELL")
+class ElementShell(Card):
+    eid = Int(8); pid = Int(8)
+    nodes = IntArray(4, width=8)      # -> one (N, 4) column
+
+class Heading(Card):                  # reusable cards
+    title = Str(80)
+class PartData(Card):
+    pid = Int(8); secid = Int(8); mid = Int(8)
+
+@keyword("PART")
+class Part:
+    cards = [Heading, PartData]       # multi-card
+
+cols = parse_keyword(kf, Node)        # {"nid": int64[N], "x": float64[N], ...}
+conn = parse_keyword(kf, "ElementShell")["nodes"]   # int64[N, 4]
+```
+
+**Rust** — the same schema via a builder (what the Python classes lower to):
+
+```rust
+use dynars::schema::{parse_schema, Card, Schema};
+
+let node = Schema::new("NODE")
+    .card(Card::new().int("nid", 8).float("x", 16).float("y", 16).float("z", 16));
+let t = parse_schema(&parsed, &node);
+let ids = t.column("nid").unwrap().as_int().unwrap();
+```
+
+Runnable examples: `examples/schema_demo.rs` and `examples/schema_demo.py`.
+
+Scope: fixed `K`-cards-per-entity layouts (repeating or single-entity),
+`int`/`float`/`str` and array fields, fixed/long/free formats. *Conditional* or
+*count-driven* cards (e.g. `*DEFINE_CURVE`) are out of scope and stay in Rust or
+the generic `Keyword` model.
+
 ## Design
 
 The two capabilities are deliberately separate, and marshalling is additive —
@@ -146,6 +200,10 @@ the include-tree path is unchanged and pays nothing for the new features.
 - **Owned model + typed structs** (`parser::Keyword`, `typed`): an editable,
   allocation-backed view for round-trip editing, plus example typed structs
   (`Part`, `MatElastic`) that any keyword can follow.
+- **Schemas** (`schema`): a declarative keyword layout (cards → typed fields)
+  parsed into columnar `Table`s. Single-card repeating keywords parse in parallel
+  like the built-ins; multi-card ones parse sequentially. The Python `@keyword`
+  classes lower to the exact same `Schema`, so there is one parser underneath.
 
 ### Card formats
 
@@ -166,6 +224,12 @@ nodes), warm page cache:
 | Block index (mmap + split) | ~15 GB/s |
 | Node parse → arrays (Rust) | ~97 M nodes/s (51 ms) |
 | Node parse → numpy (Python) | ~82 M nodes/s (61 ms) |
+| Node parse via **schema** (Rust) | ~56 M nodes/s (~1.7× hardcoded) |
+| Node parse via **schema** (Python) | ~64 M nodes/s (~1.3× hardcoded) |
+
+Schema parsing trades ~1.3–1.7× against the hand-specialized parsers for the
+ability to marshal any keyword with no recompile — still tens of millions of
+entities per second. Reproduce with `cargo run --release --example bench_schema`.
 
 The multi-file number roughly doubled after switching the scanner from `read()`
 to `mmap` (eliminating a copy of every file). Single-file parallel scanning is

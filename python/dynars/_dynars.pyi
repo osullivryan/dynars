@@ -63,6 +63,15 @@ class KeywordFile:
         """
         Number of keyword blocks in the file.
         """
+    def parse_schema(self, /, keyword: str, cards: Sequence[Sequence[tuple[str, str, int, int]]], repeat: bool = False) -> dict:
+        """
+        Parse a keyword against a user-defined schema, returning a dict of
+        columns (numpy arrays for numeric fields, lists for strings).
+        
+        Low-level: the Python `@keyword` class layer lowers to this. `cards`
+        is a list of cards, each a list of `(name, type, width, count)` field
+        tuples where `type` is "int" | "float" | "str".
+        """
     def set_keyword(self, /, index: int, name: str, cards: Sequence[Sequence[str]], options: Sequence[str] |None = None) -> None:
         """
         Replace a block's keyword. Cards are re-emitted in free format; the

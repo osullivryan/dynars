@@ -2,6 +2,7 @@ pub mod bulk;
 pub mod include_tree;
 pub mod keyword;
 pub mod parser;
+pub mod schema;
 pub mod testgen;
 pub mod typed;
 
@@ -84,6 +85,7 @@ mod python_bindings {
 
     use crate::keyword::ParsedFile;
     use crate::parser::Keyword;
+    use crate::schema::{Card, Column, FieldSpec, FieldType, Schema};
 
     /// A parsed LS-DYNA keyword file: keyword blocks with lossless round-trip,
     /// columnar bulk access as numpy arrays, and block-level editing.
@@ -195,6 +197,80 @@ mod python_bindings {
             let flat: Vec<f64> = arr.iter().copied().collect();
             crate::bulk::update_node_coords(&mut self.inner, &flat)
                 .map_err(pyo3::exceptions::PyValueError::new_err)
+        }
+
+        /// Parse a keyword against a user-defined schema, returning a dict of
+        /// columns (numpy arrays for numeric fields, lists for strings).
+        ///
+        /// Low-level: the Python `@keyword` class layer lowers to this. `cards`
+        /// is a list of cards, each a list of `(name, type, width, count)` field
+        /// tuples where `type` is "int" | "float" | "str".
+        #[pyo3(signature = (keyword, cards, repeat=false))]
+        fn parse_schema<'py>(
+            &self,
+            py: Python<'py>,
+            keyword: String,
+            cards: Vec<Vec<(String, String, usize, usize)>>,
+            repeat: bool,
+        ) -> PyResult<Bound<'py, PyDict>> {
+            let mut schema = Schema::new(&keyword);
+            schema.repeat = repeat;
+            for card in cards {
+                let mut c = Card::new();
+                for (name, ty, width, count) in card {
+                    let ty = match ty.as_str() {
+                        "int" => FieldType::Int,
+                        "float" => FieldType::Float,
+                        "str" => FieldType::Str,
+                        other => {
+                            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                                "unknown field type '{}' (expected int/float/str)",
+                                other
+                            )));
+                        }
+                    };
+                    c.fields.push(FieldSpec { name, ty, width, count: count.max(1) });
+                }
+                schema.cards.push(c);
+            }
+
+            let table = py.detach(|| crate::schema::parse_schema(&self.inner, &schema));
+
+            let d = PyDict::new(py);
+            for (name, col) in table.columns {
+                match col {
+                    Column::Int { data, ncols } => {
+                        if ncols <= 1 {
+                            d.set_item(name, data.into_pyarray(py))?;
+                        } else {
+                            let rows = data.len() / ncols;
+                            let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
+                                .expect("int column shape");
+                            d.set_item(name, a.into_pyarray(py))?;
+                        }
+                    }
+                    Column::Float { data, ncols } => {
+                        if ncols <= 1 {
+                            d.set_item(name, data.into_pyarray(py))?;
+                        } else {
+                            let rows = data.len() / ncols;
+                            let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
+                                .expect("float column shape");
+                            d.set_item(name, a.into_pyarray(py))?;
+                        }
+                    }
+                    Column::Str { data, ncols } => {
+                        if ncols <= 1 {
+                            d.set_item(name, data)?;
+                        } else {
+                            let rows: Vec<Vec<String>> =
+                                data.chunks(ncols).map(|c| c.to_vec()).collect();
+                            d.set_item(name, rows)?;
+                        }
+                    }
+                }
+            }
+            Ok(d)
         }
 
         /// Whether any block has a pending edit.

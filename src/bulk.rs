@@ -61,7 +61,7 @@ fn estimate_lines(chunk: &[u8]) -> usize {
 
 /// True for comment (`$`) and blank lines, which carry no card data.
 #[inline]
-fn is_skippable(line: &[u8]) -> bool {
+pub(crate) fn is_skippable(line: &[u8]) -> bool {
     let indent = line.iter().take_while(|&&c| c == b' ' || c == b'\t').count();
     line.is_empty()
         || line.get(indent) == Some(&b'$')
@@ -72,7 +72,7 @@ fn is_skippable(line: &[u8]) -> bool {
 /// name matches `keyword`. Handles both the one-huge-block and
 /// many-small-blocks cases: a single 5M-node block fans out into many chunks,
 /// while many small blocks each contribute one.
-fn collect_chunks<'a>(parsed: &'a ParsedFile, keyword: &str) -> Vec<(&'a [u8], CardFormat)> {
+pub(crate) fn collect_chunks<'a>(parsed: &'a ParsedFile, keyword: &str) -> Vec<(&'a [u8], CardFormat)> {
     let max_chunks = rayon::current_num_threads() * 4;
     let mut chunks = Vec::new();
     for block in &parsed.blocks {
@@ -112,7 +112,7 @@ fn node_columns(line: &[u8], format: CardFormat) -> Vec<Field<'_>> {
 }
 
 #[inline]
-fn strip_eol(s: &[u8]) -> &[u8] {
+pub(crate) fn strip_eol(s: &[u8]) -> &[u8] {
     let mut end = s.len();
     while end > 0 && matches!(s[end - 1], b'\r' | b'\n') {
         end -= 1;

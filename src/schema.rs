@@ -1,0 +1,372 @@
+//! Phase 5: user-defined keyword schemas.
+//!
+//! A [`Schema`] declares how to marshal a keyword: an ordered list of cards
+//! (lines), each an ordered list of typed fields, plus whether the card group
+//! repeats over the block body. The same schema drives both the Rust builder
+//! API here and the Python class API — Python lowers its `@keyword` classes to
+//! exactly this structure, so there is one parser and one source of truth.
+//!
+//! ```
+//! use dynars::schema::{Schema, Card};
+//! // *NODE: one card, repeating over the block (the default).
+//! let node = Schema::new("NODE").card(
+//!     Card::new().int("nid", 8).float("x", 16).float("y", 16).float("z", 16),
+//! );
+//! ```
+
+use rayon::prelude::*;
+
+use crate::bulk::{collect_chunks, is_skippable, strip_eol};
+use crate::keyword::{CardFormat, ParsedFile};
+use crate::parser::Field;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldType {
+    Int,
+    Float,
+    Str,
+}
+
+/// One field in a card: a name, a type, a fixed-format column width, and a
+/// count (`> 1` makes it an array, producing an `N`-wide column).
+#[derive(Debug, Clone)]
+pub struct FieldSpec {
+    pub name: String,
+    pub ty: FieldType,
+    pub width: usize,
+    pub count: usize,
+}
+
+/// One card (line) of a keyword: an ordered list of fields.
+#[derive(Debug, Clone, Default)]
+pub struct Card {
+    pub fields: Vec<FieldSpec>,
+}
+
+impl Card {
+    pub fn new() -> Self {
+        Card::default()
+    }
+    pub fn int(self, name: &str, width: usize) -> Self {
+        self.push(name, FieldType::Int, width, 1)
+    }
+    pub fn float(self, name: &str, width: usize) -> Self {
+        self.push(name, FieldType::Float, width, 1)
+    }
+    pub fn str(self, name: &str, width: usize) -> Self {
+        self.push(name, FieldType::Str, width, 1)
+    }
+    /// `count` consecutive integer fields as one `count`-wide column.
+    pub fn int_array(self, name: &str, count: usize, width: usize) -> Self {
+        self.push(name, FieldType::Int, width, count)
+    }
+    /// `count` consecutive float fields as one `count`-wide column.
+    pub fn float_array(self, name: &str, count: usize, width: usize) -> Self {
+        self.push(name, FieldType::Float, width, count)
+    }
+    fn push(mut self, name: &str, ty: FieldType, width: usize, count: usize) -> Self {
+        self.fields.push(FieldSpec {
+            name: name.to_string(),
+            ty,
+            width,
+            count: count.max(1),
+        });
+        self
+    }
+}
+
+/// A keyword's full layout.
+#[derive(Debug, Clone)]
+pub struct Schema {
+    /// Keyword name without `*`, matched case-insensitively (e.g. `NODE`).
+    pub keyword: String,
+    pub cards: Vec<Card>,
+    /// Whether the card group repeats over the whole block body (`*NODE`,
+    /// `*ELEMENT_*`, multiple `*PART`s). Defaults to `true` — the common case.
+    /// Use [`Schema::once`] for a keyword that defines a single entity per
+    /// block from which you want only the first (rare).
+    pub repeat: bool,
+}
+
+impl Schema {
+    pub fn new(keyword: &str) -> Self {
+        Schema { keyword: keyword.to_string(), cards: Vec::new(), repeat: true }
+    }
+    pub fn card(mut self, card: Card) -> Self {
+        self.cards.push(card);
+        self
+    }
+    /// Parse only the first entity in each matching block, not the whole body.
+    pub fn once(mut self) -> Self {
+        self.repeat = false;
+        self
+    }
+}
+
+/// A parsed column. Numeric columns are contiguous (`ncols == 1` scalar, or
+/// `ncols > 1` row-major for array fields); string columns are boxed values.
+#[derive(Debug, Clone)]
+pub enum Column {
+    Int { data: Vec<i64>, ncols: usize },
+    Float { data: Vec<f64>, ncols: usize },
+    Str { data: Vec<String>, ncols: usize },
+}
+
+impl Column {
+    pub fn rows(&self) -> usize {
+        match self {
+            Column::Int { data, ncols } => data.len() / (*ncols).max(1),
+            Column::Float { data, ncols } => data.len() / (*ncols).max(1),
+            Column::Str { data, ncols } => data.len() / (*ncols).max(1),
+        }
+    }
+    pub fn as_int(&self) -> Option<&[i64]> {
+        if let Column::Int { data, .. } = self { Some(data) } else { None }
+    }
+    pub fn as_float(&self) -> Option<&[f64]> {
+        if let Column::Float { data, .. } = self { Some(data) } else { None }
+    }
+    pub fn as_str(&self) -> Option<&[String]> {
+        if let Column::Str { data, .. } = self { Some(data) } else { None }
+    }
+    #[inline]
+    fn push(&mut self, raw: &[u8]) {
+        match self {
+            Column::Int { data, .. } => data.push(Field { raw }.as_i64().unwrap_or(0)),
+            Column::Float { data, .. } => data.push(Field { raw }.as_f64().unwrap_or(0.0)),
+            Column::Str { data, .. } => data.push(Field { raw }.as_str().to_string()),
+        }
+    }
+    fn extend(&mut self, other: Column) {
+        match (self, other) {
+            (Column::Int { data, .. }, Column::Int { data: d2, .. }) => data.extend(d2),
+            (Column::Float { data, .. }, Column::Float { data: d2, .. }) => data.extend(d2),
+            (Column::Str { data, .. }, Column::Str { data: d2, .. }) => data.extend(d2),
+            _ => unreachable!("column kinds always match — same schema"),
+        }
+    }
+}
+
+/// The columnar result of parsing a keyword against a schema. Columns are in
+/// schema field order (all cards flattened).
+#[derive(Debug, Clone, Default)]
+pub struct Table {
+    pub columns: Vec<(String, Column)>,
+}
+
+impl Table {
+    pub fn rows(&self) -> usize {
+        self.columns.first().map_or(0, |(_, c)| c.rows())
+    }
+    pub fn column(&self, name: &str) -> Option<&Column> {
+        self.columns.iter().find(|(n, _)| n == name).map(|(_, c)| c)
+    }
+}
+
+/// Parse every block matching `schema.keyword` into a columnar [`Table`].
+///
+/// Single-card repeating keywords (the bulk ones, `*NODE` / `*ELEMENT_*`) are
+/// parsed in parallel across cores; multi-card or single-entity keywords are
+/// parsed sequentially (they are almost always low volume).
+pub fn parse_schema(parsed: &ParsedFile, schema: &Schema) -> Table {
+    if schema.cards.is_empty() {
+        return Table::default();
+    }
+    if schema.cards.len() == 1 && schema.repeat {
+        parse_parallel(parsed, schema)
+    } else {
+        parse_sequential(parsed, schema)
+    }
+}
+
+/// Fresh, empty columns in schema field order.
+fn empty_columns(schema: &Schema) -> Vec<Column> {
+    let mut cols = Vec::new();
+    for card in &schema.cards {
+        for f in &card.fields {
+            cols.push(match f.ty {
+                FieldType::Int => Column::Int { data: Vec::new(), ncols: f.count },
+                FieldType::Float => Column::Float { data: Vec::new(), ncols: f.count },
+                FieldType::Str => Column::Str { data: Vec::new(), ncols: f.count },
+            });
+        }
+    }
+    cols
+}
+
+fn field_names(schema: &Schema) -> Vec<String> {
+    schema
+        .cards
+        .iter()
+        .flat_map(|c| c.fields.iter().map(|f| f.name.clone()))
+        .collect()
+}
+
+/// Parse one card line's fields into `cols` starting at column `ci`; returns
+/// the next column index. Every field pushes exactly one value per element, so
+/// all columns stay the same length (= row count) even on short/missing input.
+fn parse_card_line(line: &[u8], card: &Card, format: CardFormat, cols: &mut [Column], mut ci: usize) -> usize {
+    let line = strip_eol(line);
+    let free = format == CardFormat::Free || memchr::memchr(b',', line).is_some();
+
+    if free {
+        let mut toks = line.split(|&c| c == b',');
+        for f in &card.fields {
+            for _ in 0..f.count {
+                cols[ci].push(toks.next().unwrap_or(&[]));
+            }
+            ci += 1;
+        }
+    } else {
+        let mut off = 0;
+        for f in &card.fields {
+            // Long format doubles each field width (I8->I16, E16->E32, ...).
+            let fw = if format == CardFormat::Long { f.width * 2 } else { f.width };
+            for _ in 0..f.count {
+                let slice = if off >= line.len() {
+                    &[][..]
+                } else {
+                    &line[off..(off + fw).min(line.len())]
+                };
+                cols[ci].push(slice);
+                off += fw;
+            }
+            ci += 1;
+        }
+    }
+    ci
+}
+
+fn parse_sequential(parsed: &ParsedFile, schema: &Schema) -> Table {
+    let mut cols = empty_columns(schema);
+    let k = schema.cards.len();
+
+    for block in &parsed.blocks {
+        if !parsed.keyword_name(block).eq_ignore_ascii_case(&schema.keyword) {
+            continue;
+        }
+        let format = block.format;
+        let lines: Vec<&[u8]> = parsed
+            .body(block)
+            .split(|&c| c == b'\n')
+            .filter(|l| !is_skippable(l))
+            .collect();
+
+        let groups = if schema.repeat { lines.len() / k } else { usize::from(lines.len() >= k) };
+        for g in 0..groups {
+            let base = g * k;
+            let mut ci = 0;
+            for (kk, card) in schema.cards.iter().enumerate() {
+                ci = parse_card_line(lines[base + kk], card, format, &mut cols, ci);
+            }
+        }
+    }
+
+    Table { columns: field_names(schema).into_iter().zip(cols).collect() }
+}
+
+fn parse_parallel(parsed: &ParsedFile, schema: &Schema) -> Table {
+    let card = &schema.cards[0];
+    let chunks = collect_chunks(parsed, &schema.keyword);
+
+    let partials: Vec<Vec<Column>> = chunks
+        .par_iter()
+        .map(|(chunk, format)| {
+            let mut cols = empty_columns(schema);
+            for line in chunk.split(|&c| c == b'\n') {
+                if is_skippable(line) {
+                    continue;
+                }
+                parse_card_line(line, card, *format, &mut cols, 0);
+            }
+            cols
+        })
+        .collect();
+
+    let mut cols = empty_columns(schema);
+    for part in partials {
+        for (into, from) in cols.iter_mut().zip(part) {
+            into.extend(from);
+        }
+    }
+
+    Table { columns: field_names(schema).into_iter().zip(cols).collect() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keyword::ParsedFile;
+    use crate::parser::split_blocks;
+
+    fn parsed(src: &[u8]) -> ParsedFile {
+        ParsedFile::new("deck.k".into(), src.to_vec(), split_blocks(src))
+    }
+
+    #[test]
+    fn schema_reproduces_nodes() {
+        // Mixed: free-format and fixed-width node cards.
+        let fixed = format!("{:>8}{:>16.6}{:>16.6}{:>16.6}", 3, 4.0, 5.0, 6.0);
+        let src = format!("*NODE\n1,0.0,0.0,0.0\n2,1.0,2.0,3.0\n{}\n*END\n", fixed);
+        let p = parsed(src.as_bytes());
+
+        let schema = Schema::new("NODE").card(
+            Card::new().int("nid", 8).float("x", 16).float("y", 16).float("z", 16),
+        );
+        let t = parse_schema(&p, &schema);
+
+        assert_eq!(t.rows(), 3);
+        assert_eq!(t.column("nid").unwrap().as_int().unwrap(), &[1, 2, 3]);
+        assert_eq!(t.column("z").unwrap().as_float().unwrap(), &[0.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn schema_handles_multi_card_repeating() {
+        // *PART: free-text title line + data line, two parts.
+        let src = b"*PART\nsteel bracket\n1,2,3\nalu panel\n10,20,30\n";
+        let p = parsed(src);
+
+        let schema = Schema::new("PART")
+            .card(Card::new().str("title", 80))
+            .card(Card::new().int("pid", 8).int("secid", 8).int("mid", 8));
+        let t = parse_schema(&p, &schema);
+
+        assert_eq!(t.rows(), 2);
+        assert_eq!(t.column("title").unwrap().as_str().unwrap(), &["steel bracket", "alu panel"]);
+        assert_eq!(t.column("pid").unwrap().as_int().unwrap(), &[1, 10]);
+        assert_eq!(t.column("mid").unwrap().as_int().unwrap(), &[3, 30]);
+    }
+
+    #[test]
+    fn schema_array_field_makes_a_wide_column() {
+        // *ELEMENT_SHELL: eid, pid, 4 nodes as one 4-wide column.
+        let src = b"*ELEMENT_SHELL\n1,10,1,2,3,4\n2,10,5,6,7,8\n";
+        let p = parsed(src);
+
+        let schema = Schema::new("ELEMENT_SHELL").card(
+            Card::new().int("eid", 8).int("pid", 8).int_array("nodes", 4, 8),
+        );
+        let t = parse_schema(&p, &schema);
+
+        assert_eq!(t.rows(), 2);
+        let nodes = t.column("nodes").unwrap();
+        assert_eq!(nodes.rows(), 2);
+        assert_eq!(nodes.as_int().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8]); // row-major 2x4
+    }
+
+    #[test]
+    fn schema_single_entity_per_block() {
+        // repeat=false: one row per matching block.
+        let src = b"*MAT_ELASTIC\n1,7.85e-9,210000.0,0.3\n*MAT_ELASTIC\n2,2.7e-9,70000.0,0.33\n";
+        let p = parsed(src);
+
+        let schema = Schema::new("MAT_ELASTIC").card(
+            Card::new().int("mid", 8).float("ro", 16).float("e", 16).float("pr", 16),
+        );
+        let t = parse_schema(&p, &schema);
+
+        assert_eq!(t.rows(), 2);
+        assert_eq!(t.column("mid").unwrap().as_int().unwrap(), &[1, 2]);
+        assert_eq!(t.column("e").unwrap().as_float().unwrap(), &[210000.0, 70000.0]);
+    }
+}
