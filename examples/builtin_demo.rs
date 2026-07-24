@@ -17,9 +17,12 @@ fn main() {
     for (i, (x, y, z)) in [(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)].iter().enumerate() {
         deck += &format!("{:>8}{:>16.6}{:>16.6}{:>16.6}\n", i + 1, x, y, z);
     }
+    // Two materials = two separate *MAT_ELASTIC blocks (one material each, as
+    // in a real deck). parse() gathers *every* matching block into one table.
     deck += "\
 *MAT_ELASTIC
 1,7.85e-9,210000.0,0.3
+*MAT_ELASTIC
 2,2.70e-9,70000.0,0.33
 *END
 ";
@@ -30,9 +33,15 @@ fn main() {
     println!("built-in keyword library: {} keywords\n", keywords::count());
 
     // Parse a keyword straight from the library — no declaration needed. The
-    // name is a constant, so it autocompletes and can't be mistyped.
+    // name is a constant, so it autocompletes and can't be mistyped. Every
+    // *MAT_ELASTIC block in the file becomes one row (here: 2 blocks -> 2 rows).
+    let n_blocks = parsed
+        .blocks
+        .iter()
+        .filter(|b| parsed.keyword_name(b).eq_ignore_ascii_case(names::MAT_ELASTIC))
+        .count();
     let mats = parse_schema(&parsed, &keywords::schema(names::MAT_ELASTIC).unwrap());
-    println!("MAT_ELASTIC (built-in schema) — {} rows", mats.rows());
+    println!("MAT_ELASTIC — {} blocks in file, aggregated into {} rows", n_blocks, mats.rows());
     println!("  MID = {:?}", mats.column("MID").unwrap().as_int().unwrap());
     println!("  E   = {:?}", mats.column("E").unwrap().as_float().unwrap());
 
