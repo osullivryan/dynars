@@ -39,6 +39,23 @@ maturin build --release
 pip install target/wheels/dynars-*.whl
 ```
 
+The extension is built with pyo3 `abi3-py39`, so each build produces **one wheel
+per platform** that works on CPython 3.9+ (no per-version matrix).
+
+### Cross-platform wheels & release
+
+`.github/workflows/release.yml` builds wheels on GitHub Actions for
+**Linux (x86_64, aarch64) and Windows (x64)**, runs a per-OS import smoke-test,
+and (on a `v*` tag) can publish to PyPI. (macOS wheels are omitted to save CI
+minutes; macOS users can `pip install` from the sdist, which builds locally.) To
+cut a release:
+
+1. Configure a **PyPI trusted publisher** for this repo (project `dynars`,
+   workflow `release.yml`, environment `pypi`) — tokenless OIDC publishing.
+2. Uncomment the `publish:` job in the workflow.
+3. Bump the version in `pyproject.toml`/`Cargo.toml`, tag `vX.Y.Z`, and push —
+   CI builds all platforms and publishes.
+
 `numpy` is a runtime dependency of the Python package.
 
 ### Rust / CLI
