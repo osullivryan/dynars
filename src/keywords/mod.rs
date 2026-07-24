@@ -23,6 +23,10 @@ use crate::schema::{Card, FieldSpec, FieldType, Schema};
 
 mod data;
 
+/// Typo-proof `&str` constants for every built-in keyword name, e.g.
+/// `dynars::keywords::names::MAT_ELASTIC`.
+pub mod names;
+
 /// Field type in the compact static table.
 #[derive(Debug, Clone, Copy)]
 pub enum T {

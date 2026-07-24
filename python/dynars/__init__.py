@@ -4,6 +4,7 @@ from dynars._dynars import (
     parse_include_tree,
     parse_keyword_file,
 )
+from dynars import kw  # keyword-name constants (dynars.kw.MAT_ELASTIC)
 from dynars.schema import (
     Card,
     Float,
@@ -29,4 +30,5 @@ __all__ = [
     "Str",
     "IntArray",
     "FloatArray",
+    "kw",
 ]

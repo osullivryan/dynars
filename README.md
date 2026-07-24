@@ -214,6 +214,10 @@ A `@keyword` class / `#[derive(Keyword)]` with the same name overrides the
 built-in. The library covers each keyword's *static* card layout; keywords with
 conditional or count-driven cards parse their base layout (see `codegen/README.md`).
 
+To avoid magic strings, every keyword name is also a generated, autocompletable
+constant — `dynars.kw.MAT_ELASTIC` in Python, `dynars::keywords::names::MAT_ELASTIC`
+in Rust.
+
 Scope: fixed `K`-cards-per-entity layouts (repeating or single-entity),
 `int`/`float`/`str` and array fields, fixed/long/free formats. *Conditional* or
 *count-driven* cards (e.g. `*DEFINE_CURVE`) are out of scope and stay in Rust or
