@@ -1,0 +1,32 @@
+[package]
+name = "dynars"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "dynars"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "dynars"
+path = "src/main.rs"
+
+[features]
+default = []
+python = ["pyo3", "numpy"]
+
+[dependencies]
+rayon = "1.10"
+memmap2 = "0.9"
+memchr = "2.7"
+dashmap = "6"
+crossbeam = "0.8"
+clap = { version = "4", features = ["derive"] }
+pyo3 = { version = "0.29", features = ["extension-module", "experimental-inspect"], optional = true }
+numpy = { version = "0.29", optional = true }
+lexical-core = "1.0.6"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

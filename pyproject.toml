@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dynars"
+version = "0.1.0"
+description = "High-performance LS-DYNA keyword file include tree parser"
+requires-python = ">=3.9"
+
+[tool.maturin]
+features = ["python"]
+module-name = "dynars._dynars"
+python-source = "python"
+# NOTE: `generate-stubs` is NOT a pyproject key (maturin silently ignores it).
+# Regenerate python/dynars/_dynars.pyi with:
+#   maturin generate-stubs --features python --out python/dynars
+# Requires pyo3's `experimental-inspect` feature (enabled in Cargo.toml).
