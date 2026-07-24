@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="dynars" width="520">
+  <img src="assets/logo.png" alt="dynars" width="520">
 </p>
 
 High-performance LS-DYNA keyword file parser, written in Rust with first-class
