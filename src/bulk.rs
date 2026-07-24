@@ -200,6 +200,11 @@ fn col<'a>(line: &'a [u8], widths: &[usize], k: usize) -> &'a [u8] {
 
 /// Collect all `*NODE` blocks into parallel id/coordinate arrays, parsing
 /// chunks across all cores.
+///
+/// Single pass per chunk into local vecs, then concatenated. A two-pass
+/// variant (count, allocate once, write into disjoint slices) was measured
+/// *slower* — the counting scan over the data costs more than the concat copy
+/// it removes.
 pub fn parse_nodes(parsed: &ParsedFile) -> NodeArrays {
     let chunks = collect_chunks(parsed, "NODE");
     let partials: Vec<(Vec<i64>, Vec<f64>)> = chunks

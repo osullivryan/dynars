@@ -551,7 +551,17 @@ impl<'a> Field<'a> {
     /// Parse as a float, tolerating LS-DYNA / Fortran quirks (see
     /// [`parse_dyna_float`]).
     pub fn as_f64(&self) -> Option<f64> {
-        parse_dyna_float(self.as_str())
+        let t = self.trimmed();
+        if t.is_empty() {
+            return None;
+        }
+        // Fast path: lexical on the raw bytes — no UTF-8 validation, no str
+        // round-trip. Handles standard/scientific floats, the vast majority.
+        if let Ok(v) = lexical_core::parse::<f64>(t) {
+            return Some(v);
+        }
+        // Fallback: Fortran quirks (D exponent, implicit exponent, leading '+').
+        parse_dyna_float(std::str::from_utf8(t).ok()?)
     }
 }
 

@@ -164,8 +164,8 @@ nodes), warm page cache:
 | `*INCLUDE` scan, single large file (macOS, fault-bound) | ~15 GB/s |
 | `*INCLUDE` scan, many warm files (mmap, no copy) | ~45 GB/s |
 | Block index (mmap + split) | ~15 GB/s |
-| Node parse → arrays (Rust) | ~73 M nodes/s (68 ms) |
-| Node parse → numpy (Python) | ~64 M nodes/s (78 ms) |
+| Node parse → arrays (Rust) | ~97 M nodes/s (51 ms) |
+| Node parse → numpy (Python) | ~82 M nodes/s (61 ms) |
 
 The multi-file number roughly doubled after switching the scanner from `read()`
 to `mmap` (eliminating a copy of every file). Single-file parallel scanning is
