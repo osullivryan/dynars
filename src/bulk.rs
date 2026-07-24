@@ -49,6 +49,16 @@ fn line_chunks(body: &[u8], max_chunks: usize) -> Vec<&[u8]> {
     bounds.windows(2).map(|w| &body[w[0]..w[1]]).collect()
 }
 
+/// Estimate the number of data lines in a chunk from its byte length divided
+/// by the first line's stride. Exact for uniform fixed-width data (the common
+/// case), a good hint otherwise — used only to pre-size vecs, never for
+/// correctness.
+#[inline]
+fn estimate_lines(chunk: &[u8]) -> usize {
+    let stride = memchr::memchr(b'\n', chunk).map_or(chunk.len(), |i| i + 1).max(1);
+    (chunk.len() / stride).max(1)
+}
+
 /// True for comment (`$`) and blank lines, which carry no card data.
 #[inline]
 fn is_skippable(line: &[u8]) -> bool {
@@ -210,8 +220,11 @@ pub fn parse_nodes(parsed: &ParsedFile) -> NodeArrays {
     let partials: Vec<(Vec<i64>, Vec<f64>)> = chunks
         .par_iter()
         .map(|(chunk, format)| {
-            let mut ids = Vec::new();
-            let mut coords = Vec::new();
+            // Estimate line count from bytes / first-line stride (exact for
+            // uniform fixed-width data) so the vecs don't grow-and-copy.
+            let est = estimate_lines(chunk);
+            let mut ids = Vec::with_capacity(est);
+            let mut coords = Vec::with_capacity(est * 3);
             for line in chunk.split(|&c| c == b'\n') {
                 if is_skippable(line) {
                     continue;
@@ -297,9 +310,10 @@ fn parse_elements(parsed: &ParsedFile, keyword: &str, nodes_per_elem: usize) -> 
     let partials: Vec<(Vec<i64>, Vec<i64>, Vec<i64>)> = chunks
         .par_iter()
         .map(|(chunk, format)| {
-            let mut eids = Vec::new();
-            let mut pids = Vec::new();
-            let mut nodes = Vec::new();
+            let est = estimate_lines(chunk);
+            let mut eids = Vec::with_capacity(est);
+            let mut pids = Vec::with_capacity(est);
+            let mut nodes = Vec::with_capacity(est * nodes_per_elem);
             for line in chunk.split(|&c| c == b'\n') {
                 if is_skippable(line) {
                     continue;
