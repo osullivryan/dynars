@@ -1,3 +1,4 @@
+pub mod deck;
 pub mod include_tree;
 pub mod keyword;
 pub mod keywords;
@@ -6,6 +7,7 @@ pub mod results;
 pub mod schema;
 pub mod testgen;
 pub mod typed;
+pub mod validate;
 
 /// `#[derive(Keyword)]` / `#[derive(Card)]` for declaring keyword schemas as
 /// structs (see [`schema`]).
@@ -1126,6 +1128,201 @@ mod python_bindings {
                 .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
         }
     }
+
+    // ── Deck validation: typed rules, combinators, file scope ────────────────
+    use crate::validate;
+
+    fn py_to_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<validate::Value> {
+        if let Ok(i) = obj.extract::<i64>() {
+            return Ok(validate::Value::Int(i));
+        }
+        if let Ok(f) = obj.extract::<f64>() {
+            return Ok(validate::Value::Float(f));
+        }
+        if let Ok(s) = obj.extract::<String>() {
+            return Ok(validate::Value::Str(s));
+        }
+        Err(pyo3::exceptions::PyValueError::new_err("rule value must be int, float, or str"))
+    }
+
+    /// Reject typo'd keyword names up front (the Python "typed" guard).
+    fn check_keyword(kw: &str) -> PyResult<String> {
+        if crate::keywords::find(kw).is_some() {
+            Ok(kw.to_string())
+        } else {
+            Err(pyo3::exceptions::PyValueError::new_err(format!("unknown LS-DYNA keyword: *{kw}")))
+        }
+    }
+
+    /// A boolean predicate tree over card fields (tier 2). Evaluated in Rust.
+    #[pyclass(name = "Predicate", from_py_object)]
+    #[derive(Clone)]
+    pub struct PyPredicate {
+        inner: validate::Expr,
+    }
+
+    #[pymethods]
+    impl PyPredicate {
+        /// `field <cmp> value`.
+        #[staticmethod]
+        fn field(field: String, cmp: validate::Cmp, value: Bound<'_, pyo3::PyAny>) -> PyResult<Self> {
+            Ok(Self { inner: validate::Expr::field(field, cmp, py_to_value(&value)?) })
+        }
+        /// All sub-predicates must hold (logical AND).
+        #[staticmethod]
+        fn all_(preds: Vec<PyPredicate>) -> Self {
+            Self { inner: validate::Expr::all(preds.into_iter().map(|p| p.inner)) }
+        }
+        /// Any sub-predicate holds (logical OR).
+        #[staticmethod]
+        fn any_(preds: Vec<PyPredicate>) -> Self {
+            Self { inner: validate::Expr::any(preds.into_iter().map(|p| p.inner)) }
+        }
+        /// Negation.
+        #[staticmethod]
+        fn not_(pred: PyPredicate) -> Self {
+            Self { inner: validate::Expr::not(pred.inner) }
+        }
+    }
+
+    /// A built-in declarative rule. Constructed in Python, executed in Rust.
+    #[pyclass(name = "Rule", from_py_object)]
+    #[derive(Clone)]
+    pub struct PyRule {
+        inner: validate::Rule,
+    }
+
+    #[pymethods]
+    impl PyRule {
+        #[staticmethod]
+        fn keyword_forbidden(keyword: String) -> PyResult<Self> {
+            Ok(Self { inner: validate::Rule::keyword_forbidden(check_keyword(&keyword)?) })
+        }
+        #[staticmethod]
+        fn field_forbidden_values(keyword: String, field: String, values: Vec<Bound<'_, pyo3::PyAny>>) -> PyResult<Self> {
+            let vals: PyResult<Vec<_>> = values.iter().map(py_to_value).collect();
+            Ok(Self { inner: validate::Rule::field_forbidden_values(check_keyword(&keyword)?, field, vals?) })
+        }
+        #[staticmethod]
+        #[pyo3(signature = (keyword, require, when=None))]
+        fn field_required(keyword: String, require: PyPredicate, when: Option<PyPredicate>) -> PyResult<Self> {
+            Ok(Self { inner: validate::Rule::field_required(check_keyword(&keyword)?, when.map(|w| w.inner), require.inner) })
+        }
+        #[staticmethod]
+        fn include_missing() -> Self {
+            Self { inner: validate::Rule::include_missing() }
+        }
+        /// Set severity (default Error).
+        fn with_severity(&self, severity: validate::Severity) -> Self {
+            Self { inner: self.inner.clone().with_severity(severity) }
+        }
+        /// Apply only within files whose path contains one of `patterns`.
+        fn only_in(&self, patterns: Vec<String>) -> Self {
+            Self { inner: self.inner.clone().only_in(patterns) }
+        }
+        /// Apply everywhere except files whose path contains one of `patterns`.
+        fn except_in(&self, patterns: Vec<String>) -> Self {
+            Self { inner: self.inner.clone().except_in(patterns) }
+        }
+    }
+
+    /// One rule violation with a clickable `file:line`.
+    #[pyclass(name = "Finding", skip_from_py_object)]
+    #[derive(Clone)]
+    pub struct PyFinding {
+        #[pyo3(get)]
+        rule: String,
+        #[pyo3(get)]
+        severity: validate::Severity,
+        #[pyo3(get)]
+        keyword: String,
+        #[pyo3(get)]
+        file: String,
+        #[pyo3(get)]
+        line: usize,
+        #[pyo3(get)]
+        message: String,
+    }
+
+    #[pymethods]
+    impl PyFinding {
+        fn location(&self) -> String {
+            format!("{}:{}", self.file, self.line)
+        }
+        fn __repr__(&self) -> String {
+            format!("Finding({:?}, {}, {}:{}, {:?})", self.severity, self.rule, self.file, self.line, self.message)
+        }
+    }
+
+    /// The result of a validation run.
+    #[pyclass(name = "Report")]
+    pub struct PyReport {
+        #[pyo3(get)]
+        findings: Vec<PyFinding>,
+    }
+
+    #[pymethods]
+    impl PyReport {
+        fn is_clean(&self) -> bool {
+            !self.findings.iter().any(|f| f.severity == validate::Severity::Error)
+        }
+        fn count(&self, severity: validate::Severity) -> usize {
+            self.findings.iter().filter(|f| f.severity == severity).count()
+        }
+        fn __len__(&self) -> usize {
+            self.findings.len()
+        }
+        fn __repr__(&self) -> String {
+            format!("Report({} findings)", self.findings.len())
+        }
+    }
+
+    /// Collects typed rules and runs them over a deck — entirely in Rust, with
+    /// the GIL released, checks fanned out in parallel.
+    #[pyclass(name = "Validator")]
+    pub struct PyValidator {
+        rules: Vec<validate::Rule>,
+    }
+
+    #[pymethods]
+    impl PyValidator {
+        #[new]
+        #[pyo3(signature = (rules=None))]
+        fn new(rules: Option<Vec<PyRule>>) -> Self {
+            Self { rules: rules.unwrap_or_default().into_iter().map(|r| r.inner).collect() }
+        }
+        /// Append a rule.
+        fn add(&mut self, rule: PyRule) {
+            self.rules.push(rule.inner);
+        }
+        /// Parse `path` (following includes) and evaluate every rule in parallel.
+        #[pyo3(signature = (path))]
+        fn run(&self, py: Python<'_>, path: String) -> PyResult<PyReport> {
+            let rules = self.rules.clone();
+            let report = py
+                .detach(move || {
+                    let mut v = validate::Validator::new();
+                    for r in rules {
+                        v = v.rule(r);
+                    }
+                    v.run(&path)
+                })
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            let findings = report
+                .findings
+                .into_iter()
+                .map(|f| PyFinding {
+                    rule: f.rule,
+                    severity: f.severity,
+                    keyword: f.keyword,
+                    file: f.file.display().to_string(),
+                    line: f.line,
+                    message: f.message,
+                })
+                .collect();
+            Ok(PyReport { findings })
+        }
+    }
 }
 
 /// High-performance LS-DYNA keyword file include tree parser.
@@ -1176,4 +1373,26 @@ pub mod _dynars {
 
     #[pymodule_export]
     use super::results::FsiforField;
+
+    // Deck validation
+    #[pymodule_export]
+    use super::python_bindings::PyValidator;
+
+    #[pymodule_export]
+    use super::python_bindings::PyRule;
+
+    #[pymodule_export]
+    use super::python_bindings::PyPredicate;
+
+    #[pymodule_export]
+    use super::python_bindings::PyFinding;
+
+    #[pymodule_export]
+    use super::python_bindings::PyReport;
+
+    #[pymodule_export]
+    use super::validate::Cmp;
+
+    #[pymodule_export]
+    use super::validate::Severity;
 }
