@@ -2,11 +2,44 @@
 High-performance LS-DYNA keyword file include tree parser.
 """
 
+import enum
 from collections.abc import Sequence
 from typing import Any, final
 
 import numpy as np
 import numpy.typing as npt
+
+@final
+class StateBlock(enum.Enum):
+    """A d3plot per-state result block (pass to `D3plot.block`)."""
+    Displacement = ...
+    Velocity = ...
+    Acceleration = ...
+    Solid = ...
+    ThickShell = ...
+    Beam = ...
+    Shell = ...
+
+@final
+class InterfaceField(enum.Enum):
+    """A per-segment field in an intfor file (pass to `D3plot.segment_field`)."""
+    Wear = ...
+    Pressure = ...
+    Shear = ...
+    Force = ...
+    Gap = ...
+
+@final
+class FsiforField(enum.Enum):
+    """A per-segment field in an FSIFOR (ALE) file (pass to `D3plot.segment_field`)."""
+    Pressure = ...
+    ForceX = ...
+    ForceY = ...
+    ForceZ = ...
+    RelativeVelocity = ...
+    VelocityX = ...
+    VelocityY = ...
+    VelocityZ = ...
 
 @final
 class IncludeNode:
@@ -98,6 +131,11 @@ class Binout:
         channel's native dtype; a directory returns list[str] of child names.
         Empty path returns the top-level datasets.
         """
+    def read_many(self, /, paths: Sequence[Sequence[str]]) -> list[npt.NDArray[Any] | list[str]]:
+        """
+        Read many paths concurrently (lock-free, GIL released), returning a list
+        aligned with `paths`. Faster than a Python loop when pulling many channels.
+        """
     def read_f64(self, /, path: Sequence[str]) -> npt.NDArray[np.float64]:
         """Read a leaf and coerce to float64 (any numeric dtype)."""
     def read_time_series(self, /, path: Sequence[str]) -> dict:
@@ -126,21 +164,55 @@ class D3plot:
         """Per-node displacement magnitude at `state` as a (NUMNP,) array."""
     def max_displacement_final(self, /) -> float:
         """Peak nodal displacement magnitude at the final state."""
-    def available_blocks(self, /) -> list[str]:
+    def initial_coordinates(self, /) -> npt.NDArray[np.floating]:
+        """Initial (reference) node coordinates as an (N, 3) array."""
+    def shell_connectivity(self, /) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """(conn (n_shells, 4) one-based node numbers, parts (n_shells,))."""
+    def solid_connectivity(self, /) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """(conn (n_solids, 8) one-based node numbers, parts (n_solids,))."""
+    def node_ids(self, /) -> npt.NDArray[np.int64]:
+        """User node IDs (default 1..=N)."""
+    def shell_ids(self, /) -> npt.NDArray[np.int64]:
+        """User shell element IDs."""
+    def solid_ids(self, /) -> npt.NDArray[np.int64]:
+        """User solid element IDs."""
+    def part_ids(self, /) -> npt.NDArray[np.int64]:
+        """User part/material IDs."""
+    @property
+    def filetype(self, /) -> int:
+        """Control-block file type (1 = d3plot, 4 = intfor, ...)."""
+    @property
+    def is_interface_force(self, /) -> bool:
         """
-        Result blocks present: any of 'displacement', 'velocity',
-        'acceleration', 'solid', 'tshell', 'beam', 'shell'.
+        Whether this is an interface-force (intfor) database. In an intfor file
+        the contact segments are in the shell slot: block(StateBlock.Shell) gives
+        (n_states, n_segments, nv2d); split with interface_fields().
         """
-    def block(self, /, name: str) -> npt.NDArray[np.floating]:
+    @property
+    def is_fsifor(self, /) -> bool:
+        """Whether this is an FSIFOR (ALE) interface-force file (use FsiforField)."""
+    def segment_field(
+        self, /, field: InterfaceField | FsiforField, states: int | Sequence[int] | None = None
+    ) -> npt.NDArray[np.floating]:
         """
-        Generic result extraction: a result block across all states as an
-        (n_states, count, vars) array in the file's native precision (float32
-        for single-precision d3plots, float64 for double). Node blocks are
-        (..., 3); element blocks return the solver's raw packed per-entity
-        layout (stresses, strains, history vars per integration point/layer)
-        for you to reshape.
+        Extract one interface-force field's values from the per-segment block as
+        (n_states, n_segments, k). `field` is an InterfaceField (intfor) or
+        FsiforField (FSIFOR). Raises if the field is absent from this file.
         """
-    def block_layout(self, /, name: str) -> tuple[int, int] | None:
+    def available_blocks(self, /) -> list[StateBlock]:
+        """The result blocks present in this d3plot."""
+    def block(self, /, block: StateBlock, states: int | Sequence[int] | None = None) -> npt.NDArray[np.floating]:
+        """
+        Generic result extraction: a result block as an (n, count, vars) array in
+        the file's native precision (float32 single / float64 double). `block` is
+        a StateBlock. `states` selects which states: None = all; an int (negatives
+        from the end) = one; a sequence = those. When the selection is
+        single-precision and contiguous within one family file, the result is a
+        zero-copy read-only view over the memory map; otherwise it is copied (in
+        parallel for large blocks). Node blocks are (..., 3); element blocks
+        return the solver's raw packed per-entity layout for you to reshape.
+        """
+    def block_layout(self, /, block: StateBlock) -> tuple[int, int] | None:
         """The (count, vars_per_entity) layout of a result block, or None."""
 
 @final
@@ -163,6 +235,67 @@ class BinoutEditor:
         """The whole tree serialized as LSDA bytes."""
     def write(self, /, path: str) -> None:
         """Write the whole tree to `path` as an LSDA (binout) file."""
+
+@final
+class D3plotWriter:
+    """
+    Build a single-precision d3plot from a mesh (nodes + shell/solid
+    connectivity) and per-state nodal results (deformed coordinates, and
+    optionally velocity/acceleration). v1 scope: NDIM=4 structural layout,
+    implicit numbering, no global variables, no per-element result fields.
+    Output reads back through dynars and open-lasso-python.
+    """
+    def __init__(self, /, node_coords: npt.NDArray[np.floating], title: str | None = None) -> None: ...
+    def add_shells(self, /, conn: npt.NDArray[np.integer], parts: Sequence[int] | None = None) -> None:
+        """Add shells: `conn` is (M, 4) one-based node ids; `parts` optional (M,) part ids."""
+    def add_solids(self, /, conn: npt.NDArray[np.integer], parts: Sequence[int] | None = None) -> None:
+        """Add solids: `conn` is (M, 8) one-based node ids; `parts` optional (M,) part ids."""
+    def set_ids(
+        self,
+        /,
+        node_ids: Sequence[int] | None = None,
+        shell_ids: Sequence[int] | None = None,
+        solid_ids: Sequence[int] | None = None,
+        part_ids: Sequence[int] | None = None,
+    ) -> None:
+        """User IDs written into the NARBS numbering section (default 1..N)."""
+    def set_solid_results(self, /, results: npt.NDArray[np.floating]) -> None:
+        """Per-solid result block (n_states, n_solids, vars). Sets NV3D."""
+    def set_shell_results(self, /, results: npt.NDArray[np.floating]) -> None:
+        """Per-shell result block (n_states, n_shells, vars). Sets NV2D."""
+    def add_state(
+        self,
+        /,
+        time: float,
+        disp: npt.NDArray[np.floating],
+        vel: npt.NDArray[np.floating] | None = None,
+        acc: npt.NDArray[np.floating] | None = None,
+    ) -> None:
+        """Append a state: `time`, deformed coords `disp` (N,3), optional `vel`/`acc` (N,3)."""
+    def to_bytes(self, /) -> bytes:
+        """The d3plot as bytes."""
+    def write(self, /, path: str) -> None:
+        """Write the d3plot to `path`."""
+
+@final
+class D3plotEditor:
+    """
+    Edit an existing d3plot family in place: overwrite node coordinates or a
+    result block at chosen states; everything else is preserved byte-for-byte.
+    """
+    def __init__(self, /, path: str) -> None: ...
+    @property
+    def num_nodes(self, /) -> int: ...
+    @property
+    def num_states(self, /) -> int: ...
+    def set_block(self, /, block: StateBlock, state: int, data: npt.NDArray[np.floating]) -> None:
+        """Overwrite a result block at `state` with `data` (count, vars)."""
+    def set_node_coordinates(self, /, state: int, coords: npt.NDArray[np.floating]) -> None:
+        """Overwrite deformed node coordinates (N, 3) at `state`."""
+    def save(self, /) -> None:
+        """Overwrite the original files in place."""
+    def write(self, /, path: str) -> None:
+        """Write the edited family to a new base path (`path`, `path01`, ...)."""
 
 def parse_binout(pattern: str) -> Binout:
     """Open an LS-DYNA binout for reading."""

@@ -1,7 +1,80 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use super::diskfile::Diskfile;
 use super::LsdaError;
+
+/// An immutable, lock-free binout tree, frozen from the `Arc<Mutex<Symbol>>`
+/// tree once parsing is done. Reads (including concurrent ones) traverse it
+/// without any locking.
+pub enum SymNode {
+    Dir(BTreeMap<Vec<u8>, SymNode>),
+    Leaf(SymMeta),
+}
+
+/// Location + type of one leaf dataset in the mapped file(s).
+pub struct SymMeta {
+    pub type_: u8,
+    pub offset: u64,
+    pub length: u64,
+    pub file_index: usize,
+    pub name_len: usize,
+}
+
+/// Recursively freeze the mutable symbol tree into a lock-free [`SymNode`].
+pub fn freeze(sym: &Arc<Mutex<Symbol>>) -> SymNode {
+    let s = sym.lock().unwrap();
+    if s.type_ == 0 {
+        let mut m = BTreeMap::new();
+        for (name, child) in &s.children {
+            m.insert(name.clone(), freeze(child));
+        }
+        SymNode::Dir(m)
+    } else {
+        SymNode::Leaf(SymMeta {
+            type_: s.type_,
+            offset: s.offset,
+            length: s.length,
+            file_index: s.file_index.unwrap_or(0),
+            name_len: s.name.len(),
+        })
+    }
+}
+
+impl SymNode {
+    /// Child node by name (only meaningful for directories).
+    pub fn child(&self, seg: &[u8]) -> Option<&SymNode> {
+        match self {
+            SymNode::Dir(m) => m.get(seg),
+            SymNode::Leaf(_) => None,
+        }
+    }
+
+    /// Read this node: a directory yields its (sorted) child names; a leaf reads
+    /// its data straight from the memory map (no syscalls, no locks).
+    pub fn read(&self, files: &[Diskfile]) -> Result<ReadResult, LsdaError> {
+        match self {
+            SymNode::Dir(m) => Ok(ReadResult::Directory(m.keys().cloned().collect())),
+            SymNode::Leaf(meta) => {
+                let file = files
+                    .get(meta.file_index)
+                    .ok_or_else(|| LsdaError::SymbolNotFound("file index out of bounds".into()))?;
+                let count = meta.length as usize;
+                if count == 0 {
+                    return Ok(empty_result(meta.type_));
+                }
+                let elem_size = type_elem_size(meta.type_);
+                // Data starts at: offset + record header (comp2 bytes) + name bytes.
+                let byte_offset = (meta.offset + file.comp2 as u64 + meta.name_len as u64) as usize;
+                let byte_count = count * elem_size;
+                let buf = file
+                    .bytes()
+                    .get(byte_offset..byte_offset + byte_count)
+                    .ok_or_else(|| LsdaError::Conversion("symbol data past end of file".into()))?;
+                read_typed(buf, meta.type_, count, file.is_little_endian)
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Symbol {
@@ -27,44 +100,6 @@ impl Symbol {
     pub fn add_child(&mut self, name: Vec<u8>, child: Arc<Mutex<Symbol>>) {
         self.children.insert(name, child);
         self.length = self.children.len() as u64;
-    }
-
-    /// Read this symbol's data directly from the memory-mapped file (no syscalls).
-    pub fn lread(&self, files: &[Diskfile], start: usize, end: Option<usize>) -> Result<ReadResult, LsdaError> {
-        if self.type_ == 0 {
-            let mut keys: Vec<Vec<u8>> = self.children.keys().cloned().collect();
-            keys.sort();
-            return Ok(ReadResult::Directory(keys));
-        }
-
-        let file_index = self.file_index.ok_or_else(|| {
-            LsdaError::SymbolNotFound("no file associated with symbol".into())
-        })?;
-
-        let file = files.get(file_index).ok_or_else(|| {
-            LsdaError::SymbolNotFound("file index out of bounds".into())
-        })?;
-
-        let total = self.length as usize;
-        let end = end.unwrap_or(total).min(total);
-        let start = start.min(total);
-
-        if start >= end {
-            return Ok(empty_result(self.type_));
-        }
-
-        let elem_size = type_elem_size(self.type_);
-        // Data starts at: symbol offset + record header (comp2 bytes) + name bytes
-        let data_start = self.offset + file.comp2 as u64 + self.name.len() as u64;
-        let byte_offset = (data_start + (start as u64 * elem_size as u64)) as usize;
-        let byte_count = (end - start) * elem_size;
-
-        let buf = file
-            .bytes()
-            .get(byte_offset..byte_offset + byte_count)
-            .ok_or_else(|| LsdaError::Conversion("symbol data past end of file".into()))?;
-
-        read_typed(buf, self.type_, end - start, file.is_little_endian)
     }
 }
 

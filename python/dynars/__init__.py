@@ -2,8 +2,13 @@ from dynars._dynars import (
     Binout,
     BinoutEditor,
     D3plot,
+    D3plotEditor,
+    D3plotWriter,
+    FsiforField,
     IncludeNode,
+    InterfaceField,
     KeywordFile,
+    StateBlock,
     open_d3plot,
     parse_binout,
     parse_include_tree,
@@ -11,6 +16,9 @@ from dynars._dynars import (
 )
 from dynars import kw  # keyword-name constants (dynars.kw.MAT_ELASTIC)
 from dynars.binout import build_series
+
+# Friendly alias for the result-block enum (dynars.Block.Displacement).
+Block = StateBlock
 from dynars.schema import (
     Card,
     Float,
@@ -31,7 +39,13 @@ __all__ = [
     # binary results
     "Binout",
     "D3plot",
+    "D3plotWriter",
+    "D3plotEditor",
     "BinoutEditor",
+    "StateBlock",
+    "InterfaceField",
+    "FsiforField",
+    "Block",
     "build_series",
     "parse_binout",
     "open_d3plot",

@@ -21,7 +21,7 @@ mod python_bindings {
 
     use crate::keyword::IncludeNode as RustIncludeNode;
 
-    #[pyclass(name = "IncludeNode")]
+    #[pyclass(name = "IncludeNode", skip_from_py_object)]
     #[derive(Debug, Clone)]
     pub struct PyIncludeNode {
         #[pyo3(get)]
@@ -304,9 +304,10 @@ mod python_bindings {
 
     use crate::results::{
         BlockArray, Binout as RustBinout, BinoutEditor as RustBinoutEditor, D3plot as RustD3plot,
-        D3plotError, Data, LsdaError, ReadResult, StateBlock,
+        D3plotEditor as RustD3plotEditor, D3plotError, D3plotWriter as RustD3plotWriter, Data,
+        FsiforField, InterfaceField, LsdaError, ReadResult, StateBlock,
     };
-    use numpy::PyReadonlyArrayDyn;
+    use numpy::{PyReadonlyArray2, PyReadonlyArrayDyn};
 
     fn lsda_err(e: LsdaError) -> PyErr {
         let msg = e.to_string();
@@ -319,6 +320,44 @@ mod python_bindings {
 
     fn d3_err(e: D3plotError) -> PyErr {
         pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+    }
+
+    /// Flatten a float32/float64 numpy array to a `Vec<f64>` (row-major).
+    fn f64_vec(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<f64>> {
+        if let Ok(a) = obj.extract::<PyReadonlyArrayDyn<f64>>() {
+            return Ok(a.as_array().iter().copied().collect());
+        }
+        if let Ok(a) = obj.extract::<PyReadonlyArrayDyn<f32>>() {
+            return Ok(a.as_array().iter().map(|&x| x as f64).collect());
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err("expected a float32 or float64 numpy array"))
+    }
+
+    /// Like [`f64_vec`], also returning the array's last-axis length.
+    fn f64_vec_lastdim(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<(Vec<f64>, usize)> {
+        let vars = if let Ok(a) = obj.extract::<PyReadonlyArrayDyn<f64>>() {
+            a.as_array().shape().last().copied().unwrap_or(0)
+        } else if let Ok(a) = obj.extract::<PyReadonlyArrayDyn<f32>>() {
+            a.as_array().shape().last().copied().unwrap_or(0)
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err("expected a float32 or float64 numpy array"));
+        };
+        Ok((f64_vec(obj)?, vars))
+    }
+
+    /// Reshape flat connectivity into `(rows, cols)` + a 1-D parts array.
+    fn conn_to_py<'py>(
+        py: Python<'py>,
+        nodes: Vec<i64>,
+        parts: Vec<i64>,
+        cols: usize,
+    ) -> PyResult<(Bound<'py, pyo3::PyAny>, Bound<'py, pyo3::PyAny>)> {
+        let rows = if cols > 0 { nodes.len() / cols } else { 0 };
+        let conn = numpy::ndarray::Array2::from_shape_vec((rows, cols), nodes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+            .into_pyarray(py)
+            .into_any();
+        Ok((conn, parts.into_pyarray(py).into_any()))
     }
 
     /// A data leaf becomes the natural numpy dtype (zero-copy from the read
@@ -376,6 +415,16 @@ mod python_bindings {
             let segs: Vec<&str> = path.iter().map(String::as_str).collect();
             let r = py.detach(|| self.inner.read(&segs)).map_err(lsda_err)?;
             readresult_to_py(py, r)
+        }
+
+        /// Read many paths concurrently (lock-free, GIL released), returning a
+        /// list aligned with `paths`. Faster than a Python loop when pulling
+        /// many channels: the reads run in parallel across cores.
+        #[pyo3(signature = (paths))]
+        fn read_many<'py>(&self, py: Python<'py>, paths: Vec<Vec<String>>) -> PyResult<Vec<Bound<'py, pyo3::PyAny>>> {
+            let refs: Vec<Vec<&str>> = paths.iter().map(|p| p.iter().map(String::as_str).collect()).collect();
+            let results = py.detach(|| self.inner.read_many(&refs));
+            results.into_iter().map(|r| readresult_to_py(py, r.map_err(lsda_err)?)).collect()
         }
 
         /// Read a leaf and coerce to float64 (any numeric dtype).
@@ -462,31 +511,191 @@ mod python_bindings {
             py.detach(|| self.inner.max_displacement_final()).map_err(d3_err)
         }
 
-        /// Names of the result blocks present in this d3plot (any of
-        /// `displacement`, `velocity`, `acceleration`, `solid`, `tshell`,
-        /// `beam`, `shell`).
-        fn available_blocks(&self) -> Vec<String> {
-            BLOCK_NAMES
-                .iter()
-                .filter(|(_, b)| self.inner.block_layout(*b).is_some())
-                .map(|(n, _)| (*n).to_string())
+        /// Initial (reference) node coordinates as an `(N, 3)` array.
+        fn initial_coordinates<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::PyAny>> {
+            let v = self.inner.initial_coordinates().to_vec();
+            let rows = v.len() / 3;
+            let a = numpy::ndarray::Array2::from_shape_vec((rows, 3), v)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            Ok(a.into_pyarray(py).into_any())
+        }
+
+        /// Shell connectivity: `(conn, parts)` where `conn` is `(n_shells, 4)`
+        /// one-based node numbers and `parts` is `(n_shells,)`.
+        fn shell_connectivity<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, pyo3::PyAny>, Bound<'py, pyo3::PyAny>)> {
+            let (nodes, parts) = self.inner.shell_connectivity();
+            conn_to_py(py, nodes, parts, 4)
+        }
+
+        /// Solid connectivity: `(conn, parts)` where `conn` is `(n_solids, 8)`.
+        fn solid_connectivity<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, pyo3::PyAny>, Bound<'py, pyo3::PyAny>)> {
+            let (nodes, parts) = self.inner.solid_connectivity();
+            conn_to_py(py, nodes, parts, 8)
+        }
+
+        /// User node IDs (`N`), default `1..=N`.
+        fn node_ids<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::PyAny> {
+            self.inner.node_ids().into_pyarray(py).into_any()
+        }
+        /// User shell element IDs.
+        fn shell_ids<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::PyAny> {
+            self.inner.shell_ids().into_pyarray(py).into_any()
+        }
+        /// User solid element IDs.
+        fn solid_ids<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::PyAny> {
+            self.inner.solid_ids().into_pyarray(py).into_any()
+        }
+        /// User part/material IDs.
+        fn part_ids<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::PyAny> {
+            self.inner.part_ids().into_pyarray(py).into_any()
+        }
+
+        /// Control-block file type (1 = d3plot, 4 = intfor, …).
+        #[getter]
+        fn filetype(&self) -> i64 {
+            self.inner.filetype()
+        }
+
+        /// Whether this is an interface-force (`intfor`) database. In an intfor
+        /// file the contact **segments** are in the shell slot:
+        /// `block(StateBlock.Shell)` gives `(n_states, n_segments, nv2d)` and
+        /// `shell_connectivity()` the segment nodes; split the per-segment values
+        /// with `interface_fields`.
+        #[getter]
+        fn is_interface_force(&self) -> bool {
+            self.inner.is_interface_force()
+        }
+
+        /// Whether this is an FSIFOR (ALE) interface-force file — use
+        /// `FsiforField` values with `segment_field`.
+        #[getter]
+        fn is_fsifor(&self) -> bool {
+            self.inner.is_fsifor()
+        }
+
+        /// Extract one interface-force field's values from the per-segment block
+        /// as `(n_states, n_segments, k)`. `field` is an `InterfaceField` (intfor)
+        /// or `FsiforField` (FSIFOR) — no magic strings. `states` selects states
+        /// like `block`. Raises if the field isn't present in this file.
+        #[pyo3(signature = (field, states=None))]
+        fn segment_field<'py>(
+            &self,
+            py: Python<'py>,
+            field: Bound<'py, pyo3::PyAny>,
+            states: Option<Bound<'py, pyo3::PyAny>>,
+        ) -> PyResult<Bound<'py, pyo3::PyAny>> {
+            let (off, count) = if let Ok(f) = field.extract::<InterfaceField>() {
+                self.inner.interface_field_span(f)
+            } else if let Ok(f) = field.extract::<FsiforField>() {
+                self.inner.fsifor_field_span(f)
+            } else {
+                return Err(pyo3::exceptions::PyTypeError::new_err("field must be an InterfaceField or FsiforField"));
+            };
+            if count == 0 {
+                return Err(pyo3::exceptions::PyKeyError::new_err("that interface field is not present in this file"));
+            }
+            let sel: Option<Vec<i64>> = match &states {
+                None => None,
+                Some(o) => Some(match o.extract::<i64>() {
+                    Ok(i) => vec![i],
+                    Err(_) => o.extract::<Vec<i64>>()?,
+                }),
+            };
+            let idx = self.inner.resolve_states(sel.as_deref()).map_err(d3_err)?;
+            let (data, [ns, seg, nv2d]) = self
+                .inner
+                .block_data(StateBlock::Shell, &idx)
+                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("no interface segment data in this file"))?;
+            // Slice columns [off, off+count) out of each segment's nv2d values.
+            let slice = |flat: &[f32]| -> Vec<f32> {
+                let mut out = Vec::with_capacity(ns * seg * count);
+                for e in 0..ns * seg {
+                    let base = e * nv2d + off;
+                    out.extend_from_slice(&flat[base..base + count]);
+                }
+                out
+            };
+            let arr = match data {
+                BlockArray::F32(v) => numpy::ndarray::Array3::from_shape_vec((ns, seg, count), slice(&v)),
+                BlockArray::F64(v) => {
+                    let v32: Vec<f32> = v.iter().map(|&x| x as f32).collect();
+                    numpy::ndarray::Array3::from_shape_vec((ns, seg, count), slice(&v32))
+                }
+            }
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            Ok(arr.into_pyarray(py).into_any())
+        }
+
+        /// The result blocks present in this d3plot, as `StateBlock` values.
+        fn available_blocks(&self) -> Vec<StateBlock> {
+            ALL_BLOCKS
+                .into_iter()
+                .filter(|b| self.inner.block_layout(*b).is_some())
                 .collect()
         }
 
         /// Generic result extraction: any result block across all states as an
-        /// `(n_states, count, vars)` numpy array. `name` is one of the block
-        /// names from [`available_blocks`]. Node blocks are `(…, 3)`; element
-        /// blocks return the solver's raw packed per-entity layout — reshape by
-        /// integration points/layers as needed. Raises if the block is absent.
-        #[pyo3(signature = (name))]
-        fn block<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, pyo3::PyAny>> {
-            let b = block_from_name(name)?;
-            let (data, [ns, count, vars]) = self
+        /// `(n_states, count, vars)` numpy array in native precision. `block` is
+        /// a `StateBlock` (or its lowercase name string). Node blocks are
+        /// `(…, 3)`; element blocks return the solver's raw packed per-entity
+        /// layout — reshape by integration points/layers as needed. Raises if
+        /// the block is absent.
+        ///
+        /// `states` selects which states to return: `None` = all; an int (or
+        /// negative int, from the end) = one state; a sequence of ints = those
+        /// states. Selecting fewer states reads/copies only those.
+        ///
+        /// When the selected states are single-precision and contiguous within
+        /// one family file, the result is a **zero-copy** read-only view straight
+        /// over the memory map (no allocation, no copy). Otherwise the selection
+        /// is copied into a fresh array (in parallel for large blocks).
+        #[pyo3(signature = (block, states=None))]
+        fn block<'py>(
+            slf: Bound<'py, Self>,
+            block: StateBlock,
+            states: Option<Bound<'py, pyo3::PyAny>>,
+        ) -> PyResult<Bound<'py, pyo3::PyAny>> {
+            let py = slf.py();
+            let b = block;
+
+            let sel: Option<Vec<i64>> = match &states {
+                None => None,
+                Some(o) => Some(match o.extract::<i64>() {
+                    Ok(i) => vec![i],
+                    Err(_) => o.extract::<Vec<i64>>().map_err(|_| {
+                        pyo3::exceptions::PyTypeError::new_err("states must be None, an int, or a sequence of ints")
+                    })?,
+                }),
+            };
+            let idx = slf.borrow().inner.resolve_states(sel.as_deref()).map_err(d3_err)?;
+
+            // Zero-copy fast path: strided view over the mmap, kept alive by
+            // tying the array's base to this D3plot object.
+            let view_info = slf.borrow().inner.block_view(b, &idx);
+            if let Some((fi, byte_off, [ns, count, vars], stride)) = view_info {
+                use numpy::ndarray::ShapeBuilder;
+                use numpy::PyUntypedArrayMethods;
+                let borrow = slf.borrow();
+                let bytes = borrow.inner.file_bytes(fi);
+                // SAFETY: byte_off + block extents were validated on open; the
+                // region is 4-aligned; the mapping stays alive via `container`.
+                let ptr = unsafe { bytes.as_ptr().add(byte_off) } as *const f32;
+                let shape = (ns, count, vars).strides((stride / 4, vars, 1));
+                let view = unsafe { numpy::ndarray::ArrayView3::<f32>::from_shape_ptr(shape, ptr) };
+                let arr = unsafe { numpy::PyArray3::borrow_from_array(&view, slf.clone().into_any()) };
+                // The map is read-only — forbid writes (would fault the mapping).
+                unsafe { (*arr.as_array_ptr()).flags &= !numpy::npyffi::NPY_ARRAY_WRITEABLE };
+                drop(borrow);
+                return Ok(arr.into_any());
+            }
+
+            // Fallback: copy into a fresh array (multi-file family or double precision).
+            let (data, [ns, count, vars]) = slf
+                .borrow()
                 .inner
-                .block_data(b)
-                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(format!("block '{name}' is not present in this d3plot")))?;
+                .block_data(b, &idx)
+                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(format!("block {b:?} is not present in this d3plot")))?;
             let shape_err = |e: numpy::ndarray::ShapeError| pyo3::exceptions::PyValueError::new_err(e.to_string());
-            // Native precision: f32 for single-precision d3plots, f64 for double.
             match data {
                 BlockArray::F32(v) => Ok(numpy::ndarray::Array3::from_shape_vec((ns, count, vars), v)
                     .map_err(shape_err)?
@@ -500,9 +709,9 @@ mod python_bindings {
         }
 
         /// The `(count, vars_per_entity)` layout of a result block, or None.
-        #[pyo3(signature = (name))]
-        fn block_layout(&self, name: &str) -> PyResult<Option<(usize, usize)>> {
-            Ok(self.inner.block_layout(block_from_name(name)?))
+        #[pyo3(signature = (block))]
+        fn block_layout(&self, block: StateBlock) -> PyResult<Option<(usize, usize)>> {
+            Ok(self.inner.block_layout(block))
         }
 
         fn __repr__(&self) -> String {
@@ -510,26 +719,15 @@ mod python_bindings {
         }
     }
 
-    const BLOCK_NAMES: &[(&str, StateBlock)] = &[
-        ("displacement", StateBlock::Displacement),
-        ("velocity", StateBlock::Velocity),
-        ("acceleration", StateBlock::Acceleration),
-        ("solid", StateBlock::Solid),
-        ("tshell", StateBlock::ThickShell),
-        ("beam", StateBlock::Beam),
-        ("shell", StateBlock::Shell),
+    const ALL_BLOCKS: [StateBlock; 7] = [
+        StateBlock::Displacement,
+        StateBlock::Velocity,
+        StateBlock::Acceleration,
+        StateBlock::Solid,
+        StateBlock::ThickShell,
+        StateBlock::Beam,
+        StateBlock::Shell,
     ];
-
-    fn block_from_name(name: &str) -> PyResult<StateBlock> {
-        BLOCK_NAMES
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, b)| *b)
-            .ok_or_else(|| {
-                let known: Vec<&str> = BLOCK_NAMES.iter().map(|(n, _)| *n).collect();
-                pyo3::exceptions::PyValueError::new_err(format!("unknown block '{name}'; expected one of {known:?}"))
-            })
-    }
 
     /// Open an LS-DYNA binout for reading (mirrors [`PyBinout::new`]).
     #[pyfunction]
@@ -543,6 +741,184 @@ mod python_bindings {
     #[pyo3(signature = (path))]
     pub fn open_d3plot(py: Python<'_>, path: String) -> PyResult<PyD3plot> {
         PyD3plot::new(py, path)
+    }
+
+    /// Build a single-precision d3plot from a mesh + per-state nodal results.
+    #[pyclass(name = "D3plotWriter")]
+    pub struct PyD3plotWriter {
+        inner: RustD3plotWriter,
+    }
+
+    #[pymethods]
+    impl PyD3plotWriter {
+        /// `node_coords` is `(N, 3)` (or flat `3N`) initial coordinates.
+        #[new]
+        #[pyo3(signature = (node_coords, title=None))]
+        fn new(node_coords: Bound<'_, pyo3::PyAny>, title: Option<String>) -> PyResult<Self> {
+            let mut inner = RustD3plotWriter::new(f64_vec(&node_coords)?).map_err(d3_err)?;
+            if let Some(t) = title {
+                inner.set_title(&t);
+            }
+            Ok(Self { inner })
+        }
+
+        /// Add shell elements: `conn` is `(M, 4)` one-based node ids; `parts` is
+        /// an optional `(M,)` part id per shell (default 1).
+        #[pyo3(signature = (conn, parts=None))]
+        fn add_shells(&mut self, conn: PyReadonlyArray2<'_, i64>, parts: Option<Vec<i64>>) -> PyResult<()> {
+            let a = conn.as_array();
+            if a.ncols() != 4 {
+                return Err(pyo3::exceptions::PyValueError::new_err("shell conn must have shape (M, 4)"));
+            }
+            for (i, row) in a.rows().into_iter().enumerate() {
+                let part = parts.as_ref().and_then(|p| p.get(i)).copied().unwrap_or(1) as i32;
+                self.inner.add_shell([row[0] as i32, row[1] as i32, row[2] as i32, row[3] as i32], part);
+            }
+            Ok(())
+        }
+
+        /// Add solid elements: `conn` is `(M, 8)` one-based node ids; `parts` is
+        /// an optional `(M,)` part id per solid (default 1).
+        #[pyo3(signature = (conn, parts=None))]
+        fn add_solids(&mut self, conn: PyReadonlyArray2<'_, i64>, parts: Option<Vec<i64>>) -> PyResult<()> {
+            let a = conn.as_array();
+            if a.ncols() != 8 {
+                return Err(pyo3::exceptions::PyValueError::new_err("solid conn must have shape (M, 8)"));
+            }
+            for (i, row) in a.rows().into_iter().enumerate() {
+                let part = parts.as_ref().and_then(|p| p.get(i)).copied().unwrap_or(1) as i32;
+                let mut nodes = [0i32; 8];
+                for (d, &v) in nodes.iter_mut().zip(row.iter()) {
+                    *d = v as i32;
+                }
+                self.inner.add_solid(nodes, part);
+            }
+            Ok(())
+        }
+
+        /// Set user IDs written into the NARBS numbering section (default 1..N):
+        /// node IDs (length N), shell/solid element IDs, and part IDs.
+        #[pyo3(signature = (node_ids=None, shell_ids=None, solid_ids=None, part_ids=None))]
+        fn set_ids(
+            &mut self,
+            node_ids: Option<Vec<i64>>,
+            shell_ids: Option<Vec<i64>>,
+            solid_ids: Option<Vec<i64>>,
+            part_ids: Option<Vec<i64>>,
+        ) {
+            if let Some(v) = node_ids {
+                self.inner.set_node_ids(v);
+            }
+            if let Some(v) = shell_ids {
+                self.inner.set_shell_ids(v);
+            }
+            if let Some(v) = solid_ids {
+                self.inner.set_solid_ids(v);
+            }
+            if let Some(v) = part_ids {
+                self.inner.set_part_ids(v);
+            }
+        }
+
+        /// Append a state: `time`, deformed coords `disp` `(N,3)`, and optional
+        /// `vel`/`acc` `(N,3)`. Velocity/acceleration presence is fixed by the
+        /// first state added.
+        #[pyo3(signature = (time, disp, vel=None, acc=None))]
+        fn add_state(
+            &mut self,
+            time: f64,
+            disp: Bound<'_, pyo3::PyAny>,
+            vel: Option<Bound<'_, pyo3::PyAny>>,
+            acc: Option<Bound<'_, pyo3::PyAny>>,
+        ) -> PyResult<()> {
+            let vel = vel.map(|v| f64_vec(&v)).transpose()?;
+            let acc = acc.map(|a| f64_vec(&a)).transpose()?;
+            self.inner.add_state(time, f64_vec(&disp)?, vel, acc).map_err(d3_err)
+        }
+
+        /// Per-solid result block, `(n_states, n_solids, vars)` — the same raw
+        /// layout `D3plot.block(StateBlock.Solid)` returns. Sets NV3D.
+        #[pyo3(signature = (results))]
+        fn set_solid_results(&mut self, results: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+            let (data, vars) = f64_vec_lastdim(&results)?;
+            self.inner.set_solid_results(vars, data);
+            Ok(())
+        }
+
+        /// Per-shell result block, `(n_states, n_shells, vars)`. Sets NV2D.
+        #[pyo3(signature = (results))]
+        fn set_shell_results(&mut self, results: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+            let (data, vars) = f64_vec_lastdim(&results)?;
+            self.inner.set_shell_results(vars, data);
+            Ok(())
+        }
+
+        /// The d3plot as bytes.
+        fn to_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyBytes> {
+            pyo3::types::PyBytes::new(py, &self.inner.to_bytes())
+        }
+
+        /// Write the d3plot to `path`.
+        #[pyo3(signature = (path))]
+        fn write(&self, py: Python<'_>, path: String) -> PyResult<()> {
+            let bytes = self.inner.to_bytes();
+            py.detach(|| std::fs::write(&path, bytes))
+                .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+        }
+    }
+
+    /// Edit an existing d3plot family in place: overwrite node coordinates or a
+    /// result block at chosen states; everything else is preserved byte-for-byte.
+    #[pyclass(name = "D3plotEditor")]
+    pub struct PyD3plotEditor {
+        inner: RustD3plotEditor,
+    }
+
+    #[pymethods]
+    impl PyD3plotEditor {
+        /// Load a d3plot family (base + `d3plot01`, …) for editing.
+        #[new]
+        #[pyo3(signature = (path))]
+        fn new(py: Python<'_>, path: String) -> PyResult<Self> {
+            let inner = py.detach(|| RustD3plotEditor::open(&path)).map_err(d3_err)?;
+            Ok(Self { inner })
+        }
+
+        #[getter]
+        fn num_nodes(&self) -> usize {
+            self.inner.num_nodes()
+        }
+
+        #[getter]
+        fn num_states(&self) -> usize {
+            self.inner.num_states()
+        }
+
+        /// Overwrite a result `block` (a `StateBlock`) at `state` with `data`
+        /// `(count, vars)` — the same layout `D3plot.block(...)` returns.
+        #[pyo3(signature = (block, state, data))]
+        fn set_block(&mut self, block: StateBlock, state: usize, data: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+            let v: Vec<f32> = f64_vec(&data)?.into_iter().map(|x| x as f32).collect();
+            self.inner.set_block(block, state, &v).map_err(d3_err)
+        }
+
+        /// Overwrite deformed node coordinates `(N, 3)` at `state`.
+        #[pyo3(signature = (state, coords))]
+        fn set_node_coordinates(&mut self, state: usize, coords: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+            let v: Vec<f32> = f64_vec(&coords)?.into_iter().map(|x| x as f32).collect();
+            self.inner.set_node_coordinates(state, &v).map_err(d3_err)
+        }
+
+        /// Overwrite the original files in place.
+        fn save(&self, py: Python<'_>) -> PyResult<()> {
+            py.detach(|| self.inner.save()).map_err(d3_err)
+        }
+
+        /// Write the edited family to a new base path (`path`, `path01`, …).
+        #[pyo3(signature = (path))]
+        fn write(&self, py: Python<'_>, path: String) -> PyResult<()> {
+            py.detach(|| self.inner.write(&path)).map_err(d3_err)
+        }
     }
 
     // -- Phase 5b: binout writing (construct / edit via full rewrite) -------
@@ -692,5 +1068,20 @@ pub mod _dynars {
     use super::python_bindings::open_d3plot;
 
     #[pymodule_export]
+    use super::python_bindings::PyD3plotWriter;
+
+    #[pymodule_export]
+    use super::python_bindings::PyD3plotEditor;
+
+    #[pymodule_export]
     use super::python_bindings::PyBinoutEditor;
+
+    #[pymodule_export]
+    use super::results::StateBlock;
+
+    #[pymodule_export]
+    use super::results::InterfaceField;
+
+    #[pymodule_export]
+    use super::results::FsiforField;
 }

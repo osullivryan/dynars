@@ -1,9 +1,15 @@
-use std::sync::{Arc, Mutex};
+use rayon::prelude::*;
+
+use super::diskfile::Diskfile;
 use super::lsda::Lsda;
-use super::symbol::{ReadResult, Symbol};
+use super::symbol::{freeze, ReadResult, SymNode};
 use super::LsdaError;
 
 /// LS-DYNA binary output (binout) file reader.
+///
+/// The file family is memory-mapped and the symbol table is frozen into an
+/// immutable, lock-free tree, so reads (including concurrent [`read_many`]) do
+/// no syscalls and take no locks.
 ///
 /// Usage:
 /// ```no_run
@@ -14,7 +20,8 @@ use super::LsdaError;
 /// ```
 pub struct Binout {
     pub filelist: Vec<String>,
-    lsda: Lsda,
+    files: Vec<Diskfile>,
+    tree: SymNode,
 }
 
 impl Binout {
@@ -30,20 +37,19 @@ impl Binout {
         }
         filelist.sort();
         let lsda = Lsda::new(filelist.clone(), "r")?;
-        Ok(Self { filelist, lsda })
+        let tree = freeze(&lsda.root);
+        let Lsda { files, .. } = lsda;
+        Ok(Self { filelist, files, tree })
     }
 
     /// Read at the given path segments. Returns `ReadResult::Directory` if the path is a folder.
     pub fn read(&self, path: &[&str]) -> Result<ReadResult, LsdaError> {
-        if path.is_empty() {
-            let root = self.lsda.root.lock().unwrap();
-            let mut keys: Vec<Vec<u8>> = root.children.keys().cloned().collect();
-            keys.sort();
-            return Ok(ReadResult::Directory(keys));
-        }
-        let sym = self.resolve(path)?;
-        let locked = sym.lock().unwrap();
-        locked.lread(&self.lsda.files, 0, None)
+        self.resolve(path)?.read(&self.files)
+    }
+
+    /// Read many paths concurrently (lock-free), returning one result per path.
+    pub fn read_many(&self, paths: &[Vec<&str>]) -> Vec<Result<ReadResult, LsdaError>> {
+        paths.par_iter().map(|p| self.read(p)).collect()
     }
 
     /// Convenience: read and convert to f64. Useful for extracting scalar/vector results.
@@ -74,14 +80,12 @@ impl Binout {
         Ok(result.keys())
     }
 
-    fn resolve(&self, path: &[&str]) -> Result<Arc<Mutex<Symbol>>, LsdaError> {
-        let mut current = Arc::clone(&self.lsda.root);
+    fn resolve(&self, path: &[&str]) -> Result<&SymNode, LsdaError> {
+        let mut current = &self.tree;
         for part in path {
-            let next = {
-                let locked = current.lock().unwrap();
-                locked.children.get(part.as_bytes()).map(Arc::clone)
-            };
-            current = next.ok_or_else(|| LsdaError::SymbolNotFound(part.to_string()))?;
+            current = current
+                .child(part.as_bytes())
+                .ok_or_else(|| LsdaError::SymbolNotFound(part.to_string()))?;
         }
         Ok(current)
     }
