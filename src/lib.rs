@@ -305,7 +305,8 @@ mod python_bindings {
     use crate::results::{
         BlockArray, Binout as RustBinout, BinoutEditor as RustBinoutEditor, D3plot as RustD3plot,
         D3plotEditor as RustD3plotEditor, D3plotError, D3plotWriter as RustD3plotWriter, Data,
-        FsiforField, InterfaceField, LsdaError, ReadResult, StateBlock,
+        FsiforField, InterfaceField, IntforWriter as RustIntforWriter, LsdaError, ReadResult,
+        StateBlock,
     };
     use numpy::{PyReadonlyArray2, PyReadonlyArrayDyn};
 
@@ -381,7 +382,7 @@ mod python_bindings {
             ReadResult::U64(v) => v.into_pyarray(py).into_any(),
             ReadResult::F32(v) => v.into_pyarray(py).into_any(),
             ReadResult::F64(v) => v.into_pyarray(py).into_any(),
-            ReadResult::String(s) => pyo3::types::PyString::new(py, &s).into_any(),
+            ReadResult::Link(v) => v.into_pyarray(py).into_any(),
         })
     }
 
@@ -867,6 +868,94 @@ mod python_bindings {
         }
     }
 
+    /// Build an interface-force (`intfor`) file: contact segments + per-state
+    /// nodal motion + per-segment interface values.
+    #[pyclass(name = "IntforWriter")]
+    pub struct PyIntforWriter {
+        inner: RustIntforWriter,
+    }
+
+    #[pymethods]
+    impl PyIntforWriter {
+        /// `node_coords` is `(N, 3)`; `n_interfaces` sliding interfaces.
+        #[new]
+        #[pyo3(signature = (node_coords, n_interfaces=1, title=None))]
+        fn new(node_coords: Bound<'_, pyo3::PyAny>, n_interfaces: usize, title: Option<String>) -> PyResult<Self> {
+            let mut inner = RustIntforWriter::new(f64_vec(&node_coords)?, n_interfaces).map_err(d3_err)?;
+            if let Some(t) = title {
+                inner.set_title(&t);
+            }
+            Ok(Self { inner })
+        }
+
+        /// Add contact segments: `conn` is `(M, 4)` one-based node ids; `ids` is
+        /// an optional `(M,)` segment id per segment (default 1..M).
+        #[pyo3(signature = (conn, ids=None))]
+        fn add_segments(&mut self, conn: PyReadonlyArray2<'_, i64>, ids: Option<Vec<i64>>) -> PyResult<()> {
+            let a = conn.as_array();
+            if a.ncols() != 4 {
+                return Err(pyo3::exceptions::PyValueError::new_err("segment conn must have shape (M, 4)"));
+            }
+            for (i, row) in a.rows().into_iter().enumerate() {
+                let id = ids.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(i as i64 + 1) as i32;
+                self.inner.add_segment([row[0] as i32, row[1] as i32, row[2] as i32, row[3] as i32], id);
+            }
+            Ok(())
+        }
+
+        /// User node IDs (length N) for the NARBS numbering section.
+        #[pyo3(signature = (node_ids))]
+        fn set_node_ids(&mut self, node_ids: Vec<i64>) {
+            self.inner.set_node_ids(node_ids);
+        }
+
+        /// Declare the intfor per-segment field layout (nv2d = their sum).
+        #[pyo3(signature = (wear=0, pressure=0, shear=0, force=0, gap=0))]
+        fn set_fields(&mut self, wear: usize, pressure: usize, shear: usize, force: usize, gap: usize) {
+            self.inner.set_fields(wear, pressure, shear, force, gap);
+        }
+
+        /// Mark this an FSIFOR (ALE) file with `n` fixed per-segment values.
+        #[pyo3(signature = (n))]
+        fn set_fsifor(&mut self, n: usize) {
+            self.inner.set_fsifor(n);
+        }
+
+        /// Values per segment in each state.
+        #[getter]
+        fn nv2d(&self) -> usize {
+            self.inner.nv2d()
+        }
+
+        /// Append a state: `time`, deformed `disp` `(N,3)`, `vel` `(N,3)`, and
+        /// `segment_values` `(n_segments, nv2d)`.
+        #[pyo3(signature = (time, disp, vel, segment_values))]
+        fn add_state(
+            &mut self,
+            time: f64,
+            disp: Bound<'_, pyo3::PyAny>,
+            vel: Bound<'_, pyo3::PyAny>,
+            segment_values: Bound<'_, pyo3::PyAny>,
+        ) -> PyResult<()> {
+            self.inner
+                .add_state(time, f64_vec(&disp)?, f64_vec(&vel)?, f64_vec(&segment_values)?)
+                .map_err(d3_err)
+        }
+
+        /// The intfor file as bytes.
+        fn to_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyBytes> {
+            pyo3::types::PyBytes::new(py, &self.inner.to_bytes())
+        }
+
+        /// Write the intfor file to `path`.
+        #[pyo3(signature = (path))]
+        fn write(&self, py: Python<'_>, path: String) -> PyResult<()> {
+            let bytes = self.inner.to_bytes();
+            py.detach(|| std::fs::write(&path, bytes))
+                .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+        }
+    }
+
     /// Edit an existing d3plot family in place: overwrite node coordinates or a
     /// result block at chosen states; everything else is preserved byte-for-byte.
     #[pyclass(name = "D3plotEditor")]
@@ -1072,6 +1161,9 @@ pub mod _dynars {
 
     #[pymodule_export]
     use super::python_bindings::PyD3plotEditor;
+
+    #[pymodule_export]
+    use super::python_bindings::PyIntforWriter;
 
     #[pymodule_export]
     use super::python_bindings::PyBinoutEditor;

@@ -297,6 +297,40 @@ class D3plotEditor:
     def write(self, /, path: str) -> None:
         """Write the edited family to a new base path (`path`, `path01`, ...)."""
 
+@final
+class IntforWriter:
+    """
+    Build an interface-force (intfor) file: contact segments + per-state nodal
+    motion (displacement, velocity) + per-segment interface values (pressure,
+    shear, forces, gap — or the FSIFOR/ALE fixed layout). Reads back through
+    dynars; validate in LS-PrePost before relying on it.
+    """
+    def __init__(self, /, node_coords: npt.NDArray[np.floating], n_interfaces: int = 1, title: str | None = None) -> None: ...
+    def add_segments(self, /, conn: npt.NDArray[np.integer], ids: Sequence[int] | None = None) -> None:
+        """Add contact segments: `conn` is (M, 4) one-based node ids; `ids` optional (M,)."""
+    def set_node_ids(self, /, node_ids: Sequence[int]) -> None:
+        """User node IDs (length N) for the NARBS numbering section."""
+    def set_fields(self, /, wear: int = 0, pressure: int = 0, shear: int = 0, force: int = 0, gap: int = 0) -> None:
+        """Declare the intfor per-segment field layout (nv2d = their sum)."""
+    def set_fsifor(self, /, n: int) -> None:
+        """Mark this an FSIFOR (ALE) file with `n` fixed per-segment values."""
+    @property
+    def nv2d(self, /) -> int:
+        """Values per segment in each state."""
+    def add_state(
+        self,
+        /,
+        time: float,
+        disp: npt.NDArray[np.floating],
+        vel: npt.NDArray[np.floating],
+        segment_values: npt.NDArray[np.floating],
+    ) -> None:
+        """Append a state: time, disp (N,3), vel (N,3), segment_values (n_segments, nv2d)."""
+    def to_bytes(self, /) -> bytes:
+        """The intfor file as bytes."""
+    def write(self, /, path: str) -> None:
+        """Write the intfor file to `path`."""
+
 def parse_binout(pattern: str) -> Binout:
     """Open an LS-DYNA binout for reading."""
 

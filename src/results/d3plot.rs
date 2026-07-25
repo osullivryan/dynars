@@ -45,6 +45,8 @@ mod word {
     pub const NEL2: usize = 28;
     pub const NV1D: usize = 30;
     pub const NEL4: usize = 31;
+    /// Interface-force files store contact segment count in the shell (NEL4) slot.
+    pub const NUMSG: usize = 31;
     pub const NUMMAT4: usize = 32;
     pub const NV2D: usize = 33;
     pub const NEIPH: usize = 34;
@@ -789,6 +791,72 @@ impl D3plotEditor {
     }
 }
 
+/// Emit the NARBS numbering section (part-id form) for a geometry with `numnp`
+/// nodes, `nel8` solids, `nel4` shells (or intfor segments), and `nmmat`
+/// materials. IDs default to `1..=N` when not supplied. Returns the section's
+/// word count (= `NARBS`).
+#[allow(clippy::too_many_arguments)]
+fn write_narbs(
+    buf: &mut Vec<u8>,
+    numnp: usize,
+    nel8: usize,
+    nel4: usize,
+    nmmat: usize,
+    node_ids: Option<&[i32]>,
+    solid_ids: Option<&[i32]>,
+    shell_ids: Option<&[i32]>,
+    part_ids: Option<&[i32]>,
+) -> usize {
+    let put = |buf: &mut Vec<u8>, v: i32| buf.extend_from_slice(&v.to_le_bytes());
+    let seq = |n: usize| -> Vec<i32> { (1..=n as i32).collect() };
+    let (nel8i, nel4i, nmmi) = (nel8 as i32, nel4 as i32, nmmat as i32);
+    // numbering header (part-id form, 16 words)
+    put(buf, -1); // NSORT (negative: material numbering present)
+    let nsrh = 1 + numnp as i32;
+    put(buf, nsrh);
+    let nsrb = nsrh + nel8i;
+    put(buf, nsrb);
+    let nsrs = nsrb; // + nel2 (=0)
+    put(buf, nsrs);
+    let nsrt = nsrs + nel4i;
+    put(buf, nsrt);
+    put(buf, numnp as i32); // NSORTD
+    put(buf, nel8i); // NSRHD
+    put(buf, 0); // NSRBD
+    put(buf, nel4i); // NSRSD
+    put(buf, 0); // NSRTD
+    let nsrmu = nsrt;
+    let nsrma = nsrmu + nmmi;
+    let nsrmp = nsrma + nmmi;
+    put(buf, nsrma);
+    put(buf, nsrmu);
+    put(buf, nsrmp);
+    put(buf, nmmi);
+    put(buf, 0); // NUMRBS
+    put(buf, nmmi);
+    // ID arrays
+    for &v in &node_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(numnp)) {
+        put(buf, v);
+    }
+    for &v in &solid_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nel8)) {
+        put(buf, v);
+    }
+    for &v in &shell_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nel4)) {
+        put(buf, v);
+    }
+    let parts = part_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nmmat));
+    for i in 0..nmmat {
+        put(buf, parts.get(i).copied().unwrap_or(i as i32 + 1)); // material ids
+    }
+    for _ in 0..nmmat {
+        put(buf, 0); // unordered material ids
+    }
+    for _ in 0..nmmat {
+        put(buf, 0); // material cross-references
+    }
+    numnp + nel8 + nel4 + 3 * nmmat + NARBS_PART_HEADER
+}
+
 /// The LS-DYNA end-of-file marker is the float -999999 (exactly representable in
 /// f32 and f64), used to terminate the state sequence.
 fn is_eof_marker(v: f64) -> bool {
@@ -1151,58 +1219,17 @@ impl D3plotWriter {
         }
 
         // --- NARBS: arbitrary node/element/material numbering ---
-        let put = |buf: &mut Vec<u8>, v: i32| buf.extend_from_slice(&v.to_le_bytes());
-        let seq = |n: usize| -> Vec<i32> { (1..=n as i32).collect() };
-        let nel8i = nel8 as i32;
-        let nel4i = nel4 as i32;
-        let nmmi = nmmat_u as i32;
-        // numbering header (part-id form, 16 words)
-        put(&mut buf, -1); // NSORT (negative: material numbering present)
-        let nsrh = 1 + self.numnp as i32;
-        put(&mut buf, nsrh); // NSRH
-        let nsrb = nsrh + nel8i;
-        put(&mut buf, nsrb); // NSRB
-        let nsrs = nsrb; // + nel2 (=0)
-        put(&mut buf, nsrs); // NSRS
-        let nsrt = nsrs + nel4i;
-        put(&mut buf, nsrt); // NSRT
-        put(&mut buf, self.numnp as i32); // NSORTD
-        put(&mut buf, nel8i); // NSRHD
-        put(&mut buf, 0); // NSRBD (beams)
-        put(&mut buf, nel4i); // NSRSD
-        put(&mut buf, 0); // NSRTD (tshells)
-        let nsrmu = nsrt; // + nelth (=0)
-        let nsrma = nsrmu + nmmi;
-        let nsrmp = nsrma + nmmi;
-        put(&mut buf, nsrma); // sorted material pointer
-        put(&mut buf, nsrmu); // unsorted material pointer
-        put(&mut buf, nsrmp); // mapping pointer
-        put(&mut buf, nmmi); // total materials
-        put(&mut buf, 0); // NUMRBS
-        put(&mut buf, nmmi); // total materials (again)
-        // ID arrays (defaults 1..N)
-        let node_ids = self.node_ids.clone().unwrap_or_else(|| seq(self.numnp));
-        let solid_ids = self.solid_ids.clone().unwrap_or_else(|| seq(nel8));
-        let shell_ids = self.shell_ids.clone().unwrap_or_else(|| seq(nel4));
-        let part_ids = self.part_ids.clone().unwrap_or_else(|| seq(nmmat_u));
-        for &v in &node_ids {
-            put(&mut buf, v);
-        }
-        for &v in &solid_ids {
-            put(&mut buf, v);
-        } // beams: none
-        for &v in &shell_ids {
-            put(&mut buf, v);
-        } // tshells: none
-        for i in 0..nmmat_u {
-            put(&mut buf, part_ids.get(i).copied().unwrap_or(i as i32 + 1)); // material ids
-        }
-        for _ in 0..nmmat_u {
-            put(&mut buf, 0);
-        } // unordered material ids
-        for _ in 0..nmmat_u {
-            put(&mut buf, 0);
-        } // material cross-references
+        write_narbs(
+            &mut buf,
+            self.numnp,
+            nel8,
+            nel4,
+            nmmat_u,
+            self.node_ids.as_deref(),
+            self.solid_ids.as_deref(),
+            self.shell_ids.as_deref(),
+            self.part_ids.as_deref(),
+        );
 
         // States follow the exact geometry (LS-DYNA does not block-pad it).
 
@@ -1234,6 +1261,209 @@ impl D3plotWriter {
     }
 
     /// Write the d3plot to `path`.
+    pub fn write(&self, path: impl AsRef<std::path::Path>) -> Result<(), D3plotError> {
+        std::fs::write(path, self.to_bytes())?;
+        Ok(())
+    }
+}
+
+/// Builds an interface-force (`intfor`) file: contact segments + per-state nodal
+/// motion (displacement, velocity) + per-segment interface values (pressure,
+/// shear, forces, gap — or the FSIFOR/ALE fixed layout).
+///
+/// Scope (v1): single precision, implicit numbering (NARBS=0), no global
+/// variables. Round-trips through [`D3plot`]; **validate in LS-PrePost before
+/// relying on it.**
+pub struct IntforWriter {
+    numnp: usize,
+    x0: Vec<f32>,
+    segments: Vec<[i32; 5]>, // 4 one-based node ids + segment id
+    n_interfaces: usize,
+    nwear: usize,
+    npresu: usize,
+    nshear: usize,
+    nforce: usize,
+    ngapc: usize,
+    fsifor_fields: usize, // >0 ⇒ FSIFOR file with this many per-segment values
+    node_ids: Option<Vec<i32>>,
+    states: Vec<IntforState>,
+    title: String,
+}
+
+struct IntforState {
+    time: f32,
+    disp: Vec<f32>, // numnp*3
+    vel: Vec<f32>,  // numnp*3
+    seg: Vec<f32>,  // numsg*nv2d
+}
+
+impl IntforWriter {
+    /// Start from node coordinates (`numnp*3`) and the number of sliding
+    /// interfaces (sets NUMMAT4 = 2 × interfaces).
+    pub fn new(node_coords: Vec<f64>, n_interfaces: usize) -> Result<Self, D3plotError> {
+        if node_coords.is_empty() || node_coords.len() % 3 != 0 {
+            return Err(D3plotError::Unsupported("node_coords length must be a non-zero multiple of 3".into()));
+        }
+        Ok(Self {
+            numnp: node_coords.len() / 3,
+            x0: node_coords.iter().map(|&c| c as f32).collect(),
+            segments: Vec::new(),
+            n_interfaces: n_interfaces.max(1),
+            nwear: 0,
+            npresu: 0,
+            nshear: 0,
+            nforce: 0,
+            ngapc: 0,
+            fsifor_fields: 0,
+            node_ids: None,
+            states: Vec::new(),
+            title: String::new(),
+        })
+    }
+
+    pub fn set_title(&mut self, title: &str) {
+        self.title = title.to_string();
+    }
+
+    /// User node IDs (length NUMNP) written into the NARBS numbering section.
+    pub fn set_node_ids(&mut self, ids: Vec<i64>) {
+        self.node_ids = Some(ids.into_iter().map(|x| x as i32).collect());
+    }
+
+    /// Add a 4-node contact segment (one-based node ids) with a segment id.
+    pub fn add_segment(&mut self, nodes: [i32; 4], id: i32) {
+        self.segments.push([nodes[0], nodes[1], nodes[2], nodes[3], id]);
+    }
+
+    /// Declare the intfor per-segment field layout (NV2D = their sum): wear,
+    /// pressure, shear, force, gap. Typical: pressure 1, shear 3, force 12, gap 5.
+    pub fn set_fields(&mut self, wear: usize, pressure: usize, shear: usize, force: usize, gap: usize) {
+        self.nwear = wear;
+        self.npresu = pressure;
+        self.nshear = shear;
+        self.nforce = force;
+        self.ngapc = gap;
+        self.fsifor_fields = 0;
+    }
+
+    /// Mark this an FSIFOR (ALE) file with `n` fixed per-segment values (NV2D is
+    /// written negative). See [`FsiforField`] for the column meanings.
+    pub fn set_fsifor(&mut self, n: usize) {
+        self.fsifor_fields = n;
+        self.nwear = 0;
+        self.npresu = 0;
+        self.nshear = 0;
+        self.nforce = 0;
+        self.ngapc = 0;
+    }
+
+    /// Values per segment in each state.
+    pub fn nv2d(&self) -> usize {
+        if self.fsifor_fields > 0 {
+            self.fsifor_fields
+        } else {
+            self.nwear + self.npresu + self.nshear + self.nforce + self.ngapc
+        }
+    }
+
+    /// Append a state: `time`, deformed coords `disp` (`numnp*3`), `vel`
+    /// (`numnp*3`), and `segment_values` (`n_segments * nv2d`, row-major).
+    pub fn add_state(
+        &mut self,
+        time: f64,
+        disp: Vec<f64>,
+        vel: Vec<f64>,
+        segment_values: Vec<f64>,
+    ) -> Result<(), D3plotError> {
+        let n3 = self.numnp * SPATIAL_DIM;
+        let need = self.segments.len() * self.nv2d();
+        if disp.len() != n3 || vel.len() != n3 {
+            return Err(D3plotError::Unsupported(format!("disp/vel length must be numnp*3 ({n3})")));
+        }
+        if segment_values.len() != need {
+            return Err(D3plotError::Unsupported(format!(
+                "segment_values length {} != n_segments*nv2d ({need})",
+                segment_values.len()
+            )));
+        }
+        let f32v = |v: Vec<f64>| v.into_iter().map(|c| c as f32).collect();
+        self.states.push(IntforState {
+            time: time as f32,
+            disp: f32v(disp),
+            vel: f32v(vel),
+            seg: f32v(segment_values),
+        });
+        Ok(())
+    }
+
+    /// Serialize to a complete single-precision intfor byte image.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let numsg = self.segments.len();
+        let nv2d = self.nv2d();
+
+        let mut words = [0i32; CONTROL_WORDS];
+        let mut title = [b' '; TITLE_BYTES];
+        for (i, b) in self.title.bytes().take(TITLE_BYTES).enumerate() {
+            title[i] = b;
+        }
+        let set = |w: &mut [i32; CONTROL_WORDS], i: usize, v: i32| w[i] = v;
+        set(&mut words, word::FILETYPE, FILETYPE_INTFOR as i32);
+        set(&mut words, word::NDIM, NDIM_STRUCTURAL);
+        set(&mut words, word::NUMNP, self.numnp as i32);
+        set(&mut words, word::ICODE, ICODE_LSDYNA);
+        set(&mut words, word::NGLBV, 0);
+        set(&mut words, word::IU, 1);
+        set(&mut words, word::IV, 1);
+        set(&mut words, word::NUMSG, numsg as i32);
+        // Materials = the interface surfaces (slave + master per interface).
+        let nmmat = 2 * self.n_interfaces;
+        set(&mut words, word::NUMMAT4, nmmat as i32);
+        set(&mut words, word::NMMAT, nmmat as i32);
+        // NV2D is negative for FSIFOR.
+        set(&mut words, word::NV2D, if self.fsifor_fields > 0 { -(nv2d as i32) } else { nv2d as i32 });
+        // NARBS numbering section: numnp nodes + numsg segments (shell slot) + materials.
+        let narbs = numsg + self.numnp + 3 * nmmat + NARBS_PART_HEADER;
+        set(&mut words, word::NARBS, narbs as i32);
+        if self.fsifor_fields == 0 {
+            set(&mut words, word::NWEAR, self.nwear as i32);
+            set(&mut words, word::NPRESU, self.npresu as i32);
+            set(&mut words, word::NSHEAR, self.nshear as i32);
+            set(&mut words, word::NFORCE, self.nforce as i32);
+            set(&mut words, word::NGAPC, self.ngapc as i32);
+        }
+
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&title);
+        for w in &words[TITLE_WORDS..] {
+            buf.extend_from_slice(&w.to_le_bytes());
+        }
+        // geometry: node coords + segment connectivity (4 nodes + id)
+        for &c in &self.x0 {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+        for s in &self.segments {
+            for &w in s {
+                buf.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        // NARBS: node IDs + segment IDs (in the shell slot) + material IDs.
+        let seg_ids: Vec<i32> = self.segments.iter().map(|s| s[4]).collect();
+        write_narbs(&mut buf, self.numnp, 0, numsg, nmmat, self.node_ids.as_deref(), None, Some(&seg_ids), None);
+
+        // states: time + disp + vel + per-segment values
+        for st in &self.states {
+            buf.extend_from_slice(&st.time.to_le_bytes());
+            for v in [&st.disp, &st.vel, &st.seg] {
+                for &c in v {
+                    buf.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+        }
+        buf.extend_from_slice(&(EOF_MARKER as f32).to_le_bytes());
+        buf
+    }
+
+    /// Write the intfor file to `path`.
     pub fn write(&self, path: impl AsRef<std::path::Path>) -> Result<(), D3plotError> {
         std::fs::write(path, self.to_bytes())?;
         Ok(())
@@ -1541,6 +1771,65 @@ mod tests {
         // segment connectivity
         assert_eq!(d.shell_connectivity().0, vec![1, 2, 3, 4]);
 
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn intfor_writer_roundtrips_through_reader() {
+        // Write an intfor with pressure(1)+shear(3)+force(12) per segment, then
+        // read it back and confirm the fields land where InterfaceField says.
+        let coords: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = IntforWriter::new(coords.clone(), 1).unwrap();
+        w.set_title("dynars intfor demo");
+        w.add_segment([1, 2, 3, 4], 501);
+        w.set_fields(0, 1, 3, 12, 0); // nv2d = 16
+        assert_eq!(w.nv2d(), 16);
+        for s in 0..2 {
+            let disp = coords.clone();
+            let vel = vec![0.0; coords.len()];
+            // one segment, 16 values: pressure=100+s, shear=[1,2,3], force=[10..21]
+            let mut seg = vec![100.0 + s as f64, 1.0, 2.0, 3.0];
+            seg.extend((0..12).map(|i| 10.0 + i as f64));
+            w.add_state(s as f64 * 0.01, disp, vel, seg).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        assert!(d.is_interface_force());
+        assert!(!d.is_fsifor());
+        assert_eq!(d.num_states(), 2);
+        assert_eq!(d.interface_field_span(InterfaceField::Pressure), (0, 1));
+        assert_eq!(d.interface_field_span(InterfaceField::Force), (4, 12));
+        // NARBS: the segment id (in the shell slot) round-trips
+        assert_eq!(d.shell_ids(), vec![501]);
+        assert_eq!(d.shell_connectivity().0, vec![1, 2, 3, 4]);
+
+        let all = d.resolve_states(None).unwrap();
+        let (BlockArray::F32(seg), dims) = d.block_data(StateBlock::Shell, &all).unwrap() else {
+            panic!("expected f32 segment data");
+        };
+        assert_eq!(dims, [2, 1, 16]);
+        assert!((seg[0] - 100.0).abs() < 1e-6); // state0 pressure
+        assert!((seg[16] - 101.0).abs() < 1e-6); // state1 pressure
+        assert!((seg[4] - 10.0).abs() < 1e-6); // state0 force[0] at offset 4
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn intfor_writer_fsifor() {
+        let coords: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = IntforWriter::new(coords.clone(), 1).unwrap();
+        w.add_segment([1, 2, 3, 4], 1);
+        w.set_fsifor(7); // 7 fixed FSIFOR fields, NV2D negative
+        w.add_state(0.0, coords.clone(), vec![0.0; 12], vec![9.0; 7]).unwrap();
+        let p = tmp();
+        w.write(&p).unwrap();
+        let d = D3plot::open(&p).unwrap();
+        assert!(d.is_fsifor());
+        assert_eq!(d.fsifor_field_span(FsiforField::Pressure), (0, 1));
+        assert_eq!(d.fsifor_field_span(FsiforField::VelocityY), (6, 1));
+        assert_eq!(d.fsifor_field_span(FsiforField::VelocityZ), (7, 0)); // absent (only 7)
         let _ = std::fs::remove_file(&p);
     }
 }

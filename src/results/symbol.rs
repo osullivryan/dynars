@@ -116,7 +116,8 @@ pub enum ReadResult {
     U64(Vec<u64>),
     F32(Vec<f32>),
     F64(Vec<f64>),
-    String(String),
+    /// A symbolic link (LSDA type 11), returned as its raw bytes. Rare.
+    Link(Vec<u8>),
 }
 
 impl ReadResult {
@@ -133,7 +134,7 @@ impl ReadResult {
             ReadResult::U64(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::F32(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::F64(v) => v.clone(),
-            ReadResult::Directory(_) | ReadResult::String(_) => vec![],
+            ReadResult::Directory(_) | ReadResult::Link(_) => vec![],
         }
     }
 
@@ -199,7 +200,7 @@ fn read_typed(buf: &[u8], type_: u8, count: usize, le: bool) -> Result<ReadResul
         8 => ReadResult::U64(decode!(buf, count, le, u64, 8)),
         9 => ReadResult::F32(decode!(buf, count, le, f32, 4)),
         10 => ReadResult::F64(decode!(buf, count, le, f64, 8)),
-        11 => ReadResult::String(String::from_utf8_lossy(buf).into_owned()),
+        11 => ReadResult::Link(buf.to_vec()), // LSDA type 11 = LINK, not a string
         _ => ReadResult::U8(buf.to_vec()),
     })
 }

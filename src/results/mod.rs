@@ -16,7 +16,7 @@ pub mod d3plot;
 pub use binout::Binout;
 pub use d3plot::{
     BlockArray, D3plot, D3plotEditor, D3plotError, D3plotWriter, FsiforField, InterfaceField,
-    InterfaceFields, NodeFields, StateBlock,
+    InterfaceFields, IntforWriter, NodeFields, StateBlock,
 };
 pub use edit::{BinoutEditor, Data};
 pub use symbol::ReadResult;

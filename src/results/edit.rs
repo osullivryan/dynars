@@ -63,12 +63,14 @@ impl Data {
             Data::U64(_) => 8,
             Data::F32(_) => 9,
             Data::F64(_) => 10,
-            Data::Str(_) => 11,
+            // LSDA has no string type — text is an I*1 (type 1) byte array, the
+            // way LS-DYNA stores titles/legends. (Type 11 is LINK, not string.)
+            Data::Str(_) => 1,
         }
     }
 
     /// Number of elements (the VARIABLE record's `count` field). For strings
-    /// this is the byte length, matching how the reader sizes type-11/type-1.
+    /// this is the byte length (one `I*1` per character).
     fn count(&self) -> usize {
         match self {
             Data::I8(v) => v.len(),
@@ -121,7 +123,7 @@ impl Data {
             ReadResult::U64(v) => Data::U64(v),
             ReadResult::F32(v) => Data::F32(v),
             ReadResult::F64(v) => Data::F64(v),
-            ReadResult::String(s) => Data::Str(s),
+            ReadResult::Link(v) => Data::U8(v),
             ReadResult::Directory(_) => Data::U8(Vec::new()),
         }
     }
@@ -398,9 +400,14 @@ mod tests {
             b.read(&["nodout", "n1", "x_displacement"]).unwrap().to_f64_vec(),
             vec![1.0, 2.0, 4.0]
         );
+        // Strings are written as an I*1 byte array (LSDA has no string type),
+        // so they read back as int8 bytes — decode them yourself.
         match b.read(&["glstat", "title"]).unwrap() {
-            ReadResult::String(s) => assert_eq!(s, "dynars test"),
-            _ => panic!("expected a string dataset for glstat/title"),
+            ReadResult::I8(v) => {
+                let bytes: Vec<u8> = v.iter().map(|&x| x as u8).collect();
+                assert_eq!(&bytes, b"dynars test");
+            }
+            _ => panic!("expected an I8 byte array for glstat/title"),
         }
         std::fs::remove_file(&p).ok();
     }
