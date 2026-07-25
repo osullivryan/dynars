@@ -2,21 +2,39 @@
 //! custom check.
 //! Usage: cargo run --example validate_demo -- <main.k>
 
+use std::collections::HashMap;
+
 use dynars::deck::Deck;
 use dynars::keywords::names;
-use dynars::validate::{pred, Check, Cmp, Expr, Finding, Rule, Severity, Validator, Value};
+use dynars::validate::{pred, visit_rows, Check, Cmp, Expr, Finding, Rule, Severity, Validator, Value};
 
-/// A user-defined check (arbitrary Rust logic): flag rigid materials.
-struct NoRigidBodies;
-impl Check for NoRigidBodies {
+/// A custom rule (arbitrary Rust logic): SECIDs must be unique across the deck.
+/// The built-in `Rule`s are per-row and can't express cross-row aggregation —
+/// this is exactly the kind of thing you drop to a `Check` for. It reuses
+/// `visit_rows`, the same primary-card view the built-in field rules use.
+struct UniqueSectionIds;
+impl Check for UniqueSectionIds {
     fn name(&self) -> String {
-        "custom:no_rigid_bodies".into()
+        "custom:unique_section_ids".into()
     }
     fn run(&self, deck: &Deck, out: &mut Vec<Finding>) {
-        // Reuse the same typed primitives the built-in rules use.
-        Rule::keyword_forbidden(names::MAT_RIGID)
-            .with_severity(Severity::Warning)
-            .run(deck, out);
+        let mut seen: HashMap<i64, String> = HashMap::new();
+        visit_rows(deck, names::SECTION_SHELL, |r| {
+            let Some(Value::Int(id)) = r.field("SECID") else { return };
+            let here = format!("{}:{}", r.file.display(), r.line);
+            if let Some(first) = seen.get(&id) {
+                out.push(Finding {
+                    rule: self.name(),
+                    severity: Severity::Error,
+                    keyword: "SECTION_SHELL".into(),
+                    file: r.file.to_path_buf(),
+                    line: r.line,
+                    message: format!("duplicate SECID {id} (first defined at {first})"),
+                });
+            } else {
+                seen.insert(id, here);
+            }
+        });
     }
 }
 
@@ -55,8 +73,8 @@ fn main() {
                 .except_in(["00_Includes", "geo_"])
                 .with_severity(Severity::Warning),
         )
-        // 7. a custom Rust check
-        .check(Box::new(NoRigidBodies));
+        // 7. a custom rule (impl Check) doing cross-row logic
+        .check(Box::new(UniqueSectionIds));
 
     let report = validator.run(&path).expect("parse+validate");
 

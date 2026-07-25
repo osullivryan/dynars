@@ -297,10 +297,37 @@ fn for_each_row(deck: &Deck, base_kw: &str, scope: &FileScope, mut f: impl FnMut
     }
 }
 
+/// A single keyword occurrence — its primary-card row plus source location.
+/// Handed to custom [`Check`]s by [`visit_rows`].
+pub struct RowRef<'a> {
+    pub table: &'a Table,
+    pub row: usize,
+    pub file: &'a Path,
+    pub line: usize,
+}
+
+impl RowRef<'_> {
+    /// Read a card field by name (case-insensitive).
+    pub fn field(&self, name: &str) -> Option<Value> {
+        cell(self.table, name, self.row)
+    }
+}
+
+/// Visit every occurrence of `keyword` across the deck as its primary-card row
+/// — the *same* view the built-in field rules use, exposed so custom [`Check`]s
+/// don't reinvent block scanning or `_TITLE` handling.
+pub fn visit_rows(deck: &Deck, keyword: &str, mut f: impl FnMut(RowRef)) {
+    for_each_row(deck, keyword, &FileScope::Anywhere, |table, row, path, line| {
+        f(RowRef { table, row, file: &path, line });
+    });
+}
+
 // ── Checks ──────────────────────────────────────────────────────────────────
 
-/// A validation check. Implement for arbitrary logic; built-in [`Rule`]s
-/// already implement it. Receives the core [`Deck`].
+/// A validation check — the open extension point. Implementing this **is** how
+/// you write a custom rule; the built-in [`Rule`] enum is just the declarative,
+/// batteries-included set (and itself implements `Check`). Receives the core
+/// [`Deck`].
 pub trait Check: Send + Sync {
     fn name(&self) -> String;
     fn run(&self, deck: &Deck, out: &mut Vec<Finding>);
