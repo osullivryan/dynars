@@ -17,6 +17,7 @@
 use rayon::prelude::*;
 
 use crate::file::{Block, CardFormat, ParsedFile};
+use crate::keywords::{EntityKind, Ref};
 use crate::parser::Field;
 
 // --- shared chunking infrastructure (parallel splitting of block bodies) ---
@@ -96,14 +97,18 @@ pub enum FieldType {
     Str,
 }
 
-/// One field in a card: a name, a type, a fixed-format column width, and a
-/// count (`> 1` makes it an array, producing an `N`-wide column).
+/// One field in a card: a name, a type, a fixed-format column width, a count
+/// (`> 1` makes it an array, producing an `N`-wide column), and — for a user
+/// schema — what entity its id references, if any (so a registered keyword's
+/// references participate in [`Rule::references_resolve`](crate::validate::Rule::references_resolve)).
 #[derive(Debug, Clone)]
 pub struct FieldSpec {
     pub name: String,
     pub ty: FieldType,
     pub width: usize,
     pub count: usize,
+    /// The entity this field's id points at, if any (default [`Ref::None`]).
+    pub reference: Ref,
 }
 
 /// One card (line) of a keyword: an ordered list of fields.
@@ -133,12 +138,27 @@ impl Card {
     pub fn float_array(self, name: &str, count: usize, width: usize) -> Self {
         self.push(name, FieldType::Float, width, count)
     }
+    /// An integer field whose id **references** an entity of `kind`. On a schema
+    /// registered with [`Deck::register_schema`](crate::deck::Deck::register_schema),
+    /// [`Rule::references_resolve`](crate::validate::Rule::references_resolve)
+    /// will check the id resolves, and `Field::reference()` will follow it.
+    pub fn ref_to(mut self, name: &str, width: usize, kind: EntityKind) -> Self {
+        self.fields.push(FieldSpec {
+            name: name.to_string(),
+            ty: FieldType::Int,
+            width,
+            count: 1,
+            reference: Ref::To(kind),
+        });
+        self
+    }
     fn push(mut self, name: &str, ty: FieldType, width: usize, count: usize) -> Self {
         self.fields.push(FieldSpec {
             name: name.to_string(),
             ty,
             width,
             count: count.max(1),
+            reference: Ref::None,
         });
         self
     }

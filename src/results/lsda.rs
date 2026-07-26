@@ -62,11 +62,12 @@ impl Lsda {
         let path = if path.ends_with('/') && path.len() > 1 { &path[..path.len()-1] } else { path };
         if path == "/" { self.cwd = Arc::clone(&self.root); return Ok(()); }
 
-        let (abs, parts_str) = if path.starts_with('/') {
-            self.cwd = Arc::clone(&self.root);
-            (true, path[1..].to_string())
-        } else {
-            (false, path.to_string())
+        let (abs, parts_str) = match path.strip_prefix('/') {
+            Some(rest) => {
+                self.cwd = Arc::clone(&self.root);
+                (true, rest.to_string())
+            }
+            None => (false, path.to_string()),
         };
         let _ = abs;
 

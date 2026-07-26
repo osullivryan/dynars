@@ -335,10 +335,8 @@ fn family_paths(base: &std::path::Path, n: Option<usize>) -> Vec<std::path::Path
     let mut out = vec![base.to_path_buf()];
     let mut i = 1;
     loop {
-        if let Some(k) = n {
-            if out.len() >= k {
-                break;
-            }
+        if let Some(k) = n && out.len() >= k {
+            break;
         }
         let name = if i < 100 { format!("{stem}{i:02}") } else { format!("{stem}{i}") };
         let p = std::path::PathBuf::from(&name);
@@ -1026,7 +1024,7 @@ struct StateData {
 impl D3plotWriter {
     /// Start from initial node coordinates (`numnp*3`, row-major x,y,z).
     pub fn new(node_coords: Vec<f64>) -> Result<Self, D3plotError> {
-        if node_coords.is_empty() || node_coords.len() % 3 != 0 {
+        if node_coords.is_empty() || !node_coords.len().is_multiple_of(3) {
             return Err(D3plotError::Unsupported(
                 "node_coords length must be a non-zero multiple of 3".into(),
             ));
@@ -1147,7 +1145,7 @@ impl D3plotWriter {
             .chain(self.solids.iter().map(|s| s[8]))
             .max()
             .unwrap_or(0)
-            .max(0) as i32;
+            .max(0);
 
         // --- control block ---
         let mut words = [0i32; CONTROL_WORDS];
@@ -1301,7 +1299,7 @@ impl IntforWriter {
     /// Start from node coordinates (`numnp*3`) and the number of sliding
     /// interfaces (sets NUMMAT4 = 2 × interfaces).
     pub fn new(node_coords: Vec<f64>, n_interfaces: usize) -> Result<Self, D3plotError> {
-        if node_coords.is_empty() || node_coords.len() % 3 != 0 {
+        if node_coords.is_empty() || !node_coords.len().is_multiple_of(3) {
             return Err(D3plotError::Unsupported("node_coords length must be a non-zero multiple of 3".into()));
         }
         Ok(Self {
@@ -1640,8 +1638,8 @@ mod tests {
         w.add_solid([1, 2, 3, 4, 5, 6, 7, 8], 1);
         w.set_node_ids((0..8).map(|i| 100 + i).collect());
         w.set_part_ids(vec![7]);
-        // 2 states, 5 raw result vars per solid
-        w.set_solid_results(5, (0..2 * 1 * 5).map(|i| i as f64).collect());
+        // 2 states × 1 solid × 5 raw result vars
+        w.set_solid_results(5, (0..2 * 5).map(|i| i as f64).collect());
         for s in 0..2 {
             let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
             w.add_state(s as f64, disp, None, None).unwrap();

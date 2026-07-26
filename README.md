@@ -162,13 +162,24 @@ no fork in the API, just a schema that comes from you instead of the table:
 
 ```rust
 use dynars::schema::{Schema, Card};
+use dynars::keywords::EntityKind;
+use dynars::validate::Rule;
 
 // (`deck` must be declared `let mut` to register schemas)
 deck.register_schema(Schema::new("VENDOR_WIDGET").card(
-    Card::new().int("wid", 8).float("mass", 8).str("tag", 8),
+    Card::new()
+        .int("wid", 8)
+        .float("mass", 8)
+        .ref_to("mat", 8, EntityKind::Material),   // an id that references a *MAT
 ));
+
+// Named, typed parsing:
 let w = deck.keywords("VENDOR_WIDGET").next().unwrap();
 let mass = w.card(0).and_then(|c| c.field("mass")).and_then(|f| f.as_f64());
+
+// Validation: fields validate like any keyword, and declared references are
+// dangling-checked by references_resolve() — no special-casing:
+let report = deck.validate([Rule::references_resolve()]);
 ```
 
 ## Rust API

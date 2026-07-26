@@ -20,13 +20,17 @@ fn py_to_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<validate::Value> {
     Err(pyo3::exceptions::PyValueError::new_err("rule value must be int, float, or str"))
 }
 
-/// Reject typo'd keyword names up front (the Python "typed" guard).
+/// Normalize a keyword name for a rule. Accepts any non-empty name so rules can
+/// target keywords the built-in library doesn't cover — vendor / newer / ones
+/// you've described via `Deck.register_schema`. (Matching is case-insensitive on
+/// the canonical base, so the original text is fine; only an empty name is an
+/// error.)
 fn check_keyword(kw: &str) -> PyResult<String> {
-    if crate::keywords::find(kw).is_some() {
-        Ok(kw.to_string())
-    } else {
-        Err(pyo3::exceptions::PyValueError::new_err(format!("unknown LS-DYNA keyword: *{kw}")))
+    let trimmed = kw.trim();
+    if trimmed.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err("keyword name must not be empty"));
     }
+    Ok(trimmed.to_string())
 }
 
 /// A boolean predicate tree over card fields (tier 2). Evaluated in Rust.

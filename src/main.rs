@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use dynars::{include, testgen};
@@ -66,7 +66,7 @@ fn cmd_generate(depth: usize, breadth: usize, nodes: usize, output: &str) {
     println!("Generation completed in {:.3}s", elapsed.as_secs_f64());
 }
 
-fn cmd_parse(file_path: &PathBuf) {
+fn cmd_parse(file_path: &Path) {
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
 
     println!("Parsing: {}", file_path.display());

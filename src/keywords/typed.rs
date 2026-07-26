@@ -65438,16 +65438,12 @@ pub struct BOUNDARY_USA_SURFACE_Row {
 pub struct CASE_BEGIN {
 }
 impl CASE_BEGIN {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CASE_BEGIN").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CASE_BEGIN {
     type Row = CASE_BEGIN_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CASE_BEGIN_Row { CASE_BEGIN_Row {
+    fn row(&self, _i: usize) -> CASE_BEGIN_Row { CASE_BEGIN_Row {
     } }
 }
 pub struct CASE_BEGIN_Row {
@@ -65518,16 +65514,12 @@ pub struct CASE_CASE_Row {
 pub struct CASE_END {
 }
 impl CASE_END {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CASE_END").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CASE_END {
     type Row = CASE_END_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CASE_END_Row { CASE_END_Row {
+    fn row(&self, _i: usize) -> CASE_END_Row { CASE_END_Row {
     } }
 }
 pub struct CASE_END_Row {
@@ -69434,16 +69426,12 @@ pub struct CHANGE_OUTPUT_Row {
 pub struct CHANGE_RIGIDWALL_GEOMETRIC {
 }
 impl CHANGE_RIGIDWALL_GEOMETRIC {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CHANGE_RIGIDWALL_GEOMETRIC").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CHANGE_RIGIDWALL_GEOMETRIC {
     type Row = CHANGE_RIGIDWALL_GEOMETRIC_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CHANGE_RIGIDWALL_GEOMETRIC_Row { CHANGE_RIGIDWALL_GEOMETRIC_Row {
+    fn row(&self, _i: usize) -> CHANGE_RIGIDWALL_GEOMETRIC_Row { CHANGE_RIGIDWALL_GEOMETRIC_Row {
     } }
 }
 pub struct CHANGE_RIGIDWALL_GEOMETRIC_Row {
@@ -69452,16 +69440,12 @@ pub struct CHANGE_RIGIDWALL_GEOMETRIC_Row {
 pub struct CHANGE_RIGIDWALL_PLANAR {
 }
 impl CHANGE_RIGIDWALL_PLANAR {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CHANGE_RIGIDWALL_PLANAR").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CHANGE_RIGIDWALL_PLANAR {
     type Row = CHANGE_RIGIDWALL_PLANAR_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CHANGE_RIGIDWALL_PLANAR_Row { CHANGE_RIGIDWALL_PLANAR_Row {
+    fn row(&self, _i: usize) -> CHANGE_RIGIDWALL_PLANAR_Row { CHANGE_RIGIDWALL_PLANAR_Row {
     } }
 }
 pub struct CHANGE_RIGIDWALL_PLANAR_Row {
@@ -69950,16 +69934,12 @@ pub struct CHANGE_VELOCITY_RIGID_BODY_Row {
 pub struct CHANGE_VELOCITY_ZERO {
 }
 impl CHANGE_VELOCITY_ZERO {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CHANGE_VELOCITY_ZERO").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CHANGE_VELOCITY_ZERO {
     type Row = CHANGE_VELOCITY_ZERO_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CHANGE_VELOCITY_ZERO_Row { CHANGE_VELOCITY_ZERO_Row {
+    fn row(&self, _i: usize) -> CHANGE_VELOCITY_ZERO_Row { CHANGE_VELOCITY_ZERO_Row {
     } }
 }
 pub struct CHANGE_VELOCITY_ZERO_Row {
@@ -102376,16 +102356,12 @@ pub struct CONTROL_CR_MPP_DECOMPOSITION_DEFORMED_GEOMETRY_Row {
 pub struct CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE {
 }
 impl CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE {
     type Row = CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE_Row { CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE_Row {
+    fn row(&self, _i: usize) -> CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE_Row { CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE_Row {
     } }
 }
 pub struct CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE_Row {
@@ -102394,16 +102370,12 @@ pub struct CONTROL_CR_MPP_DECOMPOSITION_FLAG_STRESS_STRAIN_CURVE_Row {
 pub struct CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER {
 }
 impl CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER {
     type Row = CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER_Row { CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER_Row {
+    fn row(&self, _i: usize) -> CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER_Row { CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER_Row {
     } }
 }
 pub struct CONTROL_CR_MPP_MATERIAL_MODEL_DRIVER_Row {
@@ -102466,16 +102438,12 @@ pub struct CONTROL_DAMPING_Row {
 pub struct CONTROL_DEBUG {
 }
 impl CONTROL_DEBUG {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_DEBUG").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_DEBUG {
     type Row = CONTROL_DEBUG_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_DEBUG_Row { CONTROL_DEBUG_Row {
+    fn row(&self, _i: usize) -> CONTROL_DEBUG_Row { CONTROL_DEBUG_Row {
     } }
 }
 pub struct CONTROL_DEBUG_Row {
@@ -103108,16 +103076,12 @@ pub struct CONTROL_EXPLICIT_THERMAL_SOLVER_Row {
 pub struct CONTROL_EXPLOSIVE_SHADOW {
 }
 impl CONTROL_EXPLOSIVE_SHADOW {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_EXPLOSIVE_SHADOW").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_EXPLOSIVE_SHADOW {
     type Row = CONTROL_EXPLOSIVE_SHADOW_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_EXPLOSIVE_SHADOW_Row { CONTROL_EXPLOSIVE_SHADOW_Row {
+    fn row(&self, _i: usize) -> CONTROL_EXPLOSIVE_SHADOW_Row { CONTROL_EXPLOSIVE_SHADOW_Row {
     } }
 }
 pub struct CONTROL_EXPLOSIVE_SHADOW_Row {
@@ -108674,16 +108638,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_ARRANGE_PARTS_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_AUTOMATIC {
 }
 impl CONTROL_MPP_DECOMPOSITION_AUTOMATIC {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_AUTOMATIC").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_AUTOMATIC {
     type Row = CONTROL_MPP_DECOMPOSITION_AUTOMATIC_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_AUTOMATIC_Row { CONTROL_MPP_DECOMPOSITION_AUTOMATIC_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_AUTOMATIC_Row { CONTROL_MPP_DECOMPOSITION_AUTOMATIC_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_AUTOMATIC_Row {
@@ -108692,16 +108652,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_AUTOMATIC_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_BAGREF {
 }
 impl CONTROL_MPP_DECOMPOSITION_BAGREF {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_BAGREF").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_BAGREF {
     type Row = CONTROL_MPP_DECOMPOSITION_BAGREF_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_BAGREF_Row { CONTROL_MPP_DECOMPOSITION_BAGREF_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_BAGREF_Row { CONTROL_MPP_DECOMPOSITION_BAGREF_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_BAGREF_Row {
@@ -108710,16 +108666,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_BAGREF_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_CHECK_SPEED {
 }
 impl CONTROL_MPP_DECOMPOSITION_CHECK_SPEED {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_CHECK_SPEED").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_CHECK_SPEED {
     type Row = CONTROL_MPP_DECOMPOSITION_CHECK_SPEED_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_CHECK_SPEED_Row { CONTROL_MPP_DECOMPOSITION_CHECK_SPEED_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_CHECK_SPEED_Row { CONTROL_MPP_DECOMPOSITION_CHECK_SPEED_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_CHECK_SPEED_Row {
@@ -108804,16 +108756,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_CONTACT_ISOLATE_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES {
 }
 impl CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES {
     type Row = CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES_Row { CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES_Row { CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES_Row {
@@ -108822,16 +108770,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_DISABLE_UNREF_CURVES_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT {
 }
 impl CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT {
     type Row = CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT_Row {
@@ -108840,16 +108784,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENT_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS {
 }
 impl CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS {
     type Row = CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS_Row {
@@ -108858,16 +108798,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_ALE_ELEMENTS_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT {
 }
 impl CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT {
     type Row = CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT_Row {
@@ -108876,16 +108812,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENT_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS {
 }
 impl CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS {
     type Row = CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS_Row { CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_DISTRIBUTE_SPH_ELEMENTS_Row {
@@ -109004,16 +108936,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_METHOD_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS {
 }
 impl CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS {
     type Row = CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS_Row { CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS_Row { CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_NODISTRIBUTE_DES_ELEMENTS_Row {
@@ -109408,16 +109336,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_SCALE_FACTOR_SPH_Row {
 pub struct CONTROL_MPP_DECOMPOSITION_SHOW {
 }
 impl CONTROL_MPP_DECOMPOSITION_SHOW {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_DECOMPOSITION_SHOW").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_DECOMPOSITION_SHOW {
     type Row = CONTROL_MPP_DECOMPOSITION_SHOW_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_DECOMPOSITION_SHOW_Row { CONTROL_MPP_DECOMPOSITION_SHOW_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_DECOMPOSITION_SHOW_Row { CONTROL_MPP_DECOMPOSITION_SHOW_Row {
     } }
 }
 pub struct CONTROL_MPP_DECOMPOSITION_SHOW_Row {
@@ -109484,16 +109408,12 @@ pub struct CONTROL_MPP_DECOMPOSITION_TRANSFORMATION_Row {
 pub struct CONTROL_MPP_IO_BINOUTONLY {
 }
 impl CONTROL_MPP_IO_BINOUTONLY {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_IO_BINOUTONLY").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_IO_BINOUTONLY {
     type Row = CONTROL_MPP_IO_BINOUTONLY_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_IO_BINOUTONLY_Row { CONTROL_MPP_IO_BINOUTONLY_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_IO_BINOUTONLY_Row { CONTROL_MPP_IO_BINOUTONLY_Row {
     } }
 }
 pub struct CONTROL_MPP_IO_BINOUTONLY_Row {
@@ -109502,16 +109422,12 @@ pub struct CONTROL_MPP_IO_BINOUTONLY_Row {
 pub struct CONTROL_MPP_IO_LSTC_REDUCE {
 }
 impl CONTROL_MPP_IO_LSTC_REDUCE {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_IO_LSTC_REDUCE").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_IO_LSTC_REDUCE {
     type Row = CONTROL_MPP_IO_LSTC_REDUCE_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_IO_LSTC_REDUCE_Row { CONTROL_MPP_IO_LSTC_REDUCE_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_IO_LSTC_REDUCE_Row { CONTROL_MPP_IO_LSTC_REDUCE_Row {
     } }
 }
 pub struct CONTROL_MPP_IO_LSTC_REDUCE_Row {
@@ -109520,16 +109436,12 @@ pub struct CONTROL_MPP_IO_LSTC_REDUCE_Row {
 pub struct CONTROL_MPP_IO_NOBEAMOUT {
 }
 impl CONTROL_MPP_IO_NOBEAMOUT {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_IO_NOBEAMOUT").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_IO_NOBEAMOUT {
     type Row = CONTROL_MPP_IO_NOBEAMOUT_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_IO_NOBEAMOUT_Row { CONTROL_MPP_IO_NOBEAMOUT_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_IO_NOBEAMOUT_Row { CONTROL_MPP_IO_NOBEAMOUT_Row {
     } }
 }
 pub struct CONTROL_MPP_IO_NOBEAMOUT_Row {
@@ -109538,16 +109450,12 @@ pub struct CONTROL_MPP_IO_NOBEAMOUT_Row {
 pub struct CONTROL_MPP_IO_NOD3DUMP {
 }
 impl CONTROL_MPP_IO_NOD3DUMP {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_IO_NOD3DUMP").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_IO_NOD3DUMP {
     type Row = CONTROL_MPP_IO_NOD3DUMP_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_IO_NOD3DUMP_Row { CONTROL_MPP_IO_NOD3DUMP_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_IO_NOD3DUMP_Row { CONTROL_MPP_IO_NOD3DUMP_Row {
     } }
 }
 pub struct CONTROL_MPP_IO_NOD3DUMP_Row {
@@ -109556,16 +109464,12 @@ pub struct CONTROL_MPP_IO_NOD3DUMP_Row {
 pub struct CONTROL_MPP_IO_NODUMP {
 }
 impl CONTROL_MPP_IO_NODUMP {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_IO_NODUMP").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_IO_NODUMP {
     type Row = CONTROL_MPP_IO_NODUMP_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_IO_NODUMP_Row { CONTROL_MPP_IO_NODUMP_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_IO_NODUMP_Row { CONTROL_MPP_IO_NODUMP_Row {
     } }
 }
 pub struct CONTROL_MPP_IO_NODUMP_Row {
@@ -109574,16 +109478,12 @@ pub struct CONTROL_MPP_IO_NODUMP_Row {
 pub struct CONTROL_MPP_IO_NOFULL {
 }
 impl CONTROL_MPP_IO_NOFULL {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_IO_NOFULL").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_IO_NOFULL {
     type Row = CONTROL_MPP_IO_NOFULL_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_IO_NOFULL_Row { CONTROL_MPP_IO_NOFULL_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_IO_NOFULL_Row { CONTROL_MPP_IO_NOFULL_Row {
     } }
 }
 pub struct CONTROL_MPP_IO_NOFULL_Row {
@@ -109592,16 +109492,12 @@ pub struct CONTROL_MPP_IO_NOFULL_Row {
 pub struct CONTROL_MPP_IO_SWAPBYTES {
 }
 impl CONTROL_MPP_IO_SWAPBYTES {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_MPP_IO_SWAPBYTES").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_MPP_IO_SWAPBYTES {
     type Row = CONTROL_MPP_IO_SWAPBYTES_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_MPP_IO_SWAPBYTES_Row { CONTROL_MPP_IO_SWAPBYTES_Row {
+    fn row(&self, _i: usize) -> CONTROL_MPP_IO_SWAPBYTES_Row { CONTROL_MPP_IO_SWAPBYTES_Row {
     } }
 }
 pub struct CONTROL_MPP_IO_SWAPBYTES_Row {
@@ -111466,16 +111362,12 @@ pub struct CONTROL_STEADY_STATE_ROLLING_Row {
 pub struct CONTROL_STRUCTURED {
 }
 impl CONTROL_STRUCTURED {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_STRUCTURED").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_STRUCTURED {
     type Row = CONTROL_STRUCTURED_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_STRUCTURED_Row { CONTROL_STRUCTURED_Row {
+    fn row(&self, _i: usize) -> CONTROL_STRUCTURED_Row { CONTROL_STRUCTURED_Row {
     } }
 }
 pub struct CONTROL_STRUCTURED_Row {
@@ -111484,16 +111376,12 @@ pub struct CONTROL_STRUCTURED_Row {
 pub struct CONTROL_STRUCTURED_TERM {
 }
 impl CONTROL_STRUCTURED_TERM {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("CONTROL_STRUCTURED_TERM").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for CONTROL_STRUCTURED_TERM {
     type Row = CONTROL_STRUCTURED_TERM_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> CONTROL_STRUCTURED_TERM_Row { CONTROL_STRUCTURED_TERM_Row {
+    fn row(&self, _i: usize) -> CONTROL_STRUCTURED_TERM_Row { CONTROL_STRUCTURED_TERM_Row {
     } }
 }
 pub struct CONTROL_STRUCTURED_TERM_Row {
@@ -170712,16 +170600,12 @@ pub struct INTERFACE_LINKING_SEGMENT_Row {
 pub struct INTERFACE_SPG_1 {
 }
 impl INTERFACE_SPG_1 {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("INTERFACE_SPG_1").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for INTERFACE_SPG_1 {
     type Row = INTERFACE_SPG_1_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> INTERFACE_SPG_1_Row { INTERFACE_SPG_1_Row {
+    fn row(&self, _i: usize) -> INTERFACE_SPG_1_Row { INTERFACE_SPG_1_Row {
     } }
 }
 pub struct INTERFACE_SPG_1_Row {
@@ -170730,16 +170614,12 @@ pub struct INTERFACE_SPG_1_Row {
 pub struct INTERFACE_SPG_2 {
 }
 impl INTERFACE_SPG_2 {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("INTERFACE_SPG_2").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for INTERFACE_SPG_2 {
     type Row = INTERFACE_SPG_2_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> INTERFACE_SPG_2_Row { INTERFACE_SPG_2_Row {
+    fn row(&self, _i: usize) -> INTERFACE_SPG_2_Row { INTERFACE_SPG_2_Row {
     } }
 }
 pub struct INTERFACE_SPG_2_Row {
@@ -176806,16 +176686,12 @@ pub struct LOAD_SHELL_SET_Row {
 pub struct LOAD_SPCFORC {
 }
 impl LOAD_SPCFORC {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("LOAD_SPCFORC").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for LOAD_SPCFORC {
     type Row = LOAD_SPCFORC_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> LOAD_SPCFORC_Row { LOAD_SPCFORC_Row {
+    fn row(&self, _i: usize) -> LOAD_SPCFORC_Row { LOAD_SPCFORC_Row {
     } }
 }
 pub struct LOAD_SPCFORC_Row {
@@ -177500,16 +177376,12 @@ pub struct LOAD_THERMAL_CONSTANT_NODE_Row {
 pub struct LOAD_THERMAL_D3PLOT {
 }
 impl LOAD_THERMAL_D3PLOT {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("LOAD_THERMAL_D3PLOT").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for LOAD_THERMAL_D3PLOT {
     type Row = LOAD_THERMAL_D3PLOT_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> LOAD_THERMAL_D3PLOT_Row { LOAD_THERMAL_D3PLOT_Row {
+    fn row(&self, _i: usize) -> LOAD_THERMAL_D3PLOT_Row { LOAD_THERMAL_D3PLOT_Row {
     } }
 }
 pub struct LOAD_THERMAL_D3PLOT_Row {
@@ -177646,16 +177518,12 @@ pub struct LOAD_THERMAL_RSW_Row {
 pub struct LOAD_THERMAL_TOPAZ {
 }
 impl LOAD_THERMAL_TOPAZ {
-    pub fn parse(p: &ParsedFile) -> Self {
-        let mut t = parse_schema(p, &super::schema("LOAD_THERMAL_TOPAZ").unwrap());
-        Self {
-        }
-    }
+    pub fn parse(_p: &ParsedFile) -> Self { Self {} }
 }
 impl Columns for LOAD_THERMAL_TOPAZ {
     type Row = LOAD_THERMAL_TOPAZ_Row;
     fn len(&self) -> usize { 0 }
-    fn row(&self, i: usize) -> LOAD_THERMAL_TOPAZ_Row { LOAD_THERMAL_TOPAZ_Row {
+    fn row(&self, _i: usize) -> LOAD_THERMAL_TOPAZ_Row { LOAD_THERMAL_TOPAZ_Row {
     } }
 }
 pub struct LOAD_THERMAL_TOPAZ_Row {

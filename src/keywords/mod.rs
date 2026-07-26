@@ -269,6 +269,7 @@ impl Kw {
                     ty: f.t.into(),
                     width: f.w,
                     count: 1,
+                    reference: f.r,
                 });
             }
             s = s.card(c);
@@ -349,7 +350,7 @@ pub fn find(name: &str) -> Option<&'static Kw> {
     }
     // KEYWORDS is sorted by uppercase name — binary search, then a
     // case-insensitive scan as a fallback.
-    if let Ok(i) = data::KEYWORDS.binary_search_by(|k| k.name.cmp(&upper.as_str())) {
+    if let Ok(i) = data::KEYWORDS.binary_search_by(|k| k.name.cmp(upper.as_str())) {
         return Some(&data::KEYWORDS[i]);
     }
     data::KEYWORDS.iter().find(|k| k.name.eq_ignore_ascii_case(name))

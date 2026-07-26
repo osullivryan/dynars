@@ -30,7 +30,7 @@ fn match_include_keyword(line: &[u8]) -> Option<IncludeKind> {
         return Some(IncludeKind::Include);
     }
 
-    if rest[0].to_ascii_uppercase() != b'_' {
+    if !rest[0].eq_ignore_ascii_case(&b'_') {
         return None;
     }
 

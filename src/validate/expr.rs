@@ -80,6 +80,9 @@ impl Expr {
     pub fn any(exprs: impl IntoIterator<Item = Expr>) -> Expr {
         Expr::Any(exprs.into_iter().collect())
     }
+    // Part of the `all`/`any`/`not` builder trio — an intentional constructor,
+    // not an inherent `Not::not`.
+    #[allow(clippy::should_implement_trait)]
     pub fn not(expr: Expr) -> Expr {
         Expr::Not(Box::new(expr))
     }

@@ -128,12 +128,16 @@ def gen_typed(kwd, keywords):
         out += [f"    pub {fid}: Vec<{RUST_TY[t]}>," for fid, t in zip(fids, tags)]
         out.append("}")
         out.append(f"impl {sid} {{")
-        out.append("    pub fn parse(p: &ParsedFile) -> Self {")
-        out.append(f'        let mut t = parse_schema(p, &super::schema("{esc(name)}").unwrap());')
-        out.append("        Self {")
-        for fid, col, t in zip(fids, cols, tags):
-            out.append(f'            {fid}: t.take("{esc(col)}").and_then(|c| c.{INTO[t]}()).unwrap_or_default(),')
-        out.append("        }\n    }\n}")
+        if fids:
+            out.append("    pub fn parse(p: &ParsedFile) -> Self {")
+            out.append(f'        let mut t = parse_schema(p, &super::schema("{esc(name)}").unwrap());')
+            out.append("        Self {")
+            for fid, col, t in zip(fids, cols, tags):
+                out.append(f'            {fid}: t.take("{esc(col)}").and_then(|c| c.{INTO[t]}()).unwrap_or_default(),')
+            out.append("        }\n    }\n}")
+        else:
+            # No data fields (flag-only control keywords): nothing to parse.
+            out.append("    pub fn parse(_p: &ParsedFile) -> Self { Self {} }\n}")
         # Only the irreducible per-keyword bits: len + row. is_empty / iter come
         # from the shared `Columns` trait (behaviour lives once, not per struct).
         row_sid = f"{sid}_Row"
@@ -142,7 +146,7 @@ def gen_typed(kwd, keywords):
         out.append(f"impl Columns for {sid} {{")
         out.append(f"    type Row = {row_sid};")
         out.append(f"    fn len(&self) -> usize {{ {len_expr} }}")
-        out.append(f"    fn row(&self, i: usize) -> {row_sid} {{ {row_sid} {{")
+        out.append(f"    fn row(&self, {'i' if fids else '_i'}: usize) -> {row_sid} {{ {row_sid} {{")
         for fid, t in zip(fids, tags):
             val = f"self.{fid}[i].clone()" if t == "S" else f"self.{fid}[i]"
             out.append(f"        {fid}: {val},")

@@ -171,7 +171,9 @@ pub(crate) fn build_schema(
                     )));
                 }
             };
-            c.fields.push(FieldSpec { name, ty, width, count: count.max(1) });
+            // Python card tuples don't carry reference metadata yet; a
+            // registered keyword's references stay unchecked from Python.
+            c.fields.push(FieldSpec { name, ty, width, count: count.max(1), reference: crate::keywords::Ref::None });
         }
         schema.cards.push(c);
     }

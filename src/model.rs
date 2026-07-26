@@ -84,7 +84,7 @@ fn title_offset(exact_kw: &str) -> usize {
 #[derive(Debug, Clone)]
 pub struct Dangling {
     pub from_keyword: String,
-    pub field: &'static str,
+    pub field: String,
     pub target: Ref,
     pub id: i64,
     pub file: PathBuf,
@@ -112,7 +112,10 @@ impl Deck {
     /// not re-done here.
     pub(crate) fn dangling(&self, connectivity: bool) -> Vec<Dangling> {
         let defs = self.definitions();
-        self.files.par_iter().flat_map(|f| check_refs(f, defs, connectivity)).collect()
+        self.files
+            .par_iter()
+            .flat_map(|f| check_refs(f, defs, &self.user_schemas, connectivity))
+            .collect()
     }
 
     /// Number of defined ids of each kind (for reporting), most-numerous first.
@@ -151,18 +154,15 @@ fn collect_defs(file: &ParsedFile) -> HashMap<EntityKind, HashSet<i64>> {
         if def.per_line {
             let card0 = kw.cards.first().copied().unwrap_or(&[]);
             for line in lines.iter().skip(title) {
-                if let Some(id) = card_field_i64(line, card0, 0, block.format) {
-                    if id != 0 {
-                        set.insert(id);
-                    }
-                }
-            }
-        } else if let Some(line) = lines.get(title + def.id_card) {
-            if let Some(id) = card_field_i64(line, id_card, 0, block.format) {
-                if id != 0 {
+                if let Some(id) = card_field_i64(line, card0, 0, block.format) && id != 0 {
                     set.insert(id);
                 }
             }
+        } else if let Some(line) = lines.get(title + def.id_card)
+            && let Some(id) = card_field_i64(line, id_card, 0, block.format)
+            && id != 0
+        {
+            set.insert(id);
         }
     }
     out
@@ -186,12 +186,18 @@ fn is_dangling(defs: &HashMap<EntityKind, HashSet<i64>>, r: &Ref, id: i64) -> bo
 fn check_refs(
     file: &ParsedFile,
     defs: &HashMap<EntityKind, HashSet<i64>>,
+    user_schemas: &HashMap<String, Schema>,
     connectivity: bool,
 ) -> Vec<Dangling> {
     let mut out = Vec::new();
     for block in &file.blocks {
         let exact = file.keyword_name(block);
         let base = canonical_base(exact);
+        // A registered user schema wins — check the references it declares.
+        if let Some(schema) = user_schemas.get(&base) {
+            check_refs_user(file, block, &base, schema, defs, &mut out);
+            continue;
+        }
         let Some(kw) = keywords::find(&base) else { continue };
         if kw.cards.iter().flat_map(|c| c.iter()).all(|f| matches!(f.r, Ref::None)) {
             continue; // no references on this keyword
@@ -215,10 +221,9 @@ fn check_refs(
                     if matches!(f.r, Ref::None) {
                         continue;
                     }
-                    if let Some(v) = card_field_i64(line, card0, fi, block.format) {
-                        if v != 0 && is_dangling(defs, &f.r, v) {
-                            out.push(Dangling { from_keyword: base.clone(), field: f.n, target: f.r, id: v, file: file.path.clone(), line: line_no(row) });
-                        }
+                    let Some(v) = card_field_i64(line, card0, fi, block.format) else { continue };
+                    if v != 0 && is_dangling(defs, &f.r, v) {
+                        out.push(Dangling { from_keyword: base.clone(), field: f.n.to_string(), target: f.r, id: v, file: file.path.clone(), line: line_no(row) });
                     }
                 }
             }
@@ -229,16 +234,63 @@ fn check_refs(
                     if matches!(f.r, Ref::None) {
                         continue;
                     }
-                    if let Some(v) = card_field_i64(line, card, fi, block.format) {
-                        if v != 0 && is_dangling(defs, &f.r, v) {
-                            out.push(Dangling { from_keyword: base.clone(), field: f.n, target: f.r, id: v, file: file.path.clone(), line: line_no(title + ci) });
-                        }
+                    let Some(v) = card_field_i64(line, card, fi, block.format) else { continue };
+                    if v != 0 && is_dangling(defs, &f.r, v) {
+                        out.push(Dangling { from_keyword: base.clone(), field: f.n.to_string(), target: f.r, id: v, file: file.path.clone(), line: line_no(title + ci) });
                     }
                 }
             }
         }
     }
     out
+}
+
+/// Dangling-reference check for a block governed by a **user schema** (not the
+/// built-in table). Reads the `Ref` fields the schema declares
+/// ([`Card::ref_to`](crate::schema::Card::ref_to)) at each data row and flags
+/// ids that resolve to nothing defined. Row→card tiling matches the navigation
+/// spine (a single repeating card governs every row). User keywords reference
+/// built-in entities but do not themselves define any, so `defs` is unchanged.
+fn check_refs_user(
+    file: &ParsedFile,
+    block: &Block,
+    base: &str,
+    schema: &Schema,
+    defs: &HashMap<EntityKind, HashSet<i64>>,
+    out: &mut Vec<Dangling>,
+) {
+    if schema.cards.iter().flat_map(|c| &c.fields).all(|f| matches!(f.reference, Ref::None)) {
+        return; // no references declared
+    }
+    let exact = file.keyword_name(block);
+    let title = title_offset(exact);
+    let lines = data_lines(file, block);
+    let line_no =
+        |ln: usize| 1 + file.src()[..block.name_start].iter().filter(|&&b| b == b'\n').count() + ln;
+
+    for (row, line) in lines.iter().enumerate().skip(title) {
+        let Some(fields) = schema.card_for_row(row - title) else { continue };
+        let card = CardRef::User(fields);
+        for col in 0..card.len() {
+            let r = card.ref_of(col);
+            if matches!(r, Ref::None) {
+                continue;
+            }
+            let Some(v) = card.field_slice(line, col, block.format).and_then(parse_i64) else {
+                continue;
+            };
+            if v != 0 && is_dangling(defs, &r, v) {
+                out.push(Dangling {
+                    from_keyword: base.to_string(),
+                    field: card.name(col).unwrap_or("").to_string(),
+                    target: r,
+                    id: v,
+                    file: file.path.clone(),
+                    line: line_no(row),
+                });
+            }
+        }
+    }
 }
 
 // ── Navigation graph: entity handles that follow references ──────────────────
@@ -312,12 +364,11 @@ pub(crate) fn build_sites(deck: &Deck) -> Sites {
             let id_card = kw.cards.get(def.id_card).copied().unwrap_or(&[]);
             let title = title_offset(exact);
             let lines = data_lines(file, block);
-            if let Some(line) = lines.get(title + def.id_card) {
-                if let Some(id) = card_field_i64(line, id_card, 0, block.format) {
-                    if id != 0 {
-                        sites.entry((def.kind, id)).or_insert((fi, bi));
-                    }
-                }
+            if let Some(line) = lines.get(title + def.id_card)
+                && let Some(id) = card_field_i64(line, id_card, 0, block.format)
+                && id != 0
+            {
+                sites.entry((def.kind, id)).or_insert((fi, bi));
             }
         }
     }
@@ -376,10 +427,10 @@ pub(crate) fn first_ref_to(deck: &Deck, file: usize, block: usize, kind: EntityK
         for fld in *card {
             let targets = matches!(fld.r, Ref::To(k) if k == kind)
                 || matches!(fld.r, Ref::AnyOf(ks) if ks.contains(&kind));
-            if targets {
-                if let Some(id) = entity_field(deck, file, block, fld.n).and_then(|v| v.as_i64()) {
-                    return Some(id);
-                }
+            if targets
+                && let Some(id) = entity_field(deck, file, block, fld.n).and_then(|v| v.as_i64())
+            {
+                return Some(id);
             }
         }
     }
@@ -479,8 +530,8 @@ impl Deck {
 /// A card's field layout, from either the built-in static table or a user
 /// [`Schema`] registered on the [`Deck`]. Borrowed for the deck's lifetime so
 /// one `Field`/`Card` implementation reads both — the built-in `&'static [Fld]`
-/// coerces into the same `'d`. User schemas carry names, types, and widths but
-/// no reference metadata (their [`ref_of`](CardRef::ref_of) is always `None`).
+/// coerces into the same `'d`. Both carry names, types, widths, and (when
+/// declared via [`Card::ref_to`](crate::schema::Card::ref_to)) references.
 #[derive(Clone, Copy)]
 enum CardRef<'d> {
     Static(&'static [keywords::Fld]),
@@ -519,8 +570,7 @@ impl<'d> CardRef<'d> {
     fn ref_of(&self, col: usize) -> Ref {
         match self {
             CardRef::Static(c) => c.get(col).map_or(Ref::None, |f| f.r),
-            // User schemas describe layout only — no reference targets.
-            CardRef::User(_) => Ref::None,
+            CardRef::User(c) => c.get(col).map_or(Ref::None, |f| f.reference),
         }
     }
     /// The raw (untrimmed) byte slice for field `col`, width-aware. Fixed format
@@ -813,8 +863,9 @@ impl<'d> Field<'d> {
     pub fn as_str(&self) -> Option<&'d str> {
         Some(std::str::from_utf8(self.raw_bytes()?).ok()?.trim())
     }
-    /// Follow this field's reference to the entity it points at, if it is one.
-    /// Always `None` for a user-schema field (they carry no reference metadata).
+    /// Follow this field's reference to the entity it points at, if it is one —
+    /// for a built-in field, or a user-schema field declared with
+    /// [`Card::ref_to`](crate::schema::Card::ref_to).
     pub fn reference(&self) -> Option<Keyword<'d>> {
         let id = self.as_i64()?;
         match self.card?.ref_of(self.col) {
@@ -937,5 +988,29 @@ mod tests {
         assert_eq!(kw.card(0).unwrap().field("tag").unwrap().value(), Value::Str("hello".into()));
         // the field carries its schema name
         assert_eq!(kw.card(0).unwrap().at(1).unwrap().name(), Some("mass"));
+    }
+
+    #[test]
+    fn registered_schema_references_are_validated_and_followed() {
+        use crate::validate::Rule;
+        // *MAT_ELASTIC defines Material 5; the custom keyword references a
+        // material on each row — one valid (5), one dangling (99).
+        let mut d = deck_multi(&[b"*MAT_ELASTIC\n5,7.85e-9,210000.0,0.3\n*VENDOR_WIDGET\n1,5\n2,99\n"]);
+        d.register_schema(Schema::new("VENDOR_WIDGET").card(
+            crate::schema::Card::new().int("wid", 8).ref_to("mat", 8, EntityKind::Material),
+        ));
+
+        // references_resolve now covers the user schema's declared reference.
+        let report = d.validate([Rule::references_resolve()]);
+        let widget: Vec<_> = report.findings.iter().filter(|f| f.keyword == "VENDOR_WIDGET").collect();
+        assert_eq!(widget.len(), 1, "only mat=99 dangles");
+        assert!(widget[0].message.contains("mat") && widget[0].message.contains("99"));
+
+        // and Field::reference() follows a valid one to the defining entity.
+        let w = d.keywords("VENDOR_WIDGET").next().unwrap();
+        let mat = w.card(0).unwrap().field("mat").unwrap().reference();
+        assert_eq!(mat.and_then(|m| m.id()), Some(5));
+        // the dangling row resolves to nothing.
+        assert!(w.card(1).unwrap().field("mat").unwrap().reference().is_none());
     }
 }

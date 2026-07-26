@@ -59,7 +59,7 @@ fn conn_to_py<'py>(
     parts: Vec<i64>,
     cols: usize,
 ) -> PyResult<(Bound<'py, pyo3::PyAny>, Bound<'py, pyo3::PyAny>)> {
-    let rows = if cols > 0 { nodes.len() / cols } else { 0 };
+    let rows = nodes.len().checked_div(cols).unwrap_or(0);
     let conn = numpy::ndarray::Array2::from_shape_vec((rows, cols), nodes)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
         .into_pyarray(py)

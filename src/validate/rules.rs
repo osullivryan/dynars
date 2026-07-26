@@ -59,17 +59,17 @@ impl Check for FieldForbiddenValues {
     fn run(&self, deck: &Deck) -> Vec<Finding> {
         let mut out = Vec::new();
         for kw in deck.keywords(&self.keyword) {
-            if let Some(v) = kw.field(&self.field).map(|f| f.value()) {
-                if self.values.iter().any(|bad| Cmp::Eq.test(bad, &v)) {
-                    out.push(Finding {
-                        rule: self.name(),
-                        severity: Severity::Error,
-                        keyword: canonical_base(&self.keyword),
-                        file: kw.file().to_path_buf(),
-                        line: kw.line(),
-                        message: format!("{} = {} is forbidden", self.field, v.display()),
-                    });
-                }
+            if let Some(v) = kw.field(&self.field).map(|f| f.value())
+                && self.values.iter().any(|bad| Cmp::Eq.test(bad, &v))
+            {
+                out.push(Finding {
+                    rule: self.name(),
+                    severity: Severity::Error,
+                    keyword: canonical_base(&self.keyword),
+                    file: kw.file().to_path_buf(),
+                    line: kw.line(),
+                    message: format!("{} = {} is forbidden", self.field, v.display()),
+                });
             }
         }
         out

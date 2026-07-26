@@ -103,7 +103,7 @@ fn branch_table(b: &Binout, branch: &str, run_id: &str) -> Option<RecordBatch> {
         Some((_, flat)) => flat.into_iter().step_by(1).take(t).collect(),
         None => (0..t).map(|i| i as f64).collect(),
     };
-    let time_col: Vec<f64> = time_vec.iter().flat_map(|&x| std::iter::repeat(x).take(n_ent)).collect();
+    let time_col: Vec<f64> = time_vec.iter().flat_map(|&x| std::iter::repeat_n(x, n_ent)).collect();
     let id_col: Vec<i64> = (0..t).flat_map(|_| 0..n_ent as i64).collect();
     let run_col: Vec<&str> = vec![run_id; n_rows];
 
@@ -124,7 +124,7 @@ fn branch_table(b: &Binout, branch: &str, run_id: &str) -> Option<RecordBatch> {
             flat.clone()
         } else if *k == 1 {
             // Broadcast a scalar-per-state across all entities.
-            flat.iter().flat_map(|&x| std::iter::repeat(x).take(n_ent)).collect()
+            flat.iter().flat_map(|&x| std::iter::repeat_n(x, n_ent)).collect()
         } else {
             continue; // ragged relative to n_ent — skip rather than misalign
         };

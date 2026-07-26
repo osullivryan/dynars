@@ -283,12 +283,23 @@ optional, derived on demand). One core `Value`; `validate` consumes it. Demos,
   impl reads. So `deck.keywords("VENDOR_WIDGET").card(0).field("mass")` gets
   named, typed access for a keyword we ship no layout for — the same runtime
   `Schema` the columnar path and `#[derive(Keyword)]` produce, no API fork.
-  Layout only: user schemas don't participate in entity-definition/reference
-  resolution (that stays on the built-in table), and carry no `Ref` metadata.
   Python `PyDeck::register_schema` + `.pyi` + README updated.
-- *Remaining deferral:* no iterator-level `.column` sugar
-  (`deck.keywords(name).column`) — `deck.table(name).column(field)` covers it
-  without a bespoke iterator type.
+- **References in user schemas** (follow-up, done): `FieldSpec` carries an
+  optional `Ref`, declared via `Card::ref_to(name, width, EntityKind)`;
+  `Kw::to_schema` propagates the built-in `Ref`; `CardRef::ref_of` returns it for
+  both sources. So `Field::reference()` follows a registered keyword's refs, and
+  `check_refs` consults user schemas (`check_refs_user`) — `Rule::references_resolve`
+  now dangling-checks references declared on a registered keyword. (User keywords
+  *reference* built-in entities but still don't *define* new ones — no clean way
+  to declare that via the `Schema` builder, and no data-side need yet.)
+- **Python rule guard** (follow-up, done): `check_keyword` no longer rejects
+  keywords absent from the built-in library, so the Python `Rule` builders can
+  target a registered/vendor keyword (previously raised `ValueError`).
+- *Remaining deferrals:* no iterator-level `.column` sugar
+  (`deck.keywords(name).column`) — `deck.table(name).column(field)` covers it;
+  Python-side schemas can't yet *declare* references (the `(name,type,width,count)`
+  card tuple has no ref slot), so Python custom keywords validate field values but
+  not their references.
 
 **Phase 4 (optional) — generate def-side metadata from `kwd.json`.**
 ❌ **Investigated, not worth doing — premise doesn't hold.** kwd.json has **no
