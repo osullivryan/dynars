@@ -1,7 +1,7 @@
+use super::LsdaError;
+use super::diskfile::Diskfile;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-use super::diskfile::Diskfile;
-use super::LsdaError;
 
 /// An immutable, lock-free binout tree, frozen from the `Arc<Mutex<Symbol>>`
 /// tree once parsing is done. Reads (including concurrent ones) traverse it
@@ -90,7 +90,10 @@ pub struct Symbol {
 impl Symbol {
     pub fn new(name: Vec<u8>) -> Self {
         Self {
-            name, type_: 0, offset: 0, length: 0,
+            name,
+            type_: 0,
+            offset: 0,
+            length: 0,
             file_index: None,
             children: HashMap::new(),
             parent: None,
@@ -124,11 +127,11 @@ impl ReadResult {
     /// Flatten to f64 for use as a scalar result.
     pub fn to_f64_vec(&self) -> Vec<f64> {
         match self {
-            ReadResult::I8(v)  => v.iter().map(|x| *x as f64).collect(),
+            ReadResult::I8(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::I16(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::I32(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::I64(v) => v.iter().map(|x| *x as f64).collect(),
-            ReadResult::U8(v)  => v.iter().map(|x| *x as f64).collect(),
+            ReadResult::U8(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::U16(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::U32(v) => v.iter().map(|x| *x as f64).collect(),
             ReadResult::U64(v) => v.iter().map(|x| *x as f64).collect(),
@@ -140,7 +143,8 @@ impl ReadResult {
 
     pub fn keys(&self) -> Vec<String> {
         match self {
-            ReadResult::Directory(keys) => keys.iter()
+            ReadResult::Directory(keys) => keys
+                .iter()
                 .map(|k| String::from_utf8_lossy(k).into_owned())
                 .collect(),
             _ => vec![],
@@ -182,7 +186,11 @@ macro_rules! decode {
         let mut v = Vec::with_capacity($count);
         for chunk in $buf.chunks_exact($n).take($count) {
             let bytes: [u8; $n] = chunk.try_into().unwrap();
-            v.push(if $le { <$ty>::from_le_bytes(bytes) } else { <$ty>::from_be_bytes(bytes) });
+            v.push(if $le {
+                <$ty>::from_le_bytes(bytes)
+            } else {
+                <$ty>::from_be_bytes(bytes)
+            });
         }
         v
     }};
@@ -190,7 +198,12 @@ macro_rules! decode {
 
 fn read_typed(buf: &[u8], type_: u8, count: usize, le: bool) -> Result<ReadResult, LsdaError> {
     Ok(match type_ {
-        1 => ReadResult::I8(buf[..count.min(buf.len())].iter().map(|&b| b as i8).collect()),
+        1 => ReadResult::I8(
+            buf[..count.min(buf.len())]
+                .iter()
+                .map(|&b| b as i8)
+                .collect(),
+        ),
         2 => ReadResult::I16(decode!(buf, count, le, i16, 2)),
         3 => ReadResult::I32(decode!(buf, count, le, i32, 4)),
         4 => ReadResult::I64(decode!(buf, count, le, i64, 8)),

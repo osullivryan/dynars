@@ -6,12 +6,12 @@
 //! - [`D3plot`] reads the control block, initial geometry, and per-state nodal
 //!   coordinates / displacements.
 
+mod binout;
+pub mod d3plot;
 mod diskfile;
 mod edit;
 mod lsda;
 mod symbol;
-mod binout;
-pub mod d3plot;
 
 pub use binout::Binout;
 pub use d3plot::{
@@ -25,8 +25,8 @@ pub use symbol::ReadResult;
 
 #[derive(Debug, Clone)]
 pub struct TimeSeries {
-    pub time:    Vec<f64>,
-    pub values:  Vec<f64>,
+    pub time: Vec<f64>,
+    pub values: Vec<f64>,
     pub channel: String,
 }
 
@@ -44,15 +44,20 @@ pub enum ScalarExtract {
 
 pub fn extract_scalar(ts: &TimeSeries, method: ScalarExtract) -> f64 {
     let v = &ts.values;
-    if v.is_empty() { return 0.0; }
+    if v.is_empty() {
+        return 0.0;
+    }
     match method {
-        ScalarExtract::Last     => *v.last().unwrap(),
-        ScalarExtract::First    => v[0],
-        ScalarExtract::Max      => v.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-        ScalarExtract::Min      => v.iter().cloned().fold(f64::INFINITY, f64::min),
-        ScalarExtract::AbsMax   => v.iter().map(|x| x.abs()).fold(0.0_f64, f64::max),
-        ScalarExtract::Mean     => v.iter().sum::<f64>() / v.len() as f64,
-        ScalarExtract::Integral => ts.time.windows(2).zip(v.windows(2))
+        ScalarExtract::Last => *v.last().unwrap(),
+        ScalarExtract::First => v[0],
+        ScalarExtract::Max => v.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        ScalarExtract::Min => v.iter().cloned().fold(f64::INFINITY, f64::min),
+        ScalarExtract::AbsMax => v.iter().map(|x| x.abs()).fold(0.0_f64, f64::max),
+        ScalarExtract::Mean => v.iter().sum::<f64>() / v.len() as f64,
+        ScalarExtract::Integral => ts
+            .time
+            .windows(2)
+            .zip(v.windows(2))
             .map(|(t, f)| (t[1] - t[0]) * (f[0] + f[1]) / 2.0)
             .sum(),
     }

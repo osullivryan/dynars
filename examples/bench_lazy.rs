@@ -11,8 +11,8 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use dynars::parser::{parse_file_blocks, Field};
-use dynars::schema::{parse_schema, Card, Schema};
+use dynars::parser::{Field, parse_file_blocks};
+use dynars::schema::{Card, Schema, parse_schema};
 
 fn time<T>(label: &str, iters: u32, mut f: impl FnMut() -> T) -> f64 {
     // warm up
@@ -46,11 +46,7 @@ fn main() {
     let path = std::env::temp_dir().join("dynars_bench_lazy.k");
     std::fs::write(&path, &deck).unwrap();
     let bytes = deck.len();
-    println!(
-        "{} nodes, {:.1} MB deck\n",
-        n,
-        bytes as f64 / 1_048_576.0
-    );
+    println!("{} nodes, {:.1} MB deck\n", n, bytes as f64 / 1_048_576.0);
 
     let iters = 20;
 
@@ -60,8 +56,13 @@ fn main() {
     });
 
     // B. Full schema parse: split fields AND convert to i64/f64 columns (today).
-    let schema = Schema::new("NODE")
-        .card(Card::new().int("nid", 8).float("x", 16).float("y", 16).float("z", 16));
+    let schema = Schema::new("NODE").card(
+        Card::new()
+            .int("nid", 8)
+            .float("x", 16)
+            .float("y", 16)
+            .float("z", 16),
+    );
     let parsed = parse_file_blocks(&path).unwrap();
     let b = time("B. full parse (split + convert)", iters, || {
         parse_schema(&parsed, &schema)
@@ -82,7 +83,11 @@ fn main() {
                     continue;
                 }
                 for &(off, w) in &widths {
-                    let s = if off >= line.len() { &[][..] } else { &line[off..(off + w).min(line.len())] };
+                    let s = if off >= line.len() {
+                        &[][..]
+                    } else {
+                        &line[off..(off + w).min(line.len())]
+                    };
                     acc = acc.wrapping_add(black_box(s).len());
                 }
             }
@@ -99,7 +104,11 @@ fn main() {
                     continue;
                 }
                 for (k, &(off, w)) in widths.iter().enumerate() {
-                    let s = if off >= line.len() { &[][..] } else { &line[off..(off + w).min(line.len())] };
+                    let s = if off >= line.len() {
+                        &[][..]
+                    } else {
+                        &line[off..(off + w).min(line.len())]
+                    };
                     let f = Field { raw: s };
                     if k == 0 {
                         isum = isum.wrapping_add(f.as_i64().unwrap_or(0));
@@ -114,16 +123,38 @@ fn main() {
 
     println!();
     println!("=== read throughput (parallel, real code paths) ===");
-    println!("  full parse (B)            : {:>8.1} M nodes/s   ({:.2} ms)", n as f64 / b / 1e6, b * 1000.0);
-    println!("  block split only (A)      : {:>8.1} M nodes/s   ({:.2} ms)", n as f64 / a / 1e6, a * 1000.0);
+    println!(
+        "  full parse (B)            : {:>8.1} M nodes/s   ({:.2} ms)",
+        n as f64 / b / 1e6,
+        b * 1000.0
+    );
+    println!(
+        "  block split only (A)      : {:>8.1} M nodes/s   ({:.2} ms)",
+        n as f64 / a / 1e6,
+        a * 1000.0
+    );
     println!("  => if we stop read at the block index and convert on demand,");
-    println!("     read is {:.1}x faster ({:.1} ms -> {:.1} ms).", b / a, b * 1000.0, a * 1000.0);
+    println!(
+        "     read is {:.1}x faster ({:.1} ms -> {:.1} ms).",
+        b / a,
+        b * 1000.0,
+        a * 1000.0
+    );
     println!();
     println!("=== where the per-field work goes (single core) ===");
-    println!("  slice + convert (E)       : {:>8.2} ms", s_convert * 1000.0);
+    println!(
+        "  slice + convert (E)       : {:>8.2} ms",
+        s_convert * 1000.0
+    );
     println!("  slice only     (D)        : {:>8.2} ms", s_bytes * 1000.0);
-    println!("  => numeric conversion is {:.0}% of the per-field CPU work", (s_convert - s_bytes) / s_convert * 100.0);
-    println!("     (leaving fields as bytes is {:.1}x cheaper per field).", s_convert / s_bytes);
+    println!(
+        "  => numeric conversion is {:.0}% of the per-field CPU work",
+        (s_convert - s_bytes) / s_convert * 100.0
+    );
+    println!(
+        "     (leaving fields as bytes is {:.1}x cheaper per field).",
+        s_convert / s_bytes
+    );
 
     std::fs::remove_file(&path).ok();
 }

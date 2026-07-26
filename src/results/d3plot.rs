@@ -120,7 +120,7 @@ pub struct Control {
     pub nel4: usize,
     pub nv2d: usize,
     pub narbs: usize,
-    pub maxint: i64,  // shell integration layers; sign encodes element/node deletion (mdlopt)
+    pub maxint: i64, // shell integration layers; sign encodes element/node deletion (mdlopt)
     pub nmmat: usize, // total number of materials/parts
     pub extra: usize, // extra header words beyond the base 64 (word 57)
     // Interface-force (intfor) fields. `filetype == 4` marks an intfor file, in
@@ -205,14 +205,20 @@ impl Control {
 
     /// Element result words per state, summed over all element blocks.
     fn element_words(&self) -> usize {
-        self.nel8 * self.nv3d + self.nelth * self.nv3dt + self.nel2 * self.nv1d + self.nel4 * self.nv2d
+        self.nel8 * self.nv3d
+            + self.nelth * self.nv3dt
+            + self.nel2 * self.nv1d
+            + self.nel4 * self.nv2d
     }
 
     /// Bytes per state: time + global vars + node data + element data + deletion.
     /// SPH/airbag/rigid-road terms are not modelled (v1 scope).
     fn bytes_per_state(&self) -> u64 {
-        (TIME_WORDS + self.nglbv + self.node_data_words() + self.element_words() + self.deletion_words())
-            as u64
+        (TIME_WORDS
+            + self.nglbv
+            + self.node_data_words()
+            + self.element_words()
+            + self.deletion_words()) as u64
             * self.wordsize
     }
 
@@ -261,7 +267,10 @@ impl Control {
 /// This is the single source of truth for block identity: the reader/writer use
 /// it directly, and (with the `python` feature) it is exported to Python as the
 /// `StateBlock` enum — no magic strings.
-#[cfg_attr(feature = "python", pyo3::pyclass(eq, eq_int, from_py_object, name = "StateBlock"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(eq, eq_int, from_py_object, name = "StateBlock")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateBlock {
     Displacement,
@@ -276,7 +285,10 @@ pub enum StateBlock {
 /// A per-segment field in an interface-force (`intfor`) file. These partition
 /// the segment result block (`StateBlock::Shell`) in this order and sum to
 /// `nv2d`. Exported to Python as the `InterfaceField` enum — no magic strings.
-#[cfg_attr(feature = "python", pyo3::pyclass(eq, eq_int, from_py_object, name = "InterfaceField"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(eq, eq_int, from_py_object, name = "InterfaceField")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterfaceField {
     Wear,
@@ -289,7 +301,10 @@ pub enum InterfaceField {
 /// A per-segment field in an **FSIFOR** (ALE interface-force) file. These are
 /// single-value fields in this fixed order; the file carries as many as `|nv2d|`.
 /// Exported to Python as the `FsiforField` enum.
-#[cfg_attr(feature = "python", pyo3::pyclass(eq, eq_int, from_py_object, name = "FsiforField"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(eq, eq_int, from_py_object, name = "FsiforField")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsiforField {
     Pressure,
@@ -335,10 +350,16 @@ fn family_paths(base: &std::path::Path, n: Option<usize>) -> Vec<std::path::Path
     let mut out = vec![base.to_path_buf()];
     let mut i = 1;
     loop {
-        if let Some(k) = n && out.len() >= k {
+        if let Some(k) = n
+            && out.len() >= k
+        {
             break;
         }
-        let name = if i < 100 { format!("{stem}{i:02}") } else { format!("{stem}{i}") };
+        let name = if i < 100 {
+            format!("{stem}{i:02}")
+        } else {
+            format!("{stem}{i}")
+        };
         let p = std::path::PathBuf::from(&name);
         if n.is_none() && !p.exists() {
             break;
@@ -354,7 +375,9 @@ fn family_paths(base: &std::path::Path, n: Option<usize>) -> Vec<std::path::Path
 fn index_family(files: &[&[u8]]) -> Result<(Control, Vec<StateLoc>, Vec<f64>), D3plotError> {
     let ctrl = read_control_bytes(files[0])?;
     if ctrl.iu == 0 {
-        return Err(D3plotError::Unsupported("d3plot has no nodal displacement data (IU=0)".into()));
+        return Err(D3plotError::Unsupported(
+            "d3plot has no nodal displacement data (IU=0)".into(),
+        ));
     }
     let ws = ctrl.wordsize;
     let geom = ctrl.geometry_section_bytes();
@@ -372,7 +395,10 @@ fn index_family(files: &[&[u8]]) -> Result<(Control, Vec<StateLoc>, Vec<f64>), D
                     break 'outer;
                 }
                 times.push(t);
-                states.push(StateLoc { file: fi, offset: off });
+                states.push(StateLoc {
+                    file: fi,
+                    offset: off,
+                });
                 off += bps;
             }
         }
@@ -381,11 +407,19 @@ fn index_family(files: &[&[u8]]) -> Result<(Control, Vec<StateLoc>, Vec<f64>), D
 }
 
 impl D3plot {
-    pub fn control(&self) -> &Control { &self.ctrl }
-    pub fn num_nodes(&self) -> usize { self.ctrl.numnp }
-    pub fn num_states(&self) -> usize { self.states.len() }
+    pub fn control(&self) -> &Control {
+        &self.ctrl
+    }
+    pub fn num_nodes(&self) -> usize {
+        self.ctrl.numnp
+    }
+    pub fn num_states(&self) -> usize {
+        self.states.len()
+    }
     /// Simulation time of each state.
-    pub fn times(&self) -> &[f64] { &self.times }
+    pub fn times(&self) -> &[f64] {
+        &self.times
+    }
 
     pub fn open<P: AsRef<std::path::Path>>(path: P) -> Result<Self, D3plotError> {
         // Memory-map the base file plus any continuation files (d3plot01, …).
@@ -396,19 +430,37 @@ impl D3plot {
         let file_slices: Vec<&[u8]> = files.iter().map(|m| &m[..]).collect();
         let (ctrl, states, times) = index_family(&file_slices)?;
         let coord_off = (CONTROL_WORDS + ctrl.extra) as u64 * ctrl.wordsize;
-        let x0 = read_floats_at(&files[0], coord_off, ctrl.numnp * SPATIAL_DIM, ctrl.wordsize)?;
-        Ok(Self { ctrl, files, states, x0, times })
+        let x0 = read_floats_at(
+            &files[0],
+            coord_off,
+            ctrl.numnp * SPATIAL_DIM,
+            ctrl.wordsize,
+        )?;
+        Ok(Self {
+            ctrl,
+            files,
+            states,
+            x0,
+            times,
+        })
     }
 
     /// Deformed (current) node coordinates at `state` (0-based), NUMNP × 3 row-major.
     pub fn node_coordinates(&self, state: usize) -> Result<Vec<f64>, D3plotError> {
-        let loc = self
-            .states
-            .get(state)
-            .ok_or_else(|| D3plotError::Unsupported(format!("state {state} out of range ({})", self.states.len())))?;
+        let loc = self.states.get(state).ok_or_else(|| {
+            D3plotError::Unsupported(format!(
+                "state {state} out of range ({})",
+                self.states.len()
+            ))
+        })?;
         let ws = self.ctrl.wordsize;
         let off = loc.offset + self.ctrl.iu_offset_in_state();
-        read_floats_at(&self.files[loc.file], off, self.ctrl.numnp * SPATIAL_DIM, ws)
+        read_floats_at(
+            &self.files[loc.file],
+            off,
+            self.ctrl.numnp * SPATIAL_DIM,
+            ws,
+        )
     }
 
     /// Per-node displacement magnitude at `state`: |current − initial|.
@@ -493,7 +545,11 @@ impl D3plot {
     /// doesn't carry that column (`|nv2d|` fields total).
     pub fn fsifor_field_span(&self, field: FsiforField) -> (usize, usize) {
         let idx = field as usize;
-        if idx < self.ctrl.nv2d { (idx, 1) } else { (idx, 0) }
+        if idx < self.ctrl.nv2d {
+            (idx, 1)
+        } else {
+            (idx, 0)
+        }
     }
 
     /// Shell connectivity as `(node_indices, part_indices)`: `node_indices` is
@@ -529,7 +585,8 @@ impl D3plot {
 
     /// User part/material IDs.
     pub fn part_ids(&self) -> Vec<i64> {
-        let before = self.ctrl.numnp + self.ctrl.nel8 + self.ctrl.nel2 + self.ctrl.nel4 + self.ctrl.nelth;
+        let before =
+            self.ctrl.numnp + self.ctrl.nel8 + self.ctrl.nel2 + self.ctrl.nel4 + self.ctrl.nelth;
         self.narbs_slice(before, self.ctrl.nmmat)
             .unwrap_or_else(|| (1..=self.ctrl.nmmat as i64).collect())
     }
@@ -553,7 +610,12 @@ impl D3plot {
     }
 
     /// Read `count` connectivity records of `nodes_per` node indices + 1 part.
-    fn connectivity(&self, off_words: usize, count: usize, nodes_per: usize) -> (Vec<i64>, Vec<i64>) {
+    fn connectivity(
+        &self,
+        off_words: usize,
+        count: usize,
+        nodes_per: usize,
+    ) -> (Vec<i64>, Vec<i64>) {
         let ws = self.ctrl.wordsize as usize;
         let stride = nodes_per + 1;
         let raw = read_ints_at(&self.files[0], off_words * ws, count * stride, ws);
@@ -576,7 +638,11 @@ impl D3plot {
         let narbs_off = self.narbs_offset_words();
         // NSORT<0 ⇒ 16-word header (with material numbering), else 10.
         let nsort = read_ints_at(&self.files[0], narbs_off * ws, 1, ws);
-        let header = if nsort.first().copied().unwrap_or(0) < 0 { 16 } else { 10 };
+        let header = if nsort.first().copied().unwrap_or(0) < 0 {
+            16
+        } else {
+            10
+        };
         let off_words = narbs_off + header + skip;
         Some(read_ints_at(&self.files[0], off_words * ws, n, ws))
     }
@@ -585,7 +651,9 @@ impl D3plot {
     /// `None` if the block is absent. `vars_per_entity` is the solver's packed
     /// element layout (see [`StateBlock`]).
     pub fn block_layout(&self, block: StateBlock) -> Option<(usize, usize)> {
-        self.ctrl.block_spec(block).map(|(_, count, vars)| (count, vars))
+        self.ctrl
+            .block_spec(block)
+            .map(|(_, count, vars)| (count, vars))
     }
 
     /// Resolve a state selection to concrete indices. `None` = all states;
@@ -599,7 +667,9 @@ impl D3plot {
                 .map(|&i| {
                     let j = if i < 0 { i + n } else { i };
                     if j < 0 || j >= n {
-                        Err(D3plotError::Unsupported(format!("state index {i} out of range ({n} states)")))
+                        Err(D3plotError::Unsupported(format!(
+                            "state index {i} out of range ({n} states)"
+                        )))
                     } else {
                         Ok(j as usize)
                     }
@@ -614,7 +684,11 @@ impl D3plot {
     /// don't lie in one file at a single constant byte stride. Returns
     /// `(file_index, byte_offset_of_first_block, [n, count, vars], state_stride_bytes)`.
     /// Byte offsets are 4-aligned (word-aligned data in a page-aligned map).
-    pub fn block_view(&self, block: StateBlock, states: &[usize]) -> Option<(usize, usize, [usize; 3], usize)> {
+    pub fn block_view(
+        &self,
+        block: StateBlock,
+        states: &[usize],
+    ) -> Option<(usize, usize, [usize; 3], usize)> {
         if self.ctrl.wordsize != 4 || states.is_empty() {
             return None;
         }
@@ -656,7 +730,11 @@ impl D3plot {
     /// The per-state copies run in parallel for large selections.
     ///
     /// Returns `None` if the block is not present in this d3plot.
-    pub fn block_data(&self, block: StateBlock, states: &[usize]) -> Option<(BlockArray, [usize; 3])> {
+    pub fn block_data(
+        &self,
+        block: StateBlock,
+        states: &[usize],
+    ) -> Option<(BlockArray, [usize; 3])> {
         let (off_words, count, vars) = self.ctrl.block_spec(block)?;
         let ws = self.ctrl.wordsize as usize;
         let byte_off = off_words * ws;
@@ -670,7 +748,9 @@ impl D3plot {
                 // SAFETY: every element is written before use; `$ty` has no Drop.
                 let mut out: Vec<$ty> = Vec::with_capacity(total);
                 #[allow(clippy::uninit_vec)]
-                unsafe { out.set_len(total) };
+                unsafe {
+                    out.set_len(total)
+                };
                 let fill_one = |dst: &mut [$ty], si: usize| -> Option<()> {
                     let loc = &self.states[si];
                     let start = loc.offset as usize + byte_off;
@@ -698,7 +778,11 @@ impl D3plot {
             }};
         }
 
-        let out = if ws == 4 { BlockArray::F32(fill!(f32, 4)) } else { BlockArray::F64(fill!(f64, 8)) };
+        let out = if ws == 4 {
+            BlockArray::F32(fill!(f32, 4))
+        } else {
+            BlockArray::F64(fill!(f64, 8))
+        };
         Some((out, dims))
     }
 }
@@ -729,18 +813,36 @@ impl D3plotEditor {
         let slices: Vec<&[u8]> = files.iter().map(|v| &v[..]).collect();
         let (ctrl, states, _) = index_family(&slices)?;
         if ctrl.wordsize != 4 {
-            return Err(D3plotError::Unsupported("editing double-precision d3plots is not supported".into()));
+            return Err(D3plotError::Unsupported(
+                "editing double-precision d3plots is not supported".into(),
+            ));
         }
-        Ok(Self { files, paths, ctrl, states })
+        Ok(Self {
+            files,
+            paths,
+            ctrl,
+            states,
+        })
     }
 
-    pub fn control(&self) -> &Control { &self.ctrl }
-    pub fn num_nodes(&self) -> usize { self.ctrl.numnp }
-    pub fn num_states(&self) -> usize { self.states.len() }
+    pub fn control(&self) -> &Control {
+        &self.ctrl
+    }
+    pub fn num_nodes(&self) -> usize {
+        self.ctrl.numnp
+    }
+    pub fn num_states(&self) -> usize {
+        self.states.len()
+    }
 
     /// Overwrite a result block for one state with `data` (`count * vars` f32
     /// values, native single precision). Only these bytes change.
-    pub fn set_block(&mut self, block: StateBlock, state: usize, data: &[f32]) -> Result<(), D3plotError> {
+    pub fn set_block(
+        &mut self,
+        block: StateBlock,
+        state: usize,
+        data: &[f32],
+    ) -> Result<(), D3plotError> {
         let (off_words, count, vars) = self
             .ctrl
             .block_spec(block)
@@ -752,14 +854,18 @@ impl D3plotEditor {
                 count * vars
             )));
         }
-        let loc = self
-            .states
-            .get(state)
-            .ok_or_else(|| D3plotError::Unsupported(format!("state {state} out of range ({})", self.states.len())))?;
+        let loc = self.states.get(state).ok_or_else(|| {
+            D3plotError::Unsupported(format!(
+                "state {state} out of range ({})",
+                self.states.len()
+            ))
+        })?;
         let base = loc.offset as usize + off_words * 4;
         let buf = &mut self.files[loc.file];
         if base + data.len() * 4 > buf.len() {
-            return Err(D3plotError::Unsupported("block extent past end of file".into()));
+            return Err(D3plotError::Unsupported(
+                "block extent past end of file".into(),
+            ));
         }
         for (i, &v) in data.iter().enumerate() {
             buf[base + i * 4..base + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
@@ -768,7 +874,11 @@ impl D3plotEditor {
     }
 
     /// Overwrite deformed node coordinates (`numnp * 3` f32) for one state.
-    pub fn set_node_coordinates(&mut self, state: usize, coords: &[f32]) -> Result<(), D3plotError> {
+    pub fn set_node_coordinates(
+        &mut self,
+        state: usize,
+        coords: &[f32],
+    ) -> Result<(), D3plotError> {
         self.set_block(StateBlock::Displacement, state, coords)
     }
 
@@ -782,7 +892,10 @@ impl D3plotEditor {
 
     /// Write the edited family to a new base path (`path`, `path01`, …).
     pub fn write<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), D3plotError> {
-        for (p, bytes) in family_paths(path.as_ref(), Some(self.files.len())).iter().zip(&self.files) {
+        for (p, bytes) in family_paths(path.as_ref(), Some(self.files.len()))
+            .iter()
+            .zip(&self.files)
+        {
             std::fs::write(p, bytes)?;
         }
         Ok(())
@@ -877,12 +990,17 @@ fn read_float_at(bytes: &[u8], off: u64, wordsize: u64) -> f64 {
 }
 
 /// Read `n` floats starting at `byte_offset` from an in-memory buffer, as f64.
-fn read_floats_at(bytes: &[u8], byte_offset: u64, n: usize, wordsize: u64) -> Result<Vec<f64>, D3plotError> {
+fn read_floats_at(
+    bytes: &[u8],
+    byte_offset: u64,
+    n: usize,
+    wordsize: u64,
+) -> Result<Vec<f64>, D3plotError> {
     let start = byte_offset as usize;
     let need = n * wordsize as usize;
-    let slice = bytes
-        .get(start..start + need)
-        .ok_or_else(|| D3plotError::Unsupported("d3plot truncated: float block out of range".into()))?;
+    let slice = bytes.get(start..start + need).ok_or_else(|| {
+        D3plotError::Unsupported("d3plot truncated: float block out of range".into())
+    })?;
     let mut out = Vec::with_capacity(n);
     for chunk in slice.chunks_exact(wordsize as usize) {
         out.push(if wordsize == 4 {
@@ -918,8 +1036,12 @@ fn read_ints_at(bytes: &[u8], byte_offset: usize, n: usize, wordsize: usize) -> 
 fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
     let read_i = |off: usize, ws: u64| -> Option<i64> {
         match ws {
-            4 => bytes.get(off..off + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()) as i64),
-            _ => bytes.get(off..off + 8).map(|b| i64::from_le_bytes(b.try_into().unwrap())),
+            4 => bytes
+                .get(off..off + 4)
+                .map(|b| i32::from_le_bytes(b.try_into().unwrap()) as i64),
+            _ => bytes
+                .get(off..off + 8)
+                .map(|b| i64::from_le_bytes(b.try_into().unwrap())),
         }
     };
     let ndim32 = read_i(word::NDIM * 4, 4).ok_or(D3plotError::BadHeader)?;
@@ -927,7 +1049,11 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         4
     } else {
         let ndim64 = read_i(word::NDIM * 8, 8).ok_or(D3plotError::BadHeader)?;
-        if NDIM_RANGE.contains(&ndim64) { 8 } else { return Err(D3plotError::BadHeader); }
+        if NDIM_RANGE.contains(&ndim64) {
+            8
+        } else {
+            return Err(D3plotError::BadHeader);
+        }
     };
     let geti = |w: usize| -> Result<i64, D3plotError> {
         read_i(w * wordsize as usize, wordsize).ok_or(D3plotError::BadHeader)
@@ -997,9 +1123,9 @@ pub struct InterfaceFields {
 /// [`D3plot`] and open-lasso-python (node data bit-exact).
 pub struct D3plotWriter {
     numnp: usize,
-    x0: Vec<f32>,             // numnp*3, row-major x,y,z
-    solids: Vec<[i32; 9]>,    // 8 node connectivity indices (1-based) + part index
-    shells: Vec<[i32; 5]>,    // 4 node connectivity indices (1-based) + part index
+    x0: Vec<f32>,          // numnp*3, row-major x,y,z
+    solids: Vec<[i32; 9]>, // 8 node connectivity indices (1-based) + part index
+    shells: Vec<[i32; 5]>, // 4 node connectivity indices (1-based) + part index
     states: Vec<StateData>,
     fields: NodeFields,
     title: String,
@@ -1016,9 +1142,9 @@ pub struct D3plotWriter {
 
 struct StateData {
     time: f32,
-    disp: Vec<f32>,          // numnp*3 current coordinates
-    vel: Vec<f32>,           // numnp*3 or empty
-    acc: Vec<f32>,           // numnp*3 or empty
+    disp: Vec<f32>, // numnp*3 current coordinates
+    vel: Vec<f32>,  // numnp*3 or empty
+    acc: Vec<f32>,  // numnp*3 or empty
 }
 
 impl D3plotWriter {
@@ -1087,7 +1213,8 @@ impl D3plotWriter {
 
     /// Add a quad/tri shell (4 one-based node ids; repeat the last for a tri).
     pub fn add_shell(&mut self, nodes: [i32; 4], part: i32) {
-        self.shells.push([nodes[0], nodes[1], nodes[2], nodes[3], part]);
+        self.shells
+            .push([nodes[0], nodes[1], nodes[2], nodes[3], part]);
     }
 
     /// Add a hex/tet solid (8 one-based node ids).
@@ -1111,18 +1238,31 @@ impl D3plotWriter {
         let n = self.numnp * SPATIAL_DIM;
         let check = |v: &[f64], what: &str| {
             if v.len() != n {
-                Err(D3plotError::Unsupported(format!("{what} length {} != numnp*3 ({n})", v.len())))
+                Err(D3plotError::Unsupported(format!(
+                    "{what} length {} != numnp*3 ({n})",
+                    v.len()
+                )))
             } else {
                 Ok(())
             }
         };
         check(&disp, "disp")?;
-        if let Some(v) = &vel { check(v, "vel")?; }
-        if let Some(a) = &acc { check(a, "acc")?; }
+        if let Some(v) = &vel {
+            check(v, "vel")?;
+        }
+        if let Some(a) = &acc {
+            check(a, "acc")?;
+        }
         if self.states.is_empty() {
-            self.fields = NodeFields { velocity: vel.is_some(), acceleration: acc.is_some() };
-        } else if vel.is_some() != self.fields.velocity || acc.is_some() != self.fields.acceleration {
-            return Err(D3plotError::Unsupported("velocity/acceleration presence must match across states".into()));
+            self.fields = NodeFields {
+                velocity: vel.is_some(),
+                acceleration: acc.is_some(),
+            };
+        } else if vel.is_some() != self.fields.velocity || acc.is_some() != self.fields.acceleration
+        {
+            return Err(D3plotError::Unsupported(
+                "velocity/acceleration presence must match across states".into(),
+            ));
         }
         let f32v = |v: Vec<f64>| v.into_iter().map(|c| c as f32).collect();
         self.states.push(StateData {
@@ -1185,8 +1325,16 @@ impl D3plotWriter {
             let has_stress = nv3d >= ELEM_STRESS_VARS || nv2d >= ELEM_STRESS_VARS;
             let has_pstrain = nv3d >= ELEM_BASE_VARS || nv2d >= ELEM_BASE_VARS;
             let base = ELEM_STRESS_VARS * has_stress as usize + has_pstrain as usize;
-            set(&mut words, word::IOSHL1, if has_stress { IOSHL_PRESENT } else { 0 });
-            set(&mut words, word::IOSHL2, if has_pstrain { IOSHL_PRESENT } else { 0 });
+            set(
+                &mut words,
+                word::IOSHL1,
+                if has_stress { IOSHL_PRESENT } else { 0 },
+            );
+            set(
+                &mut words,
+                word::IOSHL2,
+                if has_pstrain { IOSHL_PRESENT } else { 0 },
+            );
             if nv3d > 0 {
                 set(&mut words, word::NEIPH, nv3d.saturating_sub(base) as i32); // solid history
             }
@@ -1300,7 +1448,9 @@ impl IntforWriter {
     /// interfaces (sets NUMMAT4 = 2 × interfaces).
     pub fn new(node_coords: Vec<f64>, n_interfaces: usize) -> Result<Self, D3plotError> {
         if node_coords.is_empty() || !node_coords.len().is_multiple_of(3) {
-            return Err(D3plotError::Unsupported("node_coords length must be a non-zero multiple of 3".into()));
+            return Err(D3plotError::Unsupported(
+                "node_coords length must be a non-zero multiple of 3".into(),
+            ));
         }
         Ok(Self {
             numnp: node_coords.len() / 3,
@@ -1330,12 +1480,20 @@ impl IntforWriter {
 
     /// Add a 4-node contact segment (one-based node ids) with a segment id.
     pub fn add_segment(&mut self, nodes: [i32; 4], id: i32) {
-        self.segments.push([nodes[0], nodes[1], nodes[2], nodes[3], id]);
+        self.segments
+            .push([nodes[0], nodes[1], nodes[2], nodes[3], id]);
     }
 
     /// Declare the intfor per-segment field layout (NV2D = their sum): wear,
     /// pressure, shear, force, gap. Typical: pressure 1, shear 3, force 12, gap 5.
-    pub fn set_fields(&mut self, wear: usize, pressure: usize, shear: usize, force: usize, gap: usize) {
+    pub fn set_fields(
+        &mut self,
+        wear: usize,
+        pressure: usize,
+        shear: usize,
+        force: usize,
+        gap: usize,
+    ) {
         self.nwear = wear;
         self.npresu = pressure;
         self.nshear = shear;
@@ -1376,7 +1534,9 @@ impl IntforWriter {
         let n3 = self.numnp * SPATIAL_DIM;
         let need = self.segments.len() * self.nv2d();
         if disp.len() != n3 || vel.len() != n3 {
-            return Err(D3plotError::Unsupported(format!("disp/vel length must be numnp*3 ({n3})")));
+            return Err(D3plotError::Unsupported(format!(
+                "disp/vel length must be numnp*3 ({n3})"
+            )));
         }
         if segment_values.len() != need {
             return Err(D3plotError::Unsupported(format!(
@@ -1418,7 +1578,15 @@ impl IntforWriter {
         set(&mut words, word::NUMMAT4, nmmat as i32);
         set(&mut words, word::NMMAT, nmmat as i32);
         // NV2D is negative for FSIFOR.
-        set(&mut words, word::NV2D, if self.fsifor_fields > 0 { -(nv2d as i32) } else { nv2d as i32 });
+        set(
+            &mut words,
+            word::NV2D,
+            if self.fsifor_fields > 0 {
+                -(nv2d as i32)
+            } else {
+                nv2d as i32
+            },
+        );
         // NARBS numbering section: numnp nodes + numsg segments (shell slot) + materials.
         let narbs = numsg + self.numnp + 3 * nmmat + NARBS_PART_HEADER;
         set(&mut words, word::NARBS, narbs as i32);
@@ -1446,7 +1614,17 @@ impl IntforWriter {
         }
         // NARBS: node IDs + segment IDs (in the shell slot) + material IDs.
         let seg_ids: Vec<i32> = self.segments.iter().map(|s| s[4]).collect();
-        write_narbs(&mut buf, self.numnp, 0, numsg, nmmat, self.node_ids.as_deref(), None, Some(&seg_ids), None);
+        write_narbs(
+            &mut buf,
+            self.numnp,
+            0,
+            numsg,
+            nmmat,
+            self.node_ids.as_deref(),
+            None,
+            Some(&seg_ids),
+            None,
+        );
 
         // states: time + disp + vel + per-segment values
         for st in &self.states {
@@ -1479,8 +1657,14 @@ mod tests {
 
     fn tmp() -> std::path::PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("dynars_d3plot_{nanos}_{}.bin", N.fetch_add(1, Ordering::Relaxed)))
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "dynars_d3plot_{nanos}_{}.bin",
+            N.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 
     /// Write a minimal single-precision d3plot the way LS-DYNA lays one out:
@@ -1489,23 +1673,29 @@ mod tests {
     fn write_synthetic(path: &std::path::Path) {
         let numnp = 2usize;
         let mut words: Vec<i32> = vec![0; 64];
-        words[15] = 4;             // NDIM (flag word — coords are still 3-D)
-        words[16] = numnp as i32;  // NUMNP
-        words[18] = 0;             // NGLBV
-        words[20] = 1;             // IU
+        words[15] = 4; // NDIM (flag word — coords are still 3-D)
+        words[16] = numnp as i32; // NUMNP
+        words[18] = 0; // NGLBV
+        words[20] = 1; // IU
         // everything else (elements, narbs, maxint, extra, it/iv/ia) = 0
 
         let mut buf: Vec<u8> = Vec::new();
-        for &w in &words { buf.write_i32::<LittleEndian>(w).unwrap(); }
+        for &w in &words {
+            buf.write_i32::<LittleEndian>(w).unwrap();
+        }
         // geometry: initial node coords (row-major); node0 & node1 at origin.
-        let x0: [f32; 6] = [0.0, 0.0, 0.0,  0.0, 0.0, 0.0];
-        for &c in &x0 { buf.write_f32::<LittleEndian>(c).unwrap(); }
+        let x0: [f32; 6] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        for &c in &x0 {
+            buf.write_f32::<LittleEndian>(c).unwrap();
+        }
         // states follow immediately: each = TIME + IU block (numnp*3 coords)
         for s in 0..2i32 {
             buf.write_f32::<LittleEndian>(s as f32).unwrap(); // time
             // node0 stays at origin; node1 moves to z = s
-            let cur: [f32; 6] = [0.0, 0.0, 0.0,  0.0, 0.0, s as f32];
-            for &c in &cur { buf.write_f32::<LittleEndian>(c).unwrap(); }
+            let cur: [f32; 6] = [0.0, 0.0, 0.0, 0.0, 0.0, s as f32];
+            for &c in &cur {
+                buf.write_f32::<LittleEndian>(c).unwrap();
+            }
         }
         let mut f = File::create(path).unwrap();
         f.write_all(&buf).unwrap();
@@ -1569,7 +1759,9 @@ mod tests {
     /// node/state counts, times, and per-state node coordinates all match.
     #[test]
     fn real_d3plot_family() {
-        let Ok(path) = std::env::var("DYNARS_TEST_D3PLOT") else { return };
+        let Ok(path) = std::env::var("DYNARS_TEST_D3PLOT") else {
+            return;
+        };
         if !std::path::Path::new(&path).exists() {
             return;
         }
@@ -1589,11 +1781,7 @@ mod tests {
     fn writer_roundtrips_through_reader() {
         // 5 nodes, 1 quad shell, 3 states with displacement + velocity.
         let nodes: Vec<f64> = vec![
-            0.0, 0.0, 0.0,
-            1.0, 0.0, 0.0,
-            1.0, 1.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.5, 0.5, 1.0,
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5, 1.0,
         ];
         let mut w = D3plotWriter::new(nodes.clone()).unwrap();
         w.set_title("dynars writer test");
@@ -1672,7 +1860,9 @@ mod tests {
         // state 0 untouched
         assert_eq!(d2.node_coordinates(0).unwrap(), orig_state0);
         // element results untouched
-        let (solid2, _) = d2.block_data(StateBlock::Solid, &d2.resolve_states(None).unwrap()).unwrap();
+        let (solid2, _) = d2
+            .block_data(StateBlock::Solid, &d2.resolve_states(None).unwrap())
+            .unwrap();
         if let BlockArray::F32(v) = solid2 {
             assert!((v[9] - 9.0).abs() < 1e-6);
         }
@@ -1724,7 +1914,8 @@ mod tests {
             for c in coords.chunks(3) {
                 buf.write_f32::<LittleEndian>(c[0]).unwrap();
                 buf.write_f32::<LittleEndian>(c[1]).unwrap();
-                buf.write_f32::<LittleEndian>(c[2] + s as f32 * 0.5).unwrap();
+                buf.write_f32::<LittleEndian>(c[2] + s as f32 * 0.5)
+                    .unwrap();
             }
             for _ in 0..numnp * 3 {
                 buf.write_f32::<LittleEndian>(2.0).unwrap(); // velocity
@@ -1745,7 +1936,10 @@ mod tests {
         assert_eq!(d.num_nodes(), numnp);
         assert_eq!(d.num_states(), n_states);
         let f = d.interface_fields();
-        assert_eq!((f.wear, f.pressure, f.shear, f.force, f.gap), (0, 1, 3, 12, 0));
+        assert_eq!(
+            (f.wear, f.pressure, f.shear, f.force, f.gap),
+            (0, 1, 3, 12, 0)
+        );
         // enum-based field spans: pressure at 0 (1), shear at 1 (3), force at 4 (12)
         assert_eq!(d.interface_field_span(InterfaceField::Pressure), (0, 1));
         assert_eq!(d.interface_field_span(InterfaceField::Shear), (1, 3));
@@ -1754,7 +1948,8 @@ mod tests {
 
         let all = d.resolve_states(None).unwrap();
         // node velocity
-        let (BlockArray::F32(vel), vdims) = d.block_data(StateBlock::Velocity, &all).unwrap() else {
+        let (BlockArray::F32(vel), vdims) = d.block_data(StateBlock::Velocity, &all).unwrap()
+        else {
             panic!("expected f32 velocity");
         };
         assert_eq!(vdims, [n_states, numnp, 3]);
@@ -1820,7 +2015,8 @@ mod tests {
         let mut w = IntforWriter::new(coords.clone(), 1).unwrap();
         w.add_segment([1, 2, 3, 4], 1);
         w.set_fsifor(7); // 7 fixed FSIFOR fields, NV2D negative
-        w.add_state(0.0, coords.clone(), vec![0.0; 12], vec![9.0; 7]).unwrap();
+        w.add_state(0.0, coords.clone(), vec![0.0; 12], vec![9.0; 7])
+            .unwrap();
         let p = tmp();
         w.write(&p).unwrap();
         let d = D3plot::open(&p).unwrap();

@@ -7,7 +7,7 @@
 //! same schema the Python `@keyword` classes lower to — one parser underneath.
 
 use dynars::parser::parse_file_blocks;
-use dynars::schema::{parse_schema, Card, Schema};
+use dynars::schema::{Card, Schema, parse_schema};
 
 fn main() {
     // A small deck. *NODE is fixed-width (I8 + three E16); the rest use
@@ -40,22 +40,40 @@ aluminium panel
     // --- *NODE: one card, repeats over the block (the default) ---
     let nodes = parse_schema(
         &parsed,
-        &Schema::new("NODE")
-            .card(Card::new().int("nid", 8).float("x", 16).float("y", 16).float("z", 16)),
+        &Schema::new("NODE").card(
+            Card::new()
+                .int("nid", 8)
+                .float("x", 16)
+                .float("y", 16)
+                .float("z", 16),
+        ),
     );
     println!("NODE — {} rows", nodes.rows());
-    println!("  nid = {:?}", nodes.column("nid").unwrap().as_int().unwrap());
-    println!("  x   = {:?}", nodes.column("x").unwrap().as_float().unwrap());
+    println!(
+        "  nid = {:?}",
+        nodes.column("nid").unwrap().as_int().unwrap()
+    );
+    println!(
+        "  x   = {:?}",
+        nodes.column("x").unwrap().as_float().unwrap()
+    );
 
     // --- *ELEMENT_SHELL: connectivity as one 4-wide array column ---
     let shells = parse_schema(
         &parsed,
-        &Schema::new("ELEMENT_SHELL")
-            .card(Card::new().int("eid", 8).int("pid", 8).int_array("nodes", 4, 8)),
+        &Schema::new("ELEMENT_SHELL").card(
+            Card::new()
+                .int("eid", 8)
+                .int("pid", 8)
+                .int_array("nodes", 4, 8),
+        ),
     );
     let conn = shells.column("nodes").unwrap().as_int().unwrap();
     println!("\nELEMENT_SHELL — {} rows", shells.rows());
-    println!("  eids  = {:?}", shells.column("eid").unwrap().as_int().unwrap());
+    println!(
+        "  eids  = {:?}",
+        shells.column("eid").unwrap().as_int().unwrap()
+    );
     println!("  nodes = {:?}  (row-major {}x4)", conn, shells.rows());
 
     // --- *PART: multi-card — a reusable title card + a data card ---
@@ -72,8 +90,13 @@ aluminium panel
     // --- *MAT_ELASTIC: one entity per block (still works with the default) ---
     let mats = parse_schema(
         &parsed,
-        &Schema::new("MAT_ELASTIC")
-            .card(Card::new().int("mid", 8).float("ro", 16).float("e", 16).float("pr", 16)),
+        &Schema::new("MAT_ELASTIC").card(
+            Card::new()
+                .int("mid", 8)
+                .float("ro", 16)
+                .float("e", 16)
+                .float("pr", 16),
+        ),
     );
     println!(
         "\nMAT_ELASTIC — mid={:?}, E={:?}",

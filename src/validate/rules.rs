@@ -6,9 +6,9 @@ use std::sync::Arc;
 use crate::keywords::{self, canonical_base};
 
 use super::expr::{Cmp, Expr};
-use crate::model::Value;
 use super::report::{FileScope, Finding, Severity};
 use super::{Check, Deck};
+use crate::model::Value;
 
 // ── Built-in rules: one Check per rule ───────────────────────────────────────
 //
@@ -94,9 +94,15 @@ impl Check for FieldRequired {
             if !applies || self.require.eval(&kw) {
                 continue;
             }
-            let cond = self.when.as_ref().map(|w| format!(" when {}", w.describe())).unwrap_or_default();
+            let cond = self
+                .when
+                .as_ref()
+                .map(|w| format!(" when {}", w.describe()))
+                .unwrap_or_default();
             let got = if let Expr::Field(p) = &self.require {
-                kw.field(&p.field).map(|f| format!(", got {}", f.value().display())).unwrap_or_default()
+                kw.field(&p.field)
+                    .map(|f| format!(", got {}", f.value().display()))
+                    .unwrap_or_default()
             } else {
                 String::new()
             };
@@ -129,7 +135,11 @@ impl Check for IncludeMissing {
                     keyword: "INCLUDE".to_string(),
                     file: deck.files[*fi].path.clone(),
                     line: 0,
-                    message: format!("include '{}' resolves to a missing file: {}", inc.raw_path, inc.resolved_path.display()),
+                    message: format!(
+                        "include '{}' resolves to a missing file: {}",
+                        inc.raw_path,
+                        inc.resolved_path.display()
+                    ),
                 });
             }
         }
@@ -158,7 +168,10 @@ impl Check for ReferencesResolve {
                 line: d.line,
                 message: format!(
                     "{}.{} references {} {} — not defined in the deck",
-                    d.from_keyword, d.field, target_name(&d.target), d.id
+                    d.from_keyword,
+                    d.field,
+                    target_name(&d.target),
+                    d.id
                 ),
             })
             .collect()
@@ -182,7 +195,11 @@ pub struct Rule {
 
 impl Rule {
     fn wrap(check: impl Check + 'static) -> Rule {
-        Rule { check: Arc::new(check), severity: None, scope: FileScope::Anywhere }
+        Rule {
+            check: Arc::new(check),
+            severity: None,
+            scope: FileScope::Anywhere,
+        }
     }
     /// Lift any custom [`Check`] into a `Rule`, so it composes with file scope
     /// and severity overrides and runs through [`Deck::validate`](crate::deck::Deck::validate)
@@ -192,13 +209,27 @@ impl Rule {
         Rule::wrap(check)
     }
     pub fn keyword_forbidden(keyword: impl Into<String>) -> Rule {
-        Rule::wrap(KeywordForbidden { keyword: keyword.into() })
+        Rule::wrap(KeywordForbidden {
+            keyword: keyword.into(),
+        })
     }
-    pub fn field_forbidden_values(keyword: impl Into<String>, field: impl Into<String>, values: impl IntoIterator<Item = Value>) -> Rule {
-        Rule::wrap(FieldForbiddenValues { keyword: keyword.into(), field: field.into(), values: values.into_iter().collect() })
+    pub fn field_forbidden_values(
+        keyword: impl Into<String>,
+        field: impl Into<String>,
+        values: impl IntoIterator<Item = Value>,
+    ) -> Rule {
+        Rule::wrap(FieldForbiddenValues {
+            keyword: keyword.into(),
+            field: field.into(),
+            values: values.into_iter().collect(),
+        })
     }
     pub fn field_required(keyword: impl Into<String>, when: Option<Expr>, require: Expr) -> Rule {
-        Rule::wrap(FieldRequired { keyword: keyword.into(), when, require })
+        Rule::wrap(FieldRequired {
+            keyword: keyword.into(),
+            when,
+            require,
+        })
     }
     pub fn include_missing() -> Rule {
         Rule::wrap(IncludeMissing)
@@ -209,7 +240,9 @@ impl Rule {
     /// [`references_resolve_with_connectivity`](Rule::references_resolve_with_connectivity)
     /// for that.
     pub fn references_resolve() -> Rule {
-        Rule::wrap(ReferencesResolve { connectivity: false })
+        Rule::wrap(ReferencesResolve {
+            connectivity: false,
+        })
     }
     /// As [`references_resolve`](Rule::references_resolve), and additionally
     /// checks element connectivity — that every element's nodes are defined.

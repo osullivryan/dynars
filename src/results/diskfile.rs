@@ -34,7 +34,9 @@ impl Diskfile {
         // lifetime of this mapping.
         let map = unsafe { Mmap::map(&file)? };
         if map.len() < 8 {
-            return Err(LsdaError::Conversion("LSDA file shorter than its 8-byte header".into()));
+            return Err(LsdaError::Conversion(
+                "LSDA file shorter than its 8-byte header".into(),
+            ));
         }
         let header = &map[..8];
         let length_size = header[1];
@@ -98,7 +100,9 @@ impl Diskfile {
             SeekFrom::End(o) => self.map.len() as i64 + o,
         };
         if new < 0 || new as usize > self.map.len() {
-            return Err(LsdaError::Conversion("seek out of range in LSDA file".into()));
+            return Err(LsdaError::Conversion(
+                "seek out of range in LSDA file".into(),
+            ));
         }
         self.pos = new as usize;
         Ok(self.pos as u64)
@@ -122,9 +126,27 @@ impl Diskfile {
         let le = self.is_little_endian;
         let v = match size {
             1 => b[0] as u64,
-            2 => if le { LittleEndian::read_u16(b) as u64 } else { BigEndian::read_u16(b) as u64 },
-            4 => if le { LittleEndian::read_u32(b) as u64 } else { BigEndian::read_u32(b) as u64 },
-            8 => if le { LittleEndian::read_u64(b) } else { BigEndian::read_u64(b) },
+            2 => {
+                if le {
+                    LittleEndian::read_u16(b) as u64
+                } else {
+                    BigEndian::read_u16(b) as u64
+                }
+            }
+            4 => {
+                if le {
+                    LittleEndian::read_u32(b) as u64
+                } else {
+                    BigEndian::read_u32(b) as u64
+                }
+            }
+            8 => {
+                if le {
+                    LittleEndian::read_u64(b)
+                } else {
+                    BigEndian::read_u64(b)
+                }
+            }
             _ => return Err(LsdaError::InvalidDataTypeSize),
         };
         self.pos = end;

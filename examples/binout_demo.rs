@@ -16,9 +16,17 @@ fn main() {
     for (i, &t) in times.iter().enumerate() {
         let d = format!("d{:06}", i + 1);
         e.set(&["mycurve", &d, "time"], Data::F64(vec![t])).unwrap();
-        e.set(&["mycurve", &d, "energy"], Data::F32(vec![(6.0 * t).sin() as f32])).unwrap();
+        e.set(
+            &["mycurve", &d, "energy"],
+            Data::F32(vec![(6.0 * t).sin() as f32]),
+        )
+        .unwrap();
     }
-    e.set(&["mycurve", "metadata", "title"], Data::Str("custom curve".into())).unwrap();
+    e.set(
+        &["mycurve", "metadata", "title"],
+        Data::Str("custom curve".into()),
+    )
+    .unwrap();
     e.write(&path).unwrap();
     println!("wrote {}", path.display());
 
@@ -27,8 +35,13 @@ fn main() {
     println!("top-level: {:?}", b.read(&[]).unwrap().keys());
 
     // Gather the curve across states (dNNNNNN dirs, sorted).
-    let mut states: Vec<String> =
-        b.read(&["mycurve"]).unwrap().keys().into_iter().filter(|k| k.starts_with('d')).collect();
+    let mut states: Vec<String> = b
+        .read(&["mycurve"])
+        .unwrap()
+        .keys()
+        .into_iter()
+        .filter(|k| k.starts_with('d'))
+        .collect();
     states.sort();
     let curve: Vec<f64> = states
         .iter()
@@ -37,19 +50,30 @@ fn main() {
     println!("energy curve ({} points): {:?}", curve.len(), curve);
 
     // Read many channels in parallel (lock-free).
-    let paths: Vec<Vec<&str>> = states.iter().map(|s| vec!["mycurve", s.as_str(), "energy"]).collect();
+    let paths: Vec<Vec<&str>> = states
+        .iter()
+        .map(|s| vec!["mycurve", s.as_str(), "energy"])
+        .collect();
     let results = b.read_many(&paths);
     let first = results[0].as_ref().unwrap();
     if let ReadResult::F32(v) = first {
-        println!("read_many: {} channels, first value {}", results.len(), v[0]);
+        println!(
+            "read_many: {} channels, first value {}",
+            results.len(),
+            v[0]
+        );
     }
 
     // --- 3. EDIT an existing binout --------------------------------------
     let mut ed = BinoutEditor::open(p).unwrap();
-    ed.set(&["mycurve", "d000001", "energy"], Data::F32(vec![999.0])).unwrap();
+    ed.set(&["mycurve", "d000001", "energy"], Data::F32(vec![999.0]))
+        .unwrap();
     ed.write(&path).unwrap();
     let b2 = Binout::new(p).unwrap();
-    println!("after edit, d000001/energy = {:?}", b2.read_f64(&["mycurve", "d000001", "energy"]).unwrap());
+    println!(
+        "after edit, d000001/energy = {:?}",
+        b2.read_f64(&["mycurve", "d000001", "energy"]).unwrap()
+    );
 
     std::fs::remove_file(&path).ok();
     println!("OK");

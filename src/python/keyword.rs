@@ -2,14 +2,14 @@
 
 use std::path::Path;
 
-use pyo3::prelude::*;
 use pyo3::PyResult;
+use pyo3::prelude::*;
 
 // -- Phase 4: keyword-file marshalling ---------------------------------
 
 use numpy::IntoPyArray;
-use pyo3::types::{PyDict, PyList};
 use pyo3::Bound;
+use pyo3::types::{PyDict, PyList};
 
 use crate::file::ParsedFile;
 use crate::parser::Keyword;
@@ -103,11 +103,7 @@ impl PyKeywordFile {
     /// Parse a keyword using dynars' built-in library (generated from the
     /// pyDYNA field database), returning the same column dict. Errors if the
     /// keyword is not in the library.
-    fn parse_builtin<'py>(
-        &self,
-        py: Python<'py>,
-        keyword: String,
-    ) -> PyResult<Bound<'py, PyDict>> {
+    fn parse_builtin<'py>(&self, py: Python<'py>, keyword: String) -> PyResult<Bound<'py, PyDict>> {
         let schema = crate::keywords::schema(&keyword).ok_or_else(|| {
             pyo3::exceptions::PyKeyError::new_err(format!(
                 "'{}' is not in the built-in keyword library",
@@ -141,7 +137,11 @@ impl PyKeywordFile {
             "KeywordFile('{}', {} blocks{})",
             self.inner.path.display(),
             self.inner.blocks.len(),
-            if self.inner.is_dirty() { ", edited" } else { "" },
+            if self.inner.is_dirty() {
+                ", edited"
+            } else {
+                ""
+            },
         )
     }
 }
@@ -173,7 +173,13 @@ pub(crate) fn build_schema(
             };
             // Python card tuples don't carry reference metadata yet; a
             // registered keyword's references stay unchecked from Python.
-            c.fields.push(FieldSpec { name, ty, width, count: count.max(1), reference: crate::keywords::Ref::None });
+            c.fields.push(FieldSpec {
+                name,
+                ty,
+                width,
+                count: count.max(1),
+                reference: crate::keywords::Ref::None,
+            });
         }
         schema.cards.push(c);
     }
@@ -213,8 +219,7 @@ pub(crate) fn table_to_pydict<'py>(
                 if ncols <= 1 {
                     d.set_item(name, data)?;
                 } else {
-                    let rows: Vec<Vec<String>> =
-                        data.chunks(ncols).map(|c| c.to_vec()).collect();
+                    let rows: Vec<Vec<String>> = data.chunks(ncols).map(|c| c.to_vec()).collect();
                     d.set_item(name, rows)?;
                 }
             }

@@ -74,10 +74,11 @@ fn collect_chunks<'a>(files: &'a [ParsedFile], keyword: &str) -> Vec<(&'a [u8], 
 /// True for comment (`$`) and blank lines, which carry no card data.
 #[inline]
 fn is_skippable(line: &[u8]) -> bool {
-    let indent = line.iter().take_while(|&&c| c == b' ' || c == b'\t').count();
-    line.is_empty()
-        || line.get(indent) == Some(&b'$')
-        || strip_eol(&line[indent..]).is_empty()
+    let indent = line
+        .iter()
+        .take_while(|&&c| c == b' ' || c == b'\t')
+        .count();
+    line.is_empty() || line.get(indent) == Some(&b'$') || strip_eol(&line[indent..]).is_empty()
 }
 
 /// Strip a trailing `\r`/`\n` without touching interior or leading bytes.
@@ -179,7 +180,11 @@ pub struct Schema {
 
 impl Schema {
     pub fn new(keyword: &str) -> Self {
-        Schema { keyword: keyword.to_string(), cards: Vec::new(), repeat: true }
+        Schema {
+            keyword: keyword.to_string(),
+            cards: Vec::new(),
+            repeat: true,
+        }
     }
     pub fn card(mut self, card: Card) -> Self {
         self.cards.push(card);
@@ -224,23 +229,47 @@ impl Column {
         }
     }
     pub fn as_int(&self) -> Option<&[i64]> {
-        if let Column::Int { data, .. } = self { Some(data) } else { None }
+        if let Column::Int { data, .. } = self {
+            Some(data)
+        } else {
+            None
+        }
     }
     pub fn as_float(&self) -> Option<&[f64]> {
-        if let Column::Float { data, .. } = self { Some(data) } else { None }
+        if let Column::Float { data, .. } = self {
+            Some(data)
+        } else {
+            None
+        }
     }
     pub fn as_str(&self) -> Option<&[String]> {
-        if let Column::Str { data, .. } = self { Some(data) } else { None }
+        if let Column::Str { data, .. } = self {
+            Some(data)
+        } else {
+            None
+        }
     }
     /// Move the integer data out (for building typed structs without a copy).
     pub fn into_int(self) -> Option<Vec<i64>> {
-        if let Column::Int { data, .. } = self { Some(data) } else { None }
+        if let Column::Int { data, .. } = self {
+            Some(data)
+        } else {
+            None
+        }
     }
     pub fn into_float(self) -> Option<Vec<f64>> {
-        if let Column::Float { data, .. } = self { Some(data) } else { None }
+        if let Column::Float { data, .. } = self {
+            Some(data)
+        } else {
+            None
+        }
     }
     pub fn into_str(self) -> Option<Vec<String>> {
-        if let Column::Str { data, .. } = self { Some(data) } else { None }
+        if let Column::Str { data, .. } = self {
+            Some(data)
+        } else {
+            None
+        }
     }
     #[inline]
     fn push(&mut self, raw: &[u8]) {
@@ -351,7 +380,11 @@ pub fn __is_free(line: &[u8], fmt: CardFormat) -> bool {
 #[inline]
 #[doc(hidden)]
 pub fn __slice(line: &[u8], off: usize, w: usize) -> &[u8] {
-    if off >= line.len() { &[] } else { &line[off..(off + w).min(line.len())] }
+    if off >= line.len() {
+        &[]
+    } else {
+        &line[off..(off + w).min(line.len())]
+    }
 }
 #[inline]
 #[doc(hidden)]
@@ -395,7 +428,9 @@ where
 /// Assemble a [`Table`] from parallel column names and data.
 #[doc(hidden)]
 pub fn __table(names: Vec<&'static str>, cols: Vec<Column>) -> Table {
-    Table { columns: names.into_iter().map(|n| n.to_string()).zip(cols).collect() }
+    Table {
+        columns: names.into_iter().map(|n| n.to_string()).zip(cols).collect(),
+    }
 }
 
 /// Implemented by `#[derive(Card)]`: provides one card's field layout, so cards
@@ -435,9 +470,18 @@ fn empty_columns(schema: &Schema) -> Vec<Column> {
     for card in &schema.cards {
         for f in &card.fields {
             cols.push(match f.ty {
-                FieldType::Int => Column::Int { data: Vec::new(), ncols: f.count },
-                FieldType::Float => Column::Float { data: Vec::new(), ncols: f.count },
-                FieldType::Str => Column::Str { data: Vec::new(), ncols: f.count },
+                FieldType::Int => Column::Int {
+                    data: Vec::new(),
+                    ncols: f.count,
+                },
+                FieldType::Float => Column::Float {
+                    data: Vec::new(),
+                    ncols: f.count,
+                },
+                FieldType::Str => Column::Str {
+                    data: Vec::new(),
+                    ncols: f.count,
+                },
             });
         }
     }
@@ -455,7 +499,13 @@ fn field_names(schema: &Schema) -> Vec<String> {
 /// Parse one card line's fields into `cols` starting at column `ci`; returns
 /// the next column index. Every field pushes exactly one value per element, so
 /// all columns stay the same length (= row count) even on short/missing input.
-fn parse_card_line(line: &[u8], card: &Card, format: CardFormat, cols: &mut [Column], mut ci: usize) -> usize {
+fn parse_card_line(
+    line: &[u8],
+    card: &Card,
+    format: CardFormat,
+    cols: &mut [Column],
+    mut ci: usize,
+) -> usize {
     let line = strip_eol(line);
     let free = format == CardFormat::Free || memchr::memchr(b',', line).is_some();
 
@@ -471,7 +521,11 @@ fn parse_card_line(line: &[u8], card: &Card, format: CardFormat, cols: &mut [Col
         let mut off = 0;
         for f in &card.fields {
             // Long format doubles each field width (I8->I16, E16->E32, ...).
-            let fw = if format == CardFormat::Long { f.width * 2 } else { f.width };
+            let fw = if format == CardFormat::Long {
+                f.width * 2
+            } else {
+                f.width
+            };
             for _ in 0..f.count {
                 let slice = if off >= line.len() {
                     &[][..]
@@ -493,7 +547,10 @@ fn parse_sequential(files: &[ParsedFile], schema: &Schema) -> Table {
 
     for parsed in files {
         for block in &parsed.blocks {
-            if !parsed.keyword_name(block).eq_ignore_ascii_case(&schema.keyword) {
+            if !parsed
+                .keyword_name(block)
+                .eq_ignore_ascii_case(&schema.keyword)
+            {
                 continue;
             }
             let format = block.format;
@@ -503,7 +560,11 @@ fn parse_sequential(files: &[ParsedFile], schema: &Schema) -> Table {
                 .filter(|l| !is_skippable(l))
                 .collect();
 
-            let groups = if schema.repeat { lines.len() / k } else { usize::from(lines.len() >= k) };
+            let groups = if schema.repeat {
+                lines.len() / k
+            } else {
+                usize::from(lines.len() >= k)
+            };
             for g in 0..groups {
                 let base = g * k;
                 let mut ci = 0;
@@ -514,7 +575,9 @@ fn parse_sequential(files: &[ParsedFile], schema: &Schema) -> Table {
         }
     }
 
-    Table { columns: field_names(schema).into_iter().zip(cols).collect() }
+    Table {
+        columns: field_names(schema).into_iter().zip(cols).collect(),
+    }
 }
 
 fn parse_parallel(files: &[ParsedFile], schema: &Schema) -> Table {
@@ -542,12 +605,17 @@ fn parse_parallel(files: &[ParsedFile], schema: &Schema) -> Table {
         }
     }
 
-    Table { columns: field_names(schema).into_iter().zip(cols).collect() }
+    Table {
+        columns: field_names(schema).into_iter().zip(cols).collect(),
+    }
 }
 
 /// 1-based line of a block's `*KEYWORD` line, for clickable locations.
 pub(crate) fn block_line(file: &ParsedFile, block: &Block) -> usize {
-    1 + file.src()[..block.name_start].iter().filter(|&&b| b == b'\n').count()
+    1 + file.src()[..block.name_start]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
 }
 
 #[cfg(test)]
@@ -568,7 +636,11 @@ mod tests {
         let p = parsed(src.as_bytes());
 
         let schema = Schema::new("NODE").card(
-            Card::new().int("nid", 8).float("x", 16).float("y", 16).float("z", 16),
+            Card::new()
+                .int("nid", 8)
+                .float("x", 16)
+                .float("y", 16)
+                .float("z", 16),
         );
         let t = parse_schema(&p, &schema);
 
@@ -589,7 +661,10 @@ mod tests {
         let t = parse_schema(&p, &schema);
 
         assert_eq!(t.rows(), 2);
-        assert_eq!(t.column("title").unwrap().as_str().unwrap(), &["steel bracket", "alu panel"]);
+        assert_eq!(
+            t.column("title").unwrap().as_str().unwrap(),
+            &["steel bracket", "alu panel"]
+        );
         assert_eq!(t.column("pid").unwrap().as_int().unwrap(), &[1, 10]);
         assert_eq!(t.column("mid").unwrap().as_int().unwrap(), &[3, 30]);
     }
@@ -601,7 +676,10 @@ mod tests {
         let p = parsed(src);
 
         let schema = Schema::new("ELEMENT_SHELL").card(
-            Card::new().int("eid", 8).int("pid", 8).int_array("nodes", 4, 8),
+            Card::new()
+                .int("eid", 8)
+                .int("pid", 8)
+                .int_array("nodes", 4, 8),
         );
         let t = parse_schema(&p, &schema);
 
@@ -616,10 +694,17 @@ mod tests {
         let src = b"*MAT_ELASTIC\n1,7.85e-9,210000.0,0.3\n*MAT_ELASTIC\n2,2.7e-9,70000.0,0.33\n";
         let p = parsed(src);
         let schema = Schema::new("MAT_ELASTIC").card(
-            Card::new().int("mid", 8).float("ro", 16).float("e", 16).float("pr", 16),
+            Card::new()
+                .int("mid", 8)
+                .float("ro", 16)
+                .float("e", 16)
+                .float("pr", 16),
         );
         let t = parse_schema(&p, &schema);
-        let rows: Vec<_> = t.iter().map(|r| (r.int("mid").unwrap(), r.float("e").unwrap())).collect();
+        let rows: Vec<_> = t
+            .iter()
+            .map(|r| (r.int("mid").unwrap(), r.float("e").unwrap()))
+            .collect();
         assert_eq!(rows, vec![(1, 210000.0), (2, 70000.0)]);
     }
 
@@ -630,12 +715,19 @@ mod tests {
         let p = parsed(src);
 
         let schema = Schema::new("MAT_ELASTIC").card(
-            Card::new().int("mid", 8).float("ro", 16).float("e", 16).float("pr", 16),
+            Card::new()
+                .int("mid", 8)
+                .float("ro", 16)
+                .float("e", 16)
+                .float("pr", 16),
         );
         let t = parse_schema(&p, &schema);
 
         assert_eq!(t.rows(), 2);
         assert_eq!(t.column("mid").unwrap().as_int().unwrap(), &[1, 2]);
-        assert_eq!(t.column("e").unwrap().as_float().unwrap(), &[210000.0, 70000.0]);
+        assert_eq!(
+            t.column("e").unwrap().as_float().unwrap(),
+            &[210000.0, 70000.0]
+        );
     }
 }

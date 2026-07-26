@@ -81,7 +81,12 @@ impl ParsedFile {
 
     /// Construct from any [`Source`] (e.g. a memory map) with no pending edits.
     pub fn from_source(path: PathBuf, source: Source, blocks: Vec<Block>) -> Self {
-        ParsedFile { path, source, blocks, edits: HashMap::new() }
+        ParsedFile {
+            path,
+            source,
+            blocks,
+            edits: HashMap::new(),
+        }
     }
 
     /// The backing bytes.
@@ -119,7 +124,11 @@ impl ParsedFile {
     /// e.g. `ELEMENT_SHELL_THICKNESS` for `*ELEMENT_SHELL_THICKNESS`.
     pub fn keyword_name(&self, b: &Block) -> &str {
         let line = self.name_line(b);
-        let after = if line.first() == Some(&b'*') { &line[1..] } else { line };
+        let after = if line.first() == Some(&b'*') {
+            &line[1..]
+        } else {
+            line
+        };
         let end = after
             .iter()
             .position(|&c| matches!(c, b' ' | b'\t' | b'\r' | b'\n'))

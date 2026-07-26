@@ -46,8 +46,16 @@ fn is_state_dir(name: &str) -> bool {
 
 /// Read one variable across every state dir and stack it into `(rows = T, cols = k)`
 /// row-major. Returns `None` if the per-state widths are ragged.
-fn stack_states(b: &Binout, branch: &str, states: &[String], var: &str) -> Option<(usize, Vec<f64>)> {
-    let paths: Vec<Vec<&str>> = states.iter().map(|s| vec![branch, s.as_str(), var]).collect();
+fn stack_states(
+    b: &Binout,
+    branch: &str,
+    states: &[String],
+    var: &str,
+) -> Option<(usize, Vec<f64>)> {
+    let paths: Vec<Vec<&str>> = states
+        .iter()
+        .map(|s| vec![branch, s.as_str(), var])
+        .collect();
     let rows: Vec<Vec<f64>> = b
         .read_many(&paths)
         .into_iter()
@@ -103,7 +111,10 @@ fn branch_table(b: &Binout, branch: &str, run_id: &str) -> Option<RecordBatch> {
         Some((_, flat)) => flat.into_iter().step_by(1).take(t).collect(),
         None => (0..t).map(|i| i as f64).collect(),
     };
-    let time_col: Vec<f64> = time_vec.iter().flat_map(|&x| std::iter::repeat_n(x, n_ent)).collect();
+    let time_col: Vec<f64> = time_vec
+        .iter()
+        .flat_map(|&x| std::iter::repeat_n(x, n_ent))
+        .collect();
     let id_col: Vec<i64> = (0..t).flat_map(|_| 0..n_ent as i64).collect();
     let run_col: Vec<&str> = vec![run_id; n_rows];
 
@@ -124,7 +135,9 @@ fn branch_table(b: &Binout, branch: &str, run_id: &str) -> Option<RecordBatch> {
             flat.clone()
         } else if *k == 1 {
             // Broadcast a scalar-per-state across all entities.
-            flat.iter().flat_map(|&x| std::iter::repeat_n(x, n_ent)).collect()
+            flat.iter()
+                .flat_map(|&x| std::iter::repeat_n(x, n_ent))
+                .collect()
         } else {
             continue; // ragged relative to n_ent — skip rather than misalign
         };
@@ -142,7 +155,10 @@ fn safe(name: &str) -> String {
 }
 
 /// Convert a whole binout into one Arrow table per branch, tagged with `run_id`.
-pub fn binout_tables(path: &str, run_id: &str) -> Result<Vec<BranchTable>, dynars::results::LsdaError> {
+pub fn binout_tables(
+    path: &str,
+    run_id: &str,
+) -> Result<Vec<BranchTable>, dynars::results::LsdaError> {
     let b = Binout::new(path)?;
     let branches = b.read(&[])?.keys();
     let mut out = Vec::new();

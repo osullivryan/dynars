@@ -1,12 +1,12 @@
 //! PyO3 bindings: the `Deck` handle — parse once, validate + navigate.
 
+use pyo3::Bound;
+use pyo3::PyResult;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use pyo3::PyResult;
-use pyo3::Bound;
 
+use super::validate::{PyReport, PyRule, report_to_py};
 use crate::validate;
-use super::validate::{report_to_py, PyReport, PyRule};
 
 // ── Deck: parse once, validate + navigate off one handle ─────────────────
 use crate::keywords::EntityKind;
@@ -39,20 +39,40 @@ impl PyDeck {
         report_to_py(py.detach(move || self.deck.validate(rs)))
     }
 
-    fn part(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> { PyEntity::make(slf, py, EntityKind::Part, id) }
-    fn material(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> { PyEntity::make(slf, py, EntityKind::Material, id) }
-    fn section(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> { PyEntity::make(slf, py, EntityKind::Section, id) }
-    fn curve(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> { PyEntity::make(slf, py, EntityKind::Curve, id) }
+    fn part(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
+        PyEntity::make(slf, py, EntityKind::Part, id)
+    }
+    fn material(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
+        PyEntity::make(slf, py, EntityKind::Material, id)
+    }
+    fn section(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
+        PyEntity::make(slf, py, EntityKind::Section, id)
+    }
+    fn curve(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
+        PyEntity::make(slf, py, EntityKind::Curve, id)
+    }
 
     /// Every part in the deck (enumerate, don't guess ids).
-    fn parts(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> { PyEntity::all(slf, py, EntityKind::Part) }
-    fn materials(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> { PyEntity::all(slf, py, EntityKind::Material) }
-    fn sections(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> { PyEntity::all(slf, py, EntityKind::Section) }
-    fn curves(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> { PyEntity::all(slf, py, EntityKind::Curve) }
+    fn parts(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
+        PyEntity::all(slf, py, EntityKind::Part)
+    }
+    fn materials(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
+        PyEntity::all(slf, py, EntityKind::Material)
+    }
+    fn sections(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
+        PyEntity::all(slf, py, EntityKind::Section)
+    }
+    fn curves(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
+        PyEntity::all(slf, py, EntityKind::Curve)
+    }
 
     /// `(kind, count)` of defined ids, most-numerous first.
     fn definition_counts(&self) -> Vec<(String, usize)> {
-        self.deck.definition_counts().into_iter().map(|(k, n)| (format!("{k:?}"), n)).collect()
+        self.deck
+            .definition_counts()
+            .into_iter()
+            .map(|(k, n)| (format!("{k:?}"), n))
+            .collect()
     }
 
     /// Bulk **columnar** read of every occurrence of `keyword` across the whole
@@ -136,7 +156,13 @@ impl PyEntity {
             let d = deck.borrow(py);
             model::site_of(d.deck.site_index(), kind, id)?
         };
-        Some(PyEntity { deck: deck.clone_ref(py), kind, id, file, block })
+        Some(PyEntity {
+            deck: deck.clone_ref(py),
+            kind,
+            id,
+            file,
+            block,
+        })
     }
     fn all(deck: Py<PyDeck>, py: Python<'_>, kind: EntityKind) -> Vec<PyEntity> {
         let sites: Vec<(i64, usize, usize)> = {
@@ -148,7 +174,16 @@ impl PyEntity {
                 .map(|(&(_, id), &(f, b))| (id, f, b))
                 .collect()
         };
-        sites.into_iter().map(|(id, file, block)| PyEntity { deck: deck.clone_ref(py), kind, id, file, block }).collect()
+        sites
+            .into_iter()
+            .map(|(id, file, block)| PyEntity {
+                deck: deck.clone_ref(py),
+                kind,
+                id,
+                file,
+                block,
+            })
+            .collect()
     }
     fn ref_to(slf: PyRef<'_, Self>, py: Python<'_>, kind: EntityKind) -> Option<PyEntity> {
         let id = {
@@ -183,7 +218,10 @@ impl PyEntity {
         let d = self.deck.borrow(py);
         let f = &d.deck.files[self.file];
         let b = &f.blocks[self.block];
-        1 + f.src()[..b.name_start].iter().filter(|&&c| c == b'\n').count()
+        1 + f.src()[..b.name_start]
+            .iter()
+            .filter(|&&c| c == b'\n')
+            .count()
     }
     /// Read a field by name (case-insensitive) → int / float / str.
     fn field<'py>(&self, py: Python<'py>, name: String) -> Option<Bound<'py, pyo3::PyAny>> {
@@ -205,9 +243,9 @@ impl PyEntity {
         match r {
             crate::keywords::Ref::None => None,
             crate::keywords::Ref::To(k) => PyEntity::make(deck, py, k, id),
-            crate::keywords::Ref::AnyOf(ks) => {
-                ks.iter().find_map(|k| PyEntity::make(deck.clone_ref(py), py, *k, id))
-            }
+            crate::keywords::Ref::AnyOf(ks) => ks
+                .iter()
+                .find_map(|k| PyEntity::make(deck.clone_ref(py), py, *k, id)),
         }
     }
     fn material(slf: PyRef<'_, Self>, py: Python<'_>) -> Option<PyEntity> {

@@ -150,7 +150,9 @@ impl Default for BinoutEditor {
 impl BinoutEditor {
     /// An empty binout.
     pub fn new() -> Self {
-        Self { root: Node::Dir(BTreeMap::new()) }
+        Self {
+            root: Node::Dir(BTreeMap::new()),
+        }
     }
 
     /// Load an existing binout (glob pattern; continuation files handled) into a
@@ -159,14 +161,20 @@ impl BinoutEditor {
         let b = Binout::new(pattern)?;
         let mut root = BTreeMap::new();
         load_dir(&b, &[], &mut root)?;
-        Ok(Self { root: Node::Dir(root) })
+        Ok(Self {
+            root: Node::Dir(root),
+        })
     }
 
     /// Child names at a directory path (empty path = top level). `None` if the
     /// path doesn't resolve to a directory.
     pub fn list(&self, path: &[&str]) -> Option<Vec<String>> {
         match self.resolve(path)? {
-            Node::Dir(m) => Some(m.keys().map(|k| String::from_utf8_lossy(k).into_owned()).collect()),
+            Node::Dir(m) => Some(
+                m.keys()
+                    .map(|k| String::from_utf8_lossy(k).into_owned())
+                    .collect(),
+            ),
             Node::Leaf(_) => None,
         }
     }
@@ -190,7 +198,11 @@ impl BinoutEditor {
         for seg in dirs {
             let map = match node {
                 Node::Dir(m) => m,
-                Node::Leaf(_) => return Err(LsdaError::InvalidPath(format!("'{seg}' is a dataset, not a directory"))),
+                Node::Leaf(_) => {
+                    return Err(LsdaError::InvalidPath(format!(
+                        "'{seg}' is a dataset, not a directory"
+                    )));
+                }
             };
             node = map
                 .entry(seg.as_bytes().to_vec())
@@ -201,13 +213,17 @@ impl BinoutEditor {
                 m.insert(name.as_bytes().to_vec(), Node::Leaf(data));
                 Ok(())
             }
-            Node::Leaf(_) => Err(LsdaError::InvalidPath("parent is a dataset, not a directory".into())),
+            Node::Leaf(_) => Err(LsdaError::InvalidPath(
+                "parent is a dataset, not a directory".into(),
+            )),
         }
     }
 
     /// Remove the dataset or directory at `path`. Returns whether it existed.
     pub fn remove(&mut self, path: &[&str]) -> bool {
-        let Some((name, dirs)) = path.split_last() else { return false };
+        let Some((name, dirs)) = path.split_last() else {
+            return false;
+        };
         let mut node = &mut self.root;
         for seg in dirs {
             match node {
@@ -318,20 +334,33 @@ fn collect<'a>(node: &'a Node, path: String, out: &mut Vec<DirGroup<'a>>) {
         })
         .collect();
     if !leaves.is_empty() {
-        out.push(DirGroup { path: path.clone(), leaves });
+        out.push(DirGroup {
+            path: path.clone(),
+            leaves,
+        });
     }
     for (k, v) in children {
         if matches!(v, Node::Dir(_)) {
             let name = String::from_utf8_lossy(k);
-            let sub = if path == "/" { format!("/{name}") } else { format!("{path}/{name}") };
+            let sub = if path == "/" {
+                format!("/{name}")
+            } else {
+                format!("{path}/{name}")
+            };
             collect(v, sub, out);
         }
     }
 }
 
-fn load_dir(b: &Binout, path: &[String], into: &mut BTreeMap<Vec<u8>, Node>) -> Result<(), LsdaError> {
+fn load_dir(
+    b: &Binout,
+    path: &[String],
+    into: &mut BTreeMap<Vec<u8>, Node>,
+) -> Result<(), LsdaError> {
     let segs: Vec<&str> = path.iter().map(String::as_str).collect();
-    let ReadResult::Directory(keys) = b.read(&segs)? else { return Ok(()) };
+    let ReadResult::Directory(keys) = b.read(&segs)? else {
+        return Ok(());
+    };
     for key in keys {
         let name = String::from_utf8_lossy(&key).into_owned();
         let mut child_path = path.to_vec();
@@ -376,16 +405,26 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("dynars_binout_{tag}_{nanos}_{}", N.fetch_add(1, Ordering::Relaxed)))
+        std::env::temp_dir().join(format!(
+            "dynars_binout_{tag}_{nanos}_{}",
+            N.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 
     #[test]
     fn build_write_read_roundtrip() {
         let mut e = BinoutEditor::new();
-        e.set(&["nodout", "metadata", "ids"], Data::I32(vec![10, 20, 30])).unwrap();
-        e.set(&["nodout", "n1", "time"], Data::F32(vec![0.0, 0.5, 1.0])).unwrap();
-        e.set(&["nodout", "n1", "x_displacement"], Data::F32(vec![1.0, 2.0, 4.0])).unwrap();
-        e.set(&["glstat", "title"], Data::Str("dynars test".into())).unwrap();
+        e.set(&["nodout", "metadata", "ids"], Data::I32(vec![10, 20, 30]))
+            .unwrap();
+        e.set(&["nodout", "n1", "time"], Data::F32(vec![0.0, 0.5, 1.0]))
+            .unwrap();
+        e.set(
+            &["nodout", "n1", "x_displacement"],
+            Data::F32(vec![1.0, 2.0, 4.0]),
+        )
+        .unwrap();
+        e.set(&["glstat", "title"], Data::Str("dynars test".into()))
+            .unwrap();
 
         let p = tmp("rt");
         e.write(&p).unwrap();
@@ -397,7 +436,9 @@ mod tests {
             vec![10.0, 20.0, 30.0]
         );
         assert_eq!(
-            b.read(&["nodout", "n1", "x_displacement"]).unwrap().to_f64_vec(),
+            b.read(&["nodout", "n1", "x_displacement"])
+                .unwrap()
+                .to_f64_vec(),
             vec![1.0, 2.0, 4.0]
         );
         // Strings are written as an I*1 byte array (LSDA has no string type),
@@ -416,21 +457,34 @@ mod tests {
     fn edit_existing_values_via_full_rewrite() {
         // Build a file, load it, overwrite one channel, save, re-read.
         let mut e = BinoutEditor::new();
-        e.set(&["rcforc", "m1", "x_force"], Data::F32(vec![1.0, 2.0, 3.0])).unwrap();
+        e.set(&["rcforc", "m1", "x_force"], Data::F32(vec![1.0, 2.0, 3.0]))
+            .unwrap();
         let p = tmp("edit");
         e.write(&p).unwrap();
 
         let mut e2 = BinoutEditor::open(p.to_str().unwrap()).unwrap();
-        assert_eq!(e2.get(&["rcforc", "m1", "x_force"]), Some(&Data::F32(vec![1.0, 2.0, 3.0])));
-        e2.set(&["rcforc", "m1", "x_force"], Data::F32(vec![9.0, 8.0, 7.0])).unwrap();
-        e2.set(&["rcforc", "m1", "y_force"], Data::F32(vec![0.0, 0.0, 0.0])).unwrap(); // add a channel
+        assert_eq!(
+            e2.get(&["rcforc", "m1", "x_force"]),
+            Some(&Data::F32(vec![1.0, 2.0, 3.0]))
+        );
+        e2.set(&["rcforc", "m1", "x_force"], Data::F32(vec![9.0, 8.0, 7.0]))
+            .unwrap();
+        e2.set(&["rcforc", "m1", "y_force"], Data::F32(vec![0.0, 0.0, 0.0]))
+            .unwrap(); // add a channel
         assert!(e2.remove(&["rcforc", "m1", "x_force"]) || true);
-        e2.set(&["rcforc", "m1", "x_force"], Data::F32(vec![9.0, 8.0, 7.0])).unwrap();
+        e2.set(&["rcforc", "m1", "x_force"], Data::F32(vec![9.0, 8.0, 7.0]))
+            .unwrap();
         e2.write(&p).unwrap();
 
         let b = Binout::new(p.to_str().unwrap()).unwrap();
-        assert_eq!(b.read(&["rcforc", "m1", "x_force"]).unwrap().to_f64_vec(), vec![9.0, 8.0, 7.0]);
-        assert_eq!(b.read(&["rcforc", "m1"]).unwrap().keys(), vec!["x_force", "y_force"]);
+        assert_eq!(
+            b.read(&["rcforc", "m1", "x_force"]).unwrap().to_f64_vec(),
+            vec![9.0, 8.0, 7.0]
+        );
+        assert_eq!(
+            b.read(&["rcforc", "m1"]).unwrap().keys(),
+            vec!["x_force", "y_force"]
+        );
         std::fs::remove_file(&p).ok();
     }
 
@@ -449,10 +503,18 @@ mod tests {
         e.write(&p).unwrap();
 
         let back = Binout::new(p.to_str().unwrap()).unwrap();
-        assert_eq!(back.read(&[]).unwrap().keys(), top, "top-level dirs must match");
+        assert_eq!(
+            back.read(&[]).unwrap().keys(),
+            top,
+            "top-level dirs must match"
+        );
 
         // Compare one drilled-down channel end to end.
-        if let Some(nl) = orig.read(&["nodout"]).ok().and_then(|r| r.keys().first().cloned()) {
+        if let Some(nl) = orig
+            .read(&["nodout"])
+            .ok()
+            .and_then(|r| r.keys().first().cloned())
+        {
             let ch = orig.read(&["nodout", &nl]).unwrap().keys();
             if let Some(c) = ch.first() {
                 let a = orig.read(&["nodout", &nl, c]).unwrap().to_f64_vec();

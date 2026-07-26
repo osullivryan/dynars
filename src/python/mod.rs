@@ -4,17 +4,17 @@
 //! can call the crate-private resolution internals (`model::site_index`,
 //! `entity_field`, …) that the public API deliberately hides.
 
+mod deck;
 mod include_tree;
 mod keyword;
 mod results;
 mod validate;
-mod deck;
 
-pub use deck::{parse_deck, PyDeck, PyEntity};
-pub use include_tree::{parse_include_tree, PyIncludeNode};
-pub use keyword::{parse_keyword_file, PyKeywordFile};
+pub use deck::{PyDeck, PyEntity, parse_deck};
+pub use include_tree::{PyIncludeNode, parse_include_tree};
+pub use keyword::{PyKeywordFile, parse_keyword_file};
 pub use results::{
-    open_d3plot, parse_binout, PyBinout, PyBinoutEditor, PyD3plot, PyD3plotEditor, PyD3plotWriter,
-    PyIntforWriter,
+    PyBinout, PyBinoutEditor, PyD3plot, PyD3plotEditor, PyD3plotWriter, PyIntforWriter,
+    open_d3plot, parse_binout,
 };
 pub use validate::{PyFinding, PyPredicate, PyReport, PyRule};

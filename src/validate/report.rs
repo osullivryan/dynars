@@ -3,7 +3,10 @@
 use std::path::{Path, PathBuf};
 
 /// How serious a violation is.
-#[cfg_attr(feature = "python", pyo3::pyclass(eq, eq_int, from_py_object, name = "Severity"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(eq, eq_int, from_py_object, name = "Severity")
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,

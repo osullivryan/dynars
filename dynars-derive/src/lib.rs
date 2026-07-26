@@ -31,7 +31,7 @@ use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    parse_macro_input, Data, DeriveInput, Field, Fields, Ident, LitBool, LitInt, Path, Token, Type,
+    Data, DeriveInput, Field, Fields, Ident, LitBool, LitInt, Path, Token, Type, parse_macro_input,
 };
 
 /// `#[derive(Card)]` — implement `CardLayout` for a struct of `#[field]`s.
@@ -161,21 +161,58 @@ fn specialized_parse(
             Type::Array(arr) => {
                 let count = &arr.len;
                 match base_kind(&arr.elem)? {
-                    Kind::Int => (quote!(i64), quote!(__to_int), quote!(Int), quote!(#count), false),
-                    Kind::Float => {
-                        (quote!(f64), quote!(__to_float), quote!(Float), quote!(#count), false)
-                    }
-                    Kind::Str => (quote!(String), quote!(__to_str), quote!(Str), quote!(#count), true),
+                    Kind::Int => (
+                        quote!(i64),
+                        quote!(__to_int),
+                        quote!(Int),
+                        quote!(#count),
+                        false,
+                    ),
+                    Kind::Float => (
+                        quote!(f64),
+                        quote!(__to_float),
+                        quote!(Float),
+                        quote!(#count),
+                        false,
+                    ),
+                    Kind::Str => (
+                        quote!(String),
+                        quote!(__to_str),
+                        quote!(Str),
+                        quote!(#count),
+                        true,
+                    ),
                 }
             }
             ty => match base_kind(ty)? {
-                Kind::Int => (quote!(i64), quote!(__to_int), quote!(Int), quote!(1usize), false),
-                Kind::Float => (quote!(f64), quote!(__to_float), quote!(Float), quote!(1usize), false),
-                Kind::Str => (quote!(String), quote!(__to_str), quote!(Str), quote!(1usize), false),
+                Kind::Int => (
+                    quote!(i64),
+                    quote!(__to_int),
+                    quote!(Int),
+                    quote!(1usize),
+                    false,
+                ),
+                Kind::Float => (
+                    quote!(f64),
+                    quote!(__to_float),
+                    quote!(Float),
+                    quote!(1usize),
+                    false,
+                ),
+                Kind::Str => (
+                    quote!(String),
+                    quote!(__to_str),
+                    quote!(Str),
+                    quote!(1usize),
+                    false,
+                ),
             },
         };
         if is_str_array {
-            return Err(syn::Error::new_spanned(&f.ty, "string arrays are not supported"));
+            return Err(syn::Error::new_spanned(
+                &f.ty,
+                "string arrays are not supported",
+            ));
         }
 
         decls.push(quote! { let mut #var: ::std::vec::Vec<#elem_ty> = ::std::vec::Vec::new(); });
@@ -229,7 +266,10 @@ fn build_card_expr(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 ));
             }
             Fields::Unnamed(_) => {
-                return Err(syn::Error::new_spanned(&input.ident, "expected named fields"));
+                return Err(syn::Error::new_spanned(
+                    &input.ident,
+                    "expected named fields",
+                ));
             }
         },
         _ => return Err(syn::Error::new_spanned(&input.ident, "expected a struct")),
@@ -257,7 +297,10 @@ fn field_call(f: &Field) -> syn::Result<TokenStream2> {
                 Kind::Int => quote! { .int_array(#fname, #count, #width) },
                 Kind::Float => quote! { .float_array(#fname, #count, #width) },
                 Kind::Str => {
-                    return Err(syn::Error::new_spanned(&f.ty, "string arrays are not supported"));
+                    return Err(syn::Error::new_spanned(
+                        &f.ty,
+                        "string arrays are not supported",
+                    ));
                 }
             }
         }
@@ -346,8 +389,7 @@ fn parse_keyword_attr(input: &DeriveInput) -> syn::Result<(String, bool)> {
 fn parse_cards_attr(input: &DeriveInput) -> syn::Result<Option<Vec<Path>>> {
     for attr in &input.attrs {
         if attr.path().is_ident("cards") {
-            let paths =
-                attr.parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)?;
+            let paths = attr.parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)?;
             return Ok(Some(paths.into_iter().collect()));
         }
     }

@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use pyo3::prelude::*;
 use pyo3::PyResult;
+use pyo3::prelude::*;
 
 use crate::include::IncludeNode as RustIncludeNode;
 
@@ -39,7 +39,10 @@ impl PyIncludeNode {
         };
         format!(
             "IncludeNode('{}'{}, {} bytes, {} children)",
-            self.path, kind_str, self.byte_count, self.children.len(),
+            self.path,
+            kind_str,
+            self.byte_count,
+            self.children.len(),
         )
     }
 }

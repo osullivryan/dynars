@@ -59,7 +59,10 @@ struct Part;
 
 fn main() {
     let mut deck = String::from("*KEYWORD\n*NODE\n");
-    for (i, (x, y, z)) in [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)].iter().enumerate() {
+    for (i, (x, y, z)) in [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)]
+        .iter()
+        .enumerate()
+    {
         deck += &format!("{:>8}{:>16.6}{:>16.6}{:>16.6}\n", i + 1, x, y, z);
     }
     deck += "\
@@ -79,12 +82,21 @@ aluminium panel
 
     let nodes = Node::parse(&parsed);
     println!("NODE — {} rows", nodes.rows());
-    println!("  nid = {:?}", nodes.column("nid").unwrap().as_int().unwrap());
-    println!("  x   = {:?}", nodes.column("x").unwrap().as_float().unwrap());
+    println!(
+        "  nid = {:?}",
+        nodes.column("nid").unwrap().as_int().unwrap()
+    );
+    println!(
+        "  x   = {:?}",
+        nodes.column("x").unwrap().as_float().unwrap()
+    );
 
     let shells = ElementShell::parse(&parsed);
     println!("\nELEMENT_SHELL — {} rows", shells.rows());
-    println!("  nodes = {:?}", shells.column("nodes").unwrap().as_int().unwrap());
+    println!(
+        "  nodes = {:?}",
+        shells.column("nodes").unwrap().as_int().unwrap()
+    );
 
     let parts = Part::parse(&parsed);
     println!("\nPART — {} rows", parts.rows());

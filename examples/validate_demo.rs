@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 
-use dynars::deck::{parse_deck, Deck};
+use dynars::deck::{Deck, parse_deck};
 use dynars::keywords::names;
-use dynars::validate::{pred, Check, Cmp, Expr, Finding, Rule, Severity, Value};
+use dynars::validate::{Check, Cmp, Expr, Finding, Rule, Severity, Value, pred};
 
 /// A custom rule (arbitrary Rust logic): SECIDs must be unique across the deck.
 /// The built-in `Rule`s are per-occurrence and can't express cross-occurrence
@@ -21,7 +21,9 @@ impl Check for UniqueSectionIds {
         let mut out = Vec::new();
         let mut seen: HashMap<i64, String> = HashMap::new();
         for kw in deck.keywords(names::SECTION_SHELL) {
-            let Some(id) = kw.field("SECID").and_then(|f| f.as_i64()) else { continue };
+            let Some(id) = kw.field("SECID").and_then(|f| f.as_i64()) else {
+                continue;
+            };
             let here = format!("{}:{}", kw.file().display(), kw.line());
             if let Some(first) = seen.get(&id) {
                 out.push(Finding {
@@ -41,7 +43,9 @@ impl Check for UniqueSectionIds {
 }
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: validate_demo <main.k>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: validate_demo <main.k>");
     let deck = parse_deck(std::path::Path::new(&path)).expect("parse deck");
 
     // One entry — `deck.validate([rules])` — off the deck we already parsed.
@@ -86,6 +90,12 @@ fn main() {
         report.is_clean(),
     );
     for f in &report.findings {
-        println!("[{:?}] {}\n    {}\n    {}", f.severity, f.rule, f.message, f.location());
+        println!(
+            "[{:?}] {}\n    {}\n    {}",
+            f.severity,
+            f.rule,
+            f.message,
+            f.location()
+        );
     }
 }

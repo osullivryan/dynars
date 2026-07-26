@@ -51,9 +51,8 @@ struct PartData {
 struct Part;
 
 fn write_deck() -> std::path::PathBuf {
-    let node = |i: usize, x: f64, y: f64, z: f64| {
-        format!("{:>8}{:>16.6}{:>16.6}{:>16.6}\n", i, x, y, z)
-    };
+    let node =
+        |i: usize, x: f64, y: f64, z: f64| format!("{:>8}{:>16.6}{:>16.6}{:>16.6}\n", i, x, y, z);
     let mut deck = String::from("*KEYWORD\n*NODE\n");
     deck += &node(1, 0.0, 0.0, 0.0);
     deck += &node(2, 1.0, 2.0, 3.0);
@@ -88,7 +87,10 @@ fn derive_reproduces_schema_parsing() {
     // Multi-card via #[cards(...)].
     let parts = Part::parse(&parsed);
     assert_eq!(parts.rows(), 2);
-    assert_eq!(parts.column("title").unwrap().as_str().unwrap(), &["steel", "alu"]);
+    assert_eq!(
+        parts.column("title").unwrap().as_str().unwrap(),
+        &["steel", "alu"]
+    );
     assert_eq!(parts.column("mid").unwrap().as_int().unwrap(), &[3, 30]);
 
     // The generated schema equals what the builder would make.

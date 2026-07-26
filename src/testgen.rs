@@ -94,7 +94,14 @@ fn generate_file(
             // Flush before recursion so file counter advances
             w.flush().unwrap();
 
-            generate_file(out_dir, &child_name, current_depth + 1, max_depth, breadth, nodes_per_file);
+            generate_file(
+                out_dir,
+                &child_name,
+                current_depth + 1,
+                max_depth,
+                breadth,
+                nodes_per_file,
+            );
         }
     }
 

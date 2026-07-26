@@ -38,18 +38,38 @@ fn main() {
     let n_blocks = parsed
         .blocks
         .iter()
-        .filter(|b| parsed.keyword_name(b).eq_ignore_ascii_case(names::MAT_ELASTIC))
+        .filter(|b| {
+            parsed
+                .keyword_name(b)
+                .eq_ignore_ascii_case(names::MAT_ELASTIC)
+        })
         .count();
     let mats = parse_schema(&parsed, &keywords::schema(names::MAT_ELASTIC).unwrap());
-    println!("MAT_ELASTIC — {} blocks in file, aggregated into {} rows", n_blocks, mats.rows());
-    println!("  MID = {:?}", mats.column("MID").unwrap().as_int().unwrap());
-    println!("  E   = {:?}", mats.column("E").unwrap().as_float().unwrap());
+    println!(
+        "MAT_ELASTIC — {} blocks in file, aggregated into {} rows",
+        n_blocks,
+        mats.rows()
+    );
+    println!(
+        "  MID = {:?}",
+        mats.column("MID").unwrap().as_int().unwrap()
+    );
+    println!(
+        "  E   = {:?}",
+        mats.column("E").unwrap().as_float().unwrap()
+    );
 
     // *NODE comes from the hand-written supplement (pyDYNA omits it).
     let nodes = parse_schema(&parsed, &keywords::schema(names::NODE).unwrap());
     println!("\nNODE (supplement) — {} rows", nodes.rows());
-    println!("  nid = {:?}", nodes.column("nid").unwrap().as_int().unwrap());
-    println!("  x   = {:?}", nodes.column("x").unwrap().as_float().unwrap());
+    println!(
+        "  nid = {:?}",
+        nodes.column("nid").unwrap().as_int().unwrap()
+    );
+    println!(
+        "  x   = {:?}",
+        nodes.column("x").unwrap().as_float().unwrap()
+    );
 
     // With `--features typed-keywords`, every keyword also has a typed struct.
     #[cfg(feature = "typed-keywords")]
@@ -57,14 +77,21 @@ fn main() {
         use dynars::keywords::Columns; // brings .iter()/.len() (shared trait) into scope
         let m = dynars::keywords::typed::MAT_ELASTIC::parse(&parsed);
         // Columnar (struct-of-arrays): m.mid is Vec<i64>, m.e is Vec<f64>.
-        println!("\ntyped MAT_ELASTIC — {} rows; columns mid={:?} e={:?}", m.len(), m.mid, m.e);
+        println!(
+            "\ntyped MAT_ELASTIC — {} rows; columns mid={:?} e={:?}",
+            m.len(),
+            m.mid,
+            m.e
+        );
         // ...or iterate as row objects (array-of-structs) — one per material:
         for mat in m.iter() {
             println!("  material: MID={} E={}", mat.mid, mat.e);
         }
     }
     #[cfg(not(feature = "typed-keywords"))]
-    println!("\n(build with --features typed-keywords for typed structs: MAT_ELASTIC::parse(&p).e)");
+    println!(
+        "\n(build with --features typed-keywords for typed structs: MAT_ELASTIC::parse(&p).e)"
+    );
 
     std::fs::remove_file(&path).ok();
 }

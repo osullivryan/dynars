@@ -8,6 +8,12 @@ fn main() {
     for t in &tables {
         let schema = t.batch.schema();
         let cols: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        println!("{:8} {:5} rows x {:2} cols  {:?}", t.branch, t.batch.num_rows(), t.batch.num_columns(), cols);
+        println!(
+            "{:8} {:5} rows x {:2} cols  {:?}",
+            t.branch,
+            t.batch.num_rows(),
+            t.batch.num_columns(),
+            cols
+        );
     }
 }

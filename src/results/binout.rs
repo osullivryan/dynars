@@ -1,9 +1,9 @@
 use rayon::prelude::*;
 
+use super::LsdaError;
 use super::diskfile::Diskfile;
 use super::lsda::Lsda;
-use super::symbol::{freeze, ReadResult, SymNode};
-use super::LsdaError;
+use super::symbol::{ReadResult, SymNode, freeze};
 
 /// LS-DYNA binary output (binout) file reader.
 ///
@@ -26,8 +26,8 @@ pub struct Binout {
 
 impl Binout {
     pub fn new(glob_pattern: &str) -> Result<Self, LsdaError> {
-        let matches = glob::glob(glob_pattern)
-            .map_err(|e| LsdaError::InvalidPath(e.to_string()))?;
+        let matches =
+            glob::glob(glob_pattern).map_err(|e| LsdaError::InvalidPath(e.to_string()))?;
         let mut filelist: Vec<String> = matches
             .filter_map(|e| e.ok())
             .map(|p| p.to_string_lossy().into_owned())
@@ -39,7 +39,11 @@ impl Binout {
         let lsda = Lsda::new(filelist.clone(), "r")?;
         let tree = freeze(&lsda.root);
         let Lsda { files, .. } = lsda;
-        Ok(Self { filelist, files, tree })
+        Ok(Self {
+            filelist,
+            files,
+            tree,
+        })
     }
 
     /// Read at the given path segments. Returns `ReadResult::Directory` if the path is a folder.
@@ -59,7 +63,9 @@ impl Binout {
 
     /// Read a time-history: extracts the channel and its sibling "time" array.
     pub fn read_time_series(&self, path: &[&str]) -> Result<super::TimeSeries, LsdaError> {
-        if path.is_empty() { return Err(LsdaError::InvalidPath("empty path".into())); }
+        if path.is_empty() {
+            return Err(LsdaError::InvalidPath("empty path".into()));
+        }
         let values = self.read_f64(path)?;
         let channel = path.last().unwrap().to_string();
 
@@ -71,7 +77,11 @@ impl Binout {
             (0..values.len()).map(|i| i as f64).collect()
         });
 
-        Ok(super::TimeSeries { time, values, channel })
+        Ok(super::TimeSeries {
+            time,
+            values,
+            channel,
+        })
     }
 
     /// List variable names (channels) at a directory path in the binout hierarchy.
@@ -111,25 +121,34 @@ mod tests {
         let top = b.read(&[]).expect("read root").keys();
         assert!(!top.is_empty(), "binout should have top-level channels");
         println!("Top-level channels ({}):", top.len());
-        for k in &top { println!("  {k}"); }
+        for k in &top {
+            println!("  {k}");
+        }
     }
 
     #[test]
     fn real_binout_glstat_channels() {
-        if !std::path::Path::new(TEST_BINOUT).exists() { return; }
+        if !std::path::Path::new(TEST_BINOUT).exists() {
+            return;
+        }
         let b = Binout::new(TEST_BINOUT).expect("open binout");
         let channels = b.read(&["glstat"]).expect("read glstat").keys();
         println!("glstat sub-dirs: {} entries", channels.len());
         // Drill into the first sub-dir to see what variables it has.
         if let Some(first) = channels.first() {
-            let inner = b.read(&["glstat", first]).expect("read glstat/first").keys();
+            let inner = b
+                .read(&["glstat", first])
+                .expect("read glstat/first")
+                .keys();
             println!("glstat/{first} channels: {inner:?}");
         }
     }
 
     #[test]
     fn real_binout_nodout_channels() {
-        if !std::path::Path::new(TEST_BINOUT).exists() { return; }
+        if !std::path::Path::new(TEST_BINOUT).exists() {
+            return;
+        }
         let b = Binout::new(TEST_BINOUT).expect("open binout");
         let top = b.read(&[]).expect("read root").keys();
         if !top.contains(&"nodout".to_string()) {
@@ -137,7 +156,10 @@ mod tests {
             return;
         }
         let nodes = b.read(&["nodout"]).expect("read nodout").keys();
-        println!("nodout node IDs (first 5): {:?}", &nodes[..nodes.len().min(5)]);
+        println!(
+            "nodout node IDs (first 5): {:?}",
+            &nodes[..nodes.len().min(5)]
+        );
         assert!(!nodes.is_empty());
         // Drill into the first node and print its channels.
         if let Some(first_node) = nodes.first() {
@@ -146,8 +168,14 @@ mod tests {
             assert!(!channels.is_empty());
             // Read the first channel as f64.
             if let Some(ch) = channels.first() {
-                let vals = b.read_f64(&["nodout", first_node, ch]).expect("read channel");
-                println!("  {first_node}/{ch}: {} values, first={:?}", vals.len(), vals.first());
+                let vals = b
+                    .read_f64(&["nodout", first_node, ch])
+                    .expect("read channel");
+                println!(
+                    "  {first_node}/{ch}: {} values, first={:?}",
+                    vals.len(),
+                    vals.first()
+                );
                 assert!(!vals.is_empty());
             }
         }

@@ -231,7 +231,11 @@ fn process_star_line(
     let line = get_line(data, star_pos, line_end_nl);
 
     if let Some(kind) = match_include_keyword(line) {
-        let mut fname_start = if line_end_nl < data.len() { line_end_nl + 1 } else { data.len() };
+        let mut fname_start = if line_end_nl < data.len() {
+            line_end_nl + 1
+        } else {
+            data.len()
+        };
 
         loop {
             if fname_start >= data.len() {
@@ -242,7 +246,11 @@ fn process_star_line(
             let fname_line = get_line(data, fname_start, fname_end_nl);
 
             if !fname_line.is_empty() && fname_line[0] == b'$' {
-                fname_start = if fname_end_nl < data.len() { fname_end_nl + 1 } else { data.len() };
+                fname_start = if fname_end_nl < data.len() {
+                    fname_end_nl + 1
+                } else {
+                    data.len()
+                };
                 continue;
             }
 
@@ -304,7 +312,11 @@ pub fn parse_file_blocks(file_path: &Path) -> std::io::Result<ParsedFile> {
 
     // mmap of a zero-length file fails on some platforms; use an empty buffer.
     if file_size == 0 {
-        return Ok(ParsedFile::new(file_path.to_path_buf(), Vec::new(), Vec::new()));
+        return Ok(ParsedFile::new(
+            file_path.to_path_buf(),
+            Vec::new(),
+            Vec::new(),
+        ));
     }
 
     // SAFETY: standard mmap caveat — undefined behaviour if the file is
@@ -356,7 +368,11 @@ pub fn split_blocks(source: &[u8]) -> Vec<Block> {
     let mut blocks = Vec::with_capacity(n);
     for j in 0..n {
         let span_start = starts[j];
-        let span_end = if j + 1 < n { starts[j + 1] } else { source.len() };
+        let span_end = if j + 1 < n {
+            starts[j + 1]
+        } else {
+            source.len()
+        };
         let name_start = kw[j];
         let body_start = line_end_after(source, name_start).min(span_end);
         blocks.push(Block {
@@ -449,10 +465,7 @@ fn find_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
 ///
 /// Equivalent to the streaming scanner's include detection, but driven by the
 /// block model so the marshalling path shares a single source of truth.
-pub fn extract_includes(
-    parsed: &ParsedFile,
-    include_paths: &[PathBuf],
-) -> Vec<IncludeDirective> {
+pub fn extract_includes(parsed: &ParsedFile, include_paths: &[PathBuf]) -> Vec<IncludeDirective> {
     let parent_dir = parsed.path.parent().unwrap_or(Path::new("."));
     let mut includes = Vec::new();
 
@@ -486,7 +499,11 @@ fn first_filename(body: &[u8]) -> Option<&[u8]> {
         };
         let line = get_line(body, start, end);
         if !line.is_empty() && line[0] == b'$' {
-            start = if end < body.len() { end + 1 } else { body.len() };
+            start = if end < body.len() {
+                end + 1
+            } else {
+                body.len()
+            };
             continue;
         }
         let f = trim(line);
@@ -625,7 +642,11 @@ pub fn split_fields(line: &[u8], format: CardFormat) -> Vec<Field<'_>> {
             .collect();
     }
 
-    let width = if format == CardFormat::Long { LONG_WIDTH } else { FIXED_WIDTH };
+    let width = if format == CardFormat::Long {
+        LONG_WIDTH
+    } else {
+        FIXED_WIDTH
+    };
     let line = trim_right(line); // drop trailing padding / EOL
     let mut fields = Vec::with_capacity(line.len() / width + 1);
     let mut i = 0;
@@ -665,7 +686,11 @@ impl<'a> Iterator for CardIter<'a> {
                 None => self.body.len(),
             };
             let line = get_line(self.body, self.pos, end);
-            self.pos = if end < self.body.len() { end + 1 } else { self.body.len() };
+            self.pos = if end < self.body.len() {
+                end + 1
+            } else {
+                self.body.len()
+            };
 
             if (!line.is_empty() && line[0] == b'$') || trim(line).is_empty() {
                 continue;
@@ -718,7 +743,11 @@ impl ParsedFile {
 
         // Options are whatever follows the name token on the keyword line.
         let line = trim_right(self.name_line(block));
-        let after_star = if line.first() == Some(&b'*') { &line[1..] } else { line };
+        let after_star = if line.first() == Some(&b'*') {
+            &line[1..]
+        } else {
+            line
+        };
         let options = match after_star.iter().position(|&c| matches!(c, b' ' | b'\t')) {
             Some(sp) => std::str::from_utf8(&after_star[sp..])
                 .unwrap_or("")
@@ -733,7 +762,11 @@ impl ParsedFile {
             .map(|c| c.iter().map(|f| f.as_str().to_string()).collect())
             .collect();
 
-        Keyword { name, options, cards }
+        Keyword {
+            name,
+            options,
+            cards,
+        }
     }
 
     /// Replace a block with an edited [`Keyword`], preserving its leading
@@ -774,11 +807,11 @@ mod tests {
         let cases: &[&[u8]] = &[
             b"*KEYWORD\n*NODE\n1,0.0,0.0,0.0\n*END\n",
             b"*KEYWORD\r\n*NODE\r\n1,0.0,0.0,0.0\r\n*END\r\n", // CRLF
-            b"*KEYWORD\n*END",                                // no trailing newline
+            b"*KEYWORD\n*END",                                 // no trailing newline
             b"$ leading comment\n$ another\n*KEYWORD\n*END\n", // preamble comments
-            b"garbage before any keyword\n*KEYWORD\n*END\n",  // non-comment preamble
-            b"no keywords at all\njust text\n",               // zero blocks
-            b"",                                              // empty file
+            b"garbage before any keyword\n*KEYWORD\n*END\n",   // non-comment preamble
+            b"no keywords at all\njust text\n",                // zero blocks
+            b"",                                               // empty file
         ];
         for &src in cases {
             let p = parsed(src);
@@ -804,7 +837,10 @@ mod tests {
         let src = b"*KEYWORD\n*ELEMENT_SHELL_THICKNESS\n*INCLUDE_TRANSFORM\nsub.k\n";
         let p = parsed(src);
         let names: Vec<_> = p.blocks.iter().map(|b| p.keyword_name(b)).collect();
-        assert_eq!(names, vec!["KEYWORD", "ELEMENT_SHELL_THICKNESS", "INCLUDE_TRANSFORM"]);
+        assert_eq!(
+            names,
+            vec!["KEYWORD", "ELEMENT_SHELL_THICKNESS", "INCLUDE_TRANSFORM"]
+        );
     }
 
     #[test]
@@ -812,7 +848,11 @@ mod tests {
         let src = b"*KEYWORD\n$ describes the include\n*INCLUDE\nsub.k\n";
         let p = parsed(src);
         // The comment belongs to the *INCLUDE block, not *KEYWORD.
-        let inc = p.blocks.iter().find(|b| p.keyword_name(b) == "INCLUDE").unwrap();
+        let inc = p
+            .blocks
+            .iter()
+            .find(|b| p.keyword_name(b) == "INCLUDE")
+            .unwrap();
         assert_eq!(p.trivia(inc), b"$ describes the include\n");
         // ...and *KEYWORD's body does not contain it.
         let kw = &p.blocks[0];
@@ -874,7 +914,11 @@ mod tests {
         let parsed = parse_file_blocks(&path).unwrap();
         let block_incs = extract_includes(&parsed, &[]);
 
-        let a: Vec<_> = streaming.includes.iter().map(|i| i.raw_path.clone()).collect();
+        let a: Vec<_> = streaming
+            .includes
+            .iter()
+            .map(|i| i.raw_path.clone())
+            .collect();
         let b: Vec<_> = block_incs.iter().map(|i| i.raw_path.clone()).collect();
         assert_eq!(a, b);
 
@@ -944,7 +988,11 @@ mod tests {
                     *MAT_ELASTIC\n1,7.85e-9,210000.0,0.3\n\
                     *END\n";
         let mut p = parsed(src);
-        let mat_idx = p.blocks.iter().position(|b| p.keyword_name(b) == "MAT_ELASTIC").unwrap();
+        let mat_idx = p
+            .blocks
+            .iter()
+            .position(|b| p.keyword_name(b) == "MAT_ELASTIC")
+            .unwrap();
 
         let mut kw = p.keyword(&p.blocks[mat_idx]);
         kw.cards[0][2] = "70000.0".to_string(); // change Young's modulus

@@ -21,7 +21,7 @@ mod report;
 mod rules;
 
 pub use check::Check;
-pub use expr::{pred, Cmp, Expr, FieldPredicate};
+pub use expr::{Cmp, Expr, FieldPredicate, pred};
 pub use report::{FileScope, Finding, Report, Severity};
 pub use rules::Rule;
 

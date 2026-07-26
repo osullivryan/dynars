@@ -6,8 +6,8 @@
 //! to run it through [`Deck::validate`](crate::deck::Deck::validate) beside the
 //! built-ins.
 
-use super::report::Finding;
 use super::Deck;
+use super::report::Finding;
 
 /// A validation check — the open extension point. Implementing this **is** how
 /// you write a custom rule; wrap it in [`Rule::custom`](super::Rule::custom) to

@@ -119,30 +119,140 @@ struct DefRule {
 // is assumed canonical (uppercased, `_TITLE`/`_ID` stripped) — see
 // [`canonical_base`].
 static DEF_RULES: &[DefRule] = &[
-    DefRule { kind: EntityKind::Node, m: NameMatch::Exact("NODE"), per_line: true, id_card: 0 },
-    DefRule { kind: EntityKind::Element, m: NameMatch::Prefix("ELEMENT_"), per_line: true, id_card: 0 },
-    DefRule { kind: EntityKind::Part, m: NameMatch::Exact("PART"), per_line: false, id_card: 1 },
-    DefRule { kind: EntityKind::ThermalMaterial, m: NameMatch::Prefix("MAT_THERMAL"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Material, m: NameMatch::Prefix("MAT_"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Section, m: NameMatch::Prefix("SECTION_"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Eos, m: NameMatch::Prefix("EOS_"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Hourglass, m: NameMatch::Exact("HOURGLASS"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Curve, m: NameMatch::Prefix("DEFINE_CURVE"), per_line: false, id_card: 0 },
+    DefRule {
+        kind: EntityKind::Node,
+        m: NameMatch::Exact("NODE"),
+        per_line: true,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Element,
+        m: NameMatch::Prefix("ELEMENT_"),
+        per_line: true,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Part,
+        m: NameMatch::Exact("PART"),
+        per_line: false,
+        id_card: 1,
+    },
+    DefRule {
+        kind: EntityKind::ThermalMaterial,
+        m: NameMatch::Prefix("MAT_THERMAL"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Material,
+        m: NameMatch::Prefix("MAT_"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Section,
+        m: NameMatch::Prefix("SECTION_"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Eos,
+        m: NameMatch::Prefix("EOS_"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Hourglass,
+        m: NameMatch::Exact("HOURGLASS"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Curve,
+        m: NameMatch::Prefix("DEFINE_CURVE"),
+        per_line: false,
+        id_card: 0,
+    },
     // Tables and functions live in the same id space as load curves (an LCID
     // field commonly accepts a table/function id).
-    DefRule { kind: EntityKind::Curve, m: NameMatch::Prefix("DEFINE_TABLE"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Curve, m: NameMatch::Prefix("DEFINE_FUNCTION"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Coord, m: NameMatch::Prefix("DEFINE_COORDINATE"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Vector, m: NameMatch::Prefix("DEFINE_VECTOR"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Box, m: NameMatch::Prefix("DEFINE_BOX"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::Transform, m: NameMatch::Prefix("DEFINE_TRANSFORM"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::NodeSet, m: NameMatch::Prefix("SET_NODE"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::PartSet, m: NameMatch::Prefix("SET_PART"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::SegmentSet, m: NameMatch::Prefix("SET_SEGMENT"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::ShellSet, m: NameMatch::Prefix("SET_SHELL"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::SolidSet, m: NameMatch::Prefix("SET_SOLID"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::BeamSet, m: NameMatch::Prefix("SET_BEAM"), per_line: false, id_card: 0 },
-    DefRule { kind: EntityKind::DiscreteSet, m: NameMatch::Prefix("SET_DISCRETE"), per_line: false, id_card: 0 },
+    DefRule {
+        kind: EntityKind::Curve,
+        m: NameMatch::Prefix("DEFINE_TABLE"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Curve,
+        m: NameMatch::Prefix("DEFINE_FUNCTION"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Coord,
+        m: NameMatch::Prefix("DEFINE_COORDINATE"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Vector,
+        m: NameMatch::Prefix("DEFINE_VECTOR"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Box,
+        m: NameMatch::Prefix("DEFINE_BOX"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Transform,
+        m: NameMatch::Prefix("DEFINE_TRANSFORM"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::NodeSet,
+        m: NameMatch::Prefix("SET_NODE"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::PartSet,
+        m: NameMatch::Prefix("SET_PART"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::SegmentSet,
+        m: NameMatch::Prefix("SET_SEGMENT"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::ShellSet,
+        m: NameMatch::Prefix("SET_SHELL"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::SolidSet,
+        m: NameMatch::Prefix("SET_SOLID"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::BeamSet,
+        m: NameMatch::Prefix("SET_BEAM"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::DiscreteSet,
+        m: NameMatch::Prefix("SET_DISCRETE"),
+        per_line: false,
+        id_card: 0,
+    },
 ];
 
 /// A keyword that modifies an existing entity instead of defining a new one, so
@@ -164,7 +274,11 @@ pub fn definition_of(base: &str) -> Option<DefSpec> {
             NameMatch::Exact(k) => base == k,
             NameMatch::Prefix(p) => base.starts_with(p),
         })
-        .map(|r| DefSpec { kind: r.kind, per_line: r.per_line, id_card: r.id_card })
+        .map(|r| DefSpec {
+            kind: r.kind,
+            per_line: r.per_line,
+            id_card: r.id_card,
+        })
 }
 
 /// Typo-proof `&str` constants for every built-in keyword name, e.g.
@@ -303,28 +417,103 @@ static SUPPLEMENT: &[Kw] = &[
     Kw {
         name: "NODE",
         cards: &[&[
-            Fld { n: "nid", t: T::I, w: 8, r: Ref::None },
-            Fld { n: "x", t: T::F, w: 16, r: Ref::None },
-            Fld { n: "y", t: T::F, w: 16, r: Ref::None },
-            Fld { n: "z", t: T::F, w: 16, r: Ref::None },
-            Fld { n: "tc", t: T::I, w: 8, r: Ref::None },
-            Fld { n: "rc", t: T::I, w: 8, r: Ref::None },
+            Fld {
+                n: "nid",
+                t: T::I,
+                w: 8,
+                r: Ref::None,
+            },
+            Fld {
+                n: "x",
+                t: T::F,
+                w: 16,
+                r: Ref::None,
+            },
+            Fld {
+                n: "y",
+                t: T::F,
+                w: 16,
+                r: Ref::None,
+            },
+            Fld {
+                n: "z",
+                t: T::F,
+                w: 16,
+                r: Ref::None,
+            },
+            Fld {
+                n: "tc",
+                t: T::I,
+                w: 8,
+                r: Ref::None,
+            },
+            Fld {
+                n: "rc",
+                t: T::I,
+                w: 8,
+                r: Ref::None,
+            },
         ]],
     },
     // *PART: an A80 heading card, then the part data card (I10 fields).
     Kw {
         name: "PART",
         cards: &[
-            &[Fld { n: "heading", t: T::S, w: 80, r: Ref::None }],
+            &[Fld {
+                n: "heading",
+                t: T::S,
+                w: 80,
+                r: Ref::None,
+            }],
             &[
-                Fld { n: "pid", t: T::I, w: 10, r: Ref::None },
-                Fld { n: "secid", t: T::I, w: 10, r: Ref::To(EntityKind::Section) },
-                Fld { n: "mid", t: T::I, w: 10, r: Ref::To(EntityKind::Material) },
-                Fld { n: "eosid", t: T::I, w: 10, r: Ref::To(EntityKind::Eos) },
-                Fld { n: "hgid", t: T::I, w: 10, r: Ref::To(EntityKind::Hourglass) },
-                Fld { n: "grav", t: T::I, w: 10, r: Ref::None },
-                Fld { n: "adpopt", t: T::I, w: 10, r: Ref::None },
-                Fld { n: "tmid", t: T::I, w: 10, r: Ref::To(EntityKind::ThermalMaterial) },
+                Fld {
+                    n: "pid",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::None,
+                },
+                Fld {
+                    n: "secid",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::To(EntityKind::Section),
+                },
+                Fld {
+                    n: "mid",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::To(EntityKind::Material),
+                },
+                Fld {
+                    n: "eosid",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::To(EntityKind::Eos),
+                },
+                Fld {
+                    n: "hgid",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::To(EntityKind::Hourglass),
+                },
+                Fld {
+                    n: "grav",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::None,
+                },
+                Fld {
+                    n: "adpopt",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::None,
+                },
+                Fld {
+                    n: "tmid",
+                    t: T::I,
+                    w: 10,
+                    r: Ref::To(EntityKind::ThermalMaterial),
+                },
             ],
         ],
     },
@@ -353,7 +542,9 @@ pub fn find(name: &str) -> Option<&'static Kw> {
     if let Ok(i) = data::KEYWORDS.binary_search_by(|k| k.name.cmp(upper.as_str())) {
         return Some(&data::KEYWORDS[i]);
     }
-    data::KEYWORDS.iter().find(|k| k.name.eq_ignore_ascii_case(name))
+    data::KEYWORDS
+        .iter()
+        .find(|k| k.name.eq_ignore_ascii_case(name))
 }
 
 /// The runtime [`Schema`] for a built-in keyword, if any.
@@ -381,9 +572,16 @@ mod tests {
 
     #[test]
     fn registry_is_populated_and_sorted() {
-        assert!(count() > 1000, "expected thousands of keywords, got {}", count());
+        assert!(
+            count() > 1000,
+            "expected thousands of keywords, got {}",
+            count()
+        );
         let names: Vec<_> = all().iter().map(|k| k.name).collect();
-        assert!(names.windows(2).all(|w| w[0] <= w[1]), "KEYWORDS must be sorted");
+        assert!(
+            names.windows(2).all(|w| w[0] <= w[1]),
+            "KEYWORDS must be sorted"
+        );
     }
 
     #[test]
@@ -436,7 +634,11 @@ mod tests {
         // per-line definitions
         assert_eq!(
             definition_of("NODE"),
-            Some(DefSpec { kind: EntityKind::Node, per_line: true, id_card: 0 })
+            Some(DefSpec {
+                kind: EntityKind::Node,
+                per_line: true,
+                id_card: 0
+            })
         );
         let el = definition_of("ELEMENT_SHELL").expect("ELEMENT_SHELL defines elements");
         assert!(el.per_line && el.kind == EntityKind::Element);

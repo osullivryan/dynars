@@ -1,8 +1,8 @@
 //! PyO3 bindings: typed validation rules, predicates, findings.
 
-use pyo3::prelude::*;
-use pyo3::PyResult;
 use pyo3::Bound;
+use pyo3::PyResult;
+use pyo3::prelude::*;
 
 // ── Deck validation: typed rules, combinators, file scope ────────────────
 use crate::validate;
@@ -17,7 +17,9 @@ fn py_to_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<validate::Value> {
     if let Ok(s) = obj.extract::<String>() {
         return Ok(validate::Value::Str(s));
     }
-    Err(pyo3::exceptions::PyValueError::new_err("rule value must be int, float, or str"))
+    Err(pyo3::exceptions::PyValueError::new_err(
+        "rule value must be int, float, or str",
+    ))
 }
 
 /// Normalize a keyword name for a rule. Accepts any non-empty name so rules can
@@ -28,7 +30,9 @@ fn py_to_value(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<validate::Value> {
 fn check_keyword(kw: &str) -> PyResult<String> {
     let trimmed = kw.trim();
     if trimmed.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err("keyword name must not be empty"));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "keyword name must not be empty",
+        ));
     }
     Ok(trimmed.to_string())
 }
@@ -45,22 +49,30 @@ impl PyPredicate {
     /// `field <cmp> value`.
     #[staticmethod]
     fn field(field: String, cmp: validate::Cmp, value: Bound<'_, pyo3::PyAny>) -> PyResult<Self> {
-        Ok(Self { inner: validate::Expr::field(field, cmp, py_to_value(&value)?) })
+        Ok(Self {
+            inner: validate::Expr::field(field, cmp, py_to_value(&value)?),
+        })
     }
     /// All sub-predicates must hold (logical AND).
     #[staticmethod]
     fn all_(preds: Vec<PyPredicate>) -> Self {
-        Self { inner: validate::Expr::all(preds.into_iter().map(|p| p.inner)) }
+        Self {
+            inner: validate::Expr::all(preds.into_iter().map(|p| p.inner)),
+        }
     }
     /// Any sub-predicate holds (logical OR).
     #[staticmethod]
     fn any_(preds: Vec<PyPredicate>) -> Self {
-        Self { inner: validate::Expr::any(preds.into_iter().map(|p| p.inner)) }
+        Self {
+            inner: validate::Expr::any(preds.into_iter().map(|p| p.inner)),
+        }
     }
     /// Negation.
     #[staticmethod]
     fn not_(pred: PyPredicate) -> Self {
-        Self { inner: validate::Expr::not(pred.inner) }
+        Self {
+            inner: validate::Expr::not(pred.inner),
+        }
     }
 }
 
@@ -75,46 +87,76 @@ pub struct PyRule {
 impl PyRule {
     #[staticmethod]
     fn keyword_forbidden(keyword: String) -> PyResult<Self> {
-        Ok(Self { inner: validate::Rule::keyword_forbidden(check_keyword(&keyword)?) })
+        Ok(Self {
+            inner: validate::Rule::keyword_forbidden(check_keyword(&keyword)?),
+        })
     }
     #[staticmethod]
-    fn field_forbidden_values(keyword: String, field: String, values: Vec<Bound<'_, pyo3::PyAny>>) -> PyResult<Self> {
+    fn field_forbidden_values(
+        keyword: String,
+        field: String,
+        values: Vec<Bound<'_, pyo3::PyAny>>,
+    ) -> PyResult<Self> {
         let vals: PyResult<Vec<_>> = values.iter().map(py_to_value).collect();
-        Ok(Self { inner: validate::Rule::field_forbidden_values(check_keyword(&keyword)?, field, vals?) })
+        Ok(Self {
+            inner: validate::Rule::field_forbidden_values(check_keyword(&keyword)?, field, vals?),
+        })
     }
     #[staticmethod]
     #[pyo3(signature = (keyword, require, when=None))]
-    fn field_required(keyword: String, require: PyPredicate, when: Option<PyPredicate>) -> PyResult<Self> {
-        Ok(Self { inner: validate::Rule::field_required(check_keyword(&keyword)?, when.map(|w| w.inner), require.inner) })
+    fn field_required(
+        keyword: String,
+        require: PyPredicate,
+        when: Option<PyPredicate>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: validate::Rule::field_required(
+                check_keyword(&keyword)?,
+                when.map(|w| w.inner),
+                require.inner,
+            ),
+        })
     }
     #[staticmethod]
     fn include_missing() -> Self {
-        Self { inner: validate::Rule::include_missing() }
+        Self {
+            inner: validate::Rule::include_missing(),
+        }
     }
     /// Cross-keyword referential integrity: every id reference resolves
     /// (PART.mid → *MAT, *LOAD.lcid → *DEFINE_CURVE, …). Does not check
     /// element connectivity.
     #[staticmethod]
     fn references_resolve() -> Self {
-        Self { inner: validate::Rule::references_resolve() }
+        Self {
+            inner: validate::Rule::references_resolve(),
+        }
     }
     /// As `references_resolve`, and additionally checks that every element's
     /// nodes are defined. Heavy on large meshes.
     #[staticmethod]
     fn references_resolve_with_connectivity() -> Self {
-        Self { inner: validate::Rule::references_resolve_with_connectivity() }
+        Self {
+            inner: validate::Rule::references_resolve_with_connectivity(),
+        }
     }
     /// Set severity (default Error).
     fn with_severity(&self, severity: validate::Severity) -> Self {
-        Self { inner: self.inner.clone().with_severity(severity) }
+        Self {
+            inner: self.inner.clone().with_severity(severity),
+        }
     }
     /// Apply only within files whose path contains one of `patterns`.
     fn only_in(&self, patterns: Vec<String>) -> Self {
-        Self { inner: self.inner.clone().only_in(patterns) }
+        Self {
+            inner: self.inner.clone().only_in(patterns),
+        }
     }
     /// Apply everywhere except files whose path contains one of `patterns`.
     fn except_in(&self, patterns: Vec<String>) -> Self {
-        Self { inner: self.inner.clone().except_in(patterns) }
+        Self {
+            inner: self.inner.clone().except_in(patterns),
+        }
     }
 }
 
@@ -142,7 +184,10 @@ impl PyFinding {
         format!("{}:{}", self.file, self.line)
     }
     fn __repr__(&self) -> String {
-        format!("Finding({:?}, {}, {}:{}, {:?})", self.severity, self.rule, self.file, self.line, self.message)
+        format!(
+            "Finding({:?}, {}, {}:{}, {:?})",
+            self.severity, self.rule, self.file, self.line, self.message
+        )
     }
 }
 
@@ -156,10 +201,16 @@ pub struct PyReport {
 #[pymethods]
 impl PyReport {
     fn is_clean(&self) -> bool {
-        !self.findings.iter().any(|f| f.severity == validate::Severity::Error)
+        !self
+            .findings
+            .iter()
+            .any(|f| f.severity == validate::Severity::Error)
     }
     fn count(&self, severity: validate::Severity) -> usize {
-        self.findings.iter().filter(|f| f.severity == severity).count()
+        self.findings
+            .iter()
+            .filter(|f| f.severity == severity)
+            .count()
     }
     fn __len__(&self) -> usize {
         self.findings.len()
@@ -187,4 +238,3 @@ pub(super) fn report_to_py(report: validate::Report) -> PyReport {
             .collect(),
     }
 }
-

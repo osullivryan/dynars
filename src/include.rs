@@ -5,8 +5,8 @@
 //! directive kinds and the tree of resolved files ([`build_include_tree`]).
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam::queue::SegQueue;
 use dashmap::{DashMap, DashSet};
@@ -106,7 +106,11 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
 
     let root_id: usize = 0;
     visited.insert(root_path.clone());
-    queue.push(WorkItem { id: root_id, path: root_path, kind: None });
+    queue.push(WorkItem {
+        id: root_id,
+        path: root_path,
+        kind: None,
+    });
 
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -124,11 +128,17 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
                             for inc in &result.includes {
                                 match inc.kind {
                                     IncludeKind::IncludePath => {
-                                        include_paths.lock().unwrap().push(inc.resolved_path.clone());
+                                        include_paths
+                                            .lock()
+                                            .unwrap()
+                                            .push(inc.resolved_path.clone());
                                     }
                                     IncludeKind::IncludePathRelative => {
                                         let parent = item.path.parent().unwrap_or(Path::new("."));
-                                        include_paths.lock().unwrap().push(parent.join(&inc.raw_path));
+                                        include_paths
+                                            .lock()
+                                            .unwrap()
+                                            .push(parent.join(&inc.raw_path));
                                     }
                                     _ => {}
                                 }
@@ -136,7 +146,10 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
 
                             let mut child_ids = Vec::new();
                             for inc in &result.includes {
-                                if matches!(inc.kind, IncludeKind::IncludePath | IncludeKind::IncludePathRelative) {
+                                if matches!(
+                                    inc.kind,
+                                    IncludeKind::IncludePath | IncludeKind::IncludePathRelative
+                                ) {
                                     continue;
                                 }
                                 if !visited.insert(inc.resolved_path.clone()) {
@@ -152,12 +165,15 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
                                 });
                             }
 
-                            results.insert(item.id, ParsedEntry {
-                                path: item.path,
-                                byte_count: result.byte_count,
-                                kind: item.kind,
-                                child_ids,
-                            });
+                            results.insert(
+                                item.id,
+                                ParsedEntry {
+                                    path: item.path,
+                                    byte_count: result.byte_count,
+                                    kind: item.kind,
+                                    child_ids,
+                                },
+                            );
 
                             if in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
                                 // Last item done — workers will exit.
@@ -173,7 +189,8 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
                 }
             });
         }
-    }).unwrap();
+    })
+    .unwrap();
 
     Ok(build_tree_from_results(root_id, &results))
 }

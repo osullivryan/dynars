@@ -6,7 +6,10 @@ use dynars::{include, testgen};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "dynars", about = "High-performance LS-DYNA keyword file include tree parser")]
+#[command(
+    name = "dynars",
+    about = "High-performance LS-DYNA keyword file include tree parser"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -44,7 +47,12 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Generate { depth, breadth, nodes, output } => {
+        Command::Generate {
+            depth,
+            breadth,
+            nodes,
+            output,
+        } => {
             cmd_generate(depth, breadth, nodes, &output);
         }
         Command::Parse { file } => {
@@ -67,7 +75,9 @@ fn cmd_generate(depth: usize, breadth: usize, nodes: usize, output: &str) {
 }
 
 fn cmd_parse(file_path: &Path) {
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
 
     println!("Parsing: {}", file_path.display());
     println!("Threads: {}", threads);
@@ -93,8 +103,16 @@ fn cmd_parse(file_path: &Path) {
 
             println!("=== Performance ===");
             println!("Total files:  {}", total_files);
-            println!("Total bytes:  {} ({:.2} MB)", total_bytes, total_bytes as f64 / 1_048_576.0);
-            println!("Parse time:   {:.6}s ({:.3}ms)", elapsed.as_secs_f64(), elapsed.as_secs_f64() * 1000.0);
+            println!(
+                "Total bytes:  {} ({:.2} MB)",
+                total_bytes,
+                total_bytes as f64 / 1_048_576.0
+            );
+            println!(
+                "Parse time:   {:.6}s ({:.3}ms)",
+                elapsed.as_secs_f64(),
+                elapsed.as_secs_f64() * 1000.0
+            );
 
             if elapsed.as_secs_f64() > 0.0 {
                 let mb_per_sec = (total_bytes as f64 / 1_048_576.0) / elapsed.as_secs_f64();

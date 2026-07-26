@@ -16,9 +16,9 @@ use rayon::prelude::*;
 
 use crate::deck::Deck;
 use crate::file::{Block, CardFormat, ParsedFile};
+use crate::keywords::{self, EntityKind, Ref, canonical_base};
 use crate::parser::Field as RawField;
-use crate::keywords::{self, canonical_base, EntityKind, Ref};
-use crate::schema::{parse_schema_files, FieldSpec, FieldType, Schema, Table};
+use crate::schema::{FieldSpec, FieldType, Schema, Table, parse_schema_files};
 
 // Which keywords define which entity ids (and where the id sits) now lives with
 // the table, as `keywords::definition_of` — see that module. The resolution core
@@ -51,7 +51,12 @@ fn parse_i64(s: &[u8]) -> Option<i64> {
 }
 
 /// The raw (untrimmed) byte slice for field `idx` of a card, width-aware.
-fn card_field_slice<'a>(line: &'a [u8], card: &[keywords::Fld], idx: usize, fmt: CardFormat) -> Option<&'a [u8]> {
+fn card_field_slice<'a>(
+    line: &'a [u8],
+    card: &[keywords::Fld],
+    idx: usize,
+    fmt: CardFormat,
+) -> Option<&'a [u8]> {
     if idx >= card.len() {
         return None;
     }
@@ -77,7 +82,6 @@ fn title_offset(exact_kw: &str) -> usize {
     usize::from(exact_kw.to_ascii_uppercase().ends_with("_TITLE"))
 }
 
-
 // ── The resolution core ──────────────────────────────────────────────────────
 
 /// A reference that resolves to nothing defined in the deck.
@@ -97,7 +101,10 @@ pub(crate) type Defs = HashMap<EntityKind, HashSet<i64>>;
 
 /// Every defined id in the deck, per kind (parallel over files, then merge).
 pub(crate) fn build_defs(deck: &Deck) -> Defs {
-    deck.files.par_iter().map(collect_defs).reduce(HashMap::new, merge_defs)
+    deck.files
+        .par_iter()
+        .map(collect_defs)
+        .reduce(HashMap::new, merge_defs)
 }
 
 impl Deck {
@@ -120,7 +127,11 @@ impl Deck {
 
     /// Number of defined ids of each kind (for reporting), most-numerous first.
     pub fn definition_counts(&self) -> Vec<(EntityKind, usize)> {
-        let mut v: Vec<_> = self.definitions().iter().map(|(k, s)| (*k, s.len())).collect();
+        let mut v: Vec<_> = self
+            .definitions()
+            .iter()
+            .map(|(k, s)| (*k, s.len()))
+            .collect();
         v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         v
     }
@@ -143,8 +154,12 @@ fn collect_defs(file: &ParsedFile) -> HashMap<EntityKind, HashSet<i64>> {
         let base = canonical_base(exact);
         // `definition_of` returns `None` for control cards and for modifier
         // keywords (MAT_ADD_*, *_ADD_*, …), which reference rather than define.
-        let Some(def) = keywords::definition_of(&base) else { continue };
-        let Some(kw) = keywords::find(&base) else { continue };
+        let Some(def) = keywords::definition_of(&base) else {
+            continue;
+        };
+        let Some(kw) = keywords::find(&base) else {
+            continue;
+        };
 
         let id_card = kw.cards.get(def.id_card).copied().unwrap_or(&[]);
 
@@ -154,7 +169,9 @@ fn collect_defs(file: &ParsedFile) -> HashMap<EntityKind, HashSet<i64>> {
         if def.per_line {
             let card0 = kw.cards.first().copied().unwrap_or(&[]);
             for line in lines.iter().skip(title) {
-                if let Some(id) = card_field_i64(line, card0, 0, block.format) && id != 0 {
+                if let Some(id) = card_field_i64(line, card0, 0, block.format)
+                    && id != 0
+                {
                     set.insert(id);
                 }
             }
@@ -198,8 +215,15 @@ fn check_refs(
             check_refs_user(file, block, &base, schema, defs, &mut out);
             continue;
         }
-        let Some(kw) = keywords::find(&base) else { continue };
-        if kw.cards.iter().flat_map(|c| c.iter()).all(|f| matches!(f.r, Ref::None)) {
+        let Some(kw) = keywords::find(&base) else {
+            continue;
+        };
+        if kw
+            .cards
+            .iter()
+            .flat_map(|c| c.iter())
+            .all(|f| matches!(f.r, Ref::None))
+        {
             continue; // no references on this keyword
         }
 
@@ -211,7 +235,13 @@ fn check_refs(
 
         let lines = data_lines(file, block);
         let title = title_offset(exact);
-        let line_no = |ln: usize| 1 + file.src()[..block.name_start].iter().filter(|&&b| b == b'\n').count() + ln;
+        let line_no = |ln: usize| {
+            1 + file.src()[..block.name_start]
+                .iter()
+                .filter(|&&b| b == b'\n')
+                .count()
+                + ln
+        };
 
         if per_line {
             // Element cards: all ref fields on card 0, one element per line.
@@ -221,22 +251,42 @@ fn check_refs(
                     if matches!(f.r, Ref::None) {
                         continue;
                     }
-                    let Some(v) = card_field_i64(line, card0, fi, block.format) else { continue };
+                    let Some(v) = card_field_i64(line, card0, fi, block.format) else {
+                        continue;
+                    };
                     if v != 0 && is_dangling(defs, &f.r, v) {
-                        out.push(Dangling { from_keyword: base.clone(), field: f.n.to_string(), target: f.r, id: v, file: file.path.clone(), line: line_no(row) });
+                        out.push(Dangling {
+                            from_keyword: base.clone(),
+                            field: f.n.to_string(),
+                            target: f.r,
+                            id: v,
+                            file: file.path.clone(),
+                            line: line_no(row),
+                        });
                     }
                 }
             }
         } else {
             for (ci, card) in kw.cards.iter().enumerate() {
-                let Some(line) = lines.get(title + ci) else { break };
+                let Some(line) = lines.get(title + ci) else {
+                    break;
+                };
                 for (fi, f) in card.iter().enumerate() {
                     if matches!(f.r, Ref::None) {
                         continue;
                     }
-                    let Some(v) = card_field_i64(line, card, fi, block.format) else { continue };
+                    let Some(v) = card_field_i64(line, card, fi, block.format) else {
+                        continue;
+                    };
                     if v != 0 && is_dangling(defs, &f.r, v) {
-                        out.push(Dangling { from_keyword: base.clone(), field: f.n.to_string(), target: f.r, id: v, file: file.path.clone(), line: line_no(title + ci) });
+                        out.push(Dangling {
+                            from_keyword: base.clone(),
+                            field: f.n.to_string(),
+                            target: f.r,
+                            id: v,
+                            file: file.path.clone(),
+                            line: line_no(title + ci),
+                        });
                     }
                 }
             }
@@ -259,24 +309,39 @@ fn check_refs_user(
     defs: &HashMap<EntityKind, HashSet<i64>>,
     out: &mut Vec<Dangling>,
 ) {
-    if schema.cards.iter().flat_map(|c| &c.fields).all(|f| matches!(f.reference, Ref::None)) {
+    if schema
+        .cards
+        .iter()
+        .flat_map(|c| &c.fields)
+        .all(|f| matches!(f.reference, Ref::None))
+    {
         return; // no references declared
     }
     let exact = file.keyword_name(block);
     let title = title_offset(exact);
     let lines = data_lines(file, block);
-    let line_no =
-        |ln: usize| 1 + file.src()[..block.name_start].iter().filter(|&&b| b == b'\n').count() + ln;
+    let line_no = |ln: usize| {
+        1 + file.src()[..block.name_start]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+            + ln
+    };
 
     for (row, line) in lines.iter().enumerate().skip(title) {
-        let Some(fields) = schema.card_for_row(row - title) else { continue };
+        let Some(fields) = schema.card_for_row(row - title) else {
+            continue;
+        };
         let card = CardRef::User(fields);
         for col in 0..card.len() {
             let r = card.ref_of(col);
             if matches!(r, Ref::None) {
                 continue;
             }
-            let Some(v) = card.field_slice(line, col, block.format).and_then(parse_i64) else {
+            let Some(v) = card
+                .field_slice(line, col, block.format)
+                .and_then(parse_i64)
+            else {
                 continue;
             };
             if v != 0 && is_dangling(defs, &r, v) {
@@ -356,11 +421,15 @@ pub(crate) fn build_sites(deck: &Deck) -> Sites {
             // Only per-block definitions are navigable by id; per-line entities
             // (nodes, elements) and modifiers (`None` from `definition_of`) are
             // scanned, not indexed.
-            let Some(def) = keywords::definition_of(&base) else { continue };
+            let Some(def) = keywords::definition_of(&base) else {
+                continue;
+            };
             if def.per_line {
                 continue;
             }
-            let Some(kw) = keywords::find(&base) else { continue };
+            let Some(kw) = keywords::find(&base) else {
+                continue;
+            };
             let id_card = kw.cards.get(def.id_card).copied().unwrap_or(&[]);
             let title = title_offset(exact);
             let lines = data_lines(file, block);
@@ -377,7 +446,10 @@ pub(crate) fn build_sites(deck: &Deck) -> Sites {
 
 /// Resolve `(kind, id)` to a site, honouring the negative-`id` (`|id|`) convention.
 pub(crate) fn site_of(sites: &Sites, kind: EntityKind, id: i64) -> Option<(usize, usize)> {
-    sites.get(&(kind, id)).or_else(|| sites.get(&(kind, id.abs()))).copied()
+    sites
+        .get(&(kind, id))
+        .or_else(|| sites.get(&(kind, id.abs())))
+        .copied()
 }
 
 /// Read a field by name (case-insensitive) from a specific block, typed.
@@ -412,13 +484,22 @@ pub(crate) fn ref_field(deck: &Deck, file: usize, block: usize, name: &str) -> O
     let b = &f.blocks[block];
     let base = canonical_base(f.keyword_name(b));
     let kw = keywords::find(&base)?;
-    let fld = kw.cards.iter().flat_map(|c| c.iter()).find(|x| x.n.eq_ignore_ascii_case(name))?;
+    let fld = kw
+        .cards
+        .iter()
+        .flat_map(|c| c.iter())
+        .find(|x| x.n.eq_ignore_ascii_case(name))?;
     let id = entity_field(deck, file, block, name)?.as_i64()?;
     Some((fld.r, id))
 }
 
 /// The id referenced by this block's first field that targets `kind`.
-pub(crate) fn first_ref_to(deck: &Deck, file: usize, block: usize, kind: EntityKind) -> Option<i64> {
+pub(crate) fn first_ref_to(
+    deck: &Deck,
+    file: usize,
+    block: usize,
+    kind: EntityKind,
+) -> Option<i64> {
     let f = &deck.files[file];
     let b = &f.blocks[block];
     let base = canonical_base(f.keyword_name(b));
@@ -455,31 +536,61 @@ impl Deck {
             let base = base.clone();
             (0..file.blocks.len())
                 .filter(move |&bi| canonical_base(file.keyword_name(&file.blocks[bi])) == base)
-                .map(move |bi| Keyword { deck: self, file: fi, block: bi, identity: None })
+                .map(move |bi| Keyword {
+                    deck: self,
+                    file: fi,
+                    block: bi,
+                    identity: None,
+                })
         })
     }
 
     /// Look up a definition entity by kind and id (honours the `|id|` convention).
     pub fn get(&self, kind: EntityKind, id: i64) -> Option<Keyword<'_>> {
-        site_of(self.site_index(), kind, id)
-            .map(|(file, block)| Keyword { deck: self, file, block, identity: Some((kind, id)) })
+        site_of(self.site_index(), kind, id).map(|(file, block)| Keyword {
+            deck: self,
+            file,
+            block,
+            identity: Some((kind, id)),
+        })
     }
-    pub fn part(&self, id: i64) -> Option<Keyword<'_>> { self.get(EntityKind::Part, id) }
-    pub fn material(&self, id: i64) -> Option<Keyword<'_>> { self.get(EntityKind::Material, id) }
-    pub fn section(&self, id: i64) -> Option<Keyword<'_>> { self.get(EntityKind::Section, id) }
-    pub fn curve(&self, id: i64) -> Option<Keyword<'_>> { self.get(EntityKind::Curve, id) }
+    pub fn part(&self, id: i64) -> Option<Keyword<'_>> {
+        self.get(EntityKind::Part, id)
+    }
+    pub fn material(&self, id: i64) -> Option<Keyword<'_>> {
+        self.get(EntityKind::Material, id)
+    }
+    pub fn section(&self, id: i64) -> Option<Keyword<'_>> {
+        self.get(EntityKind::Section, id)
+    }
+    pub fn curve(&self, id: i64) -> Option<Keyword<'_>> {
+        self.get(EntityKind::Curve, id)
+    }
 
     /// Every definition entity of a kind (unordered) — e.g. iterate all parts.
     pub fn entities(&self, kind: EntityKind) -> impl Iterator<Item = Keyword<'_>> {
         self.site_index()
             .iter()
             .filter(move |((k, _), _)| *k == kind)
-            .map(move |(&(kind, id), &(file, block))| Keyword { deck: self, file, block, identity: Some((kind, id)) })
+            .map(move |(&(kind, id), &(file, block))| Keyword {
+                deck: self,
+                file,
+                block,
+                identity: Some((kind, id)),
+            })
     }
-    pub fn parts(&self) -> impl Iterator<Item = Keyword<'_>> { self.entities(EntityKind::Part) }
-    pub fn materials(&self) -> impl Iterator<Item = Keyword<'_>> { self.entities(EntityKind::Material) }
-    pub fn sections(&self) -> impl Iterator<Item = Keyword<'_>> { self.entities(EntityKind::Section) }
-    pub fn curves(&self) -> impl Iterator<Item = Keyword<'_>> { self.entities(EntityKind::Curve) }
+    pub fn parts(&self) -> impl Iterator<Item = Keyword<'_>> {
+        self.entities(EntityKind::Part)
+    }
+    pub fn materials(&self) -> impl Iterator<Item = Keyword<'_>> {
+        self.entities(EntityKind::Material)
+    }
+    pub fn sections(&self) -> impl Iterator<Item = Keyword<'_>> {
+        self.entities(EntityKind::Section)
+    }
+    pub fn curves(&self) -> impl Iterator<Item = Keyword<'_>> {
+        self.entities(EntityKind::Curve)
+    }
 
     /// Bulk **columnar** read of every occurrence of `keyword` across the whole
     /// deck (root + includes), using dynars' built-in schema. This is the fast
@@ -520,7 +631,12 @@ impl Deck {
     /// across-cards name lookup in [`Keyword::field`].
     fn layout_cards(&self, base: &str) -> Option<Vec<CardRef<'_>>> {
         if let Some(s) = self.user_schema(base) {
-            return Some(s.cards.iter().map(|c| CardRef::User(c.fields.as_slice())).collect());
+            return Some(
+                s.cards
+                    .iter()
+                    .map(|c| CardRef::User(c.fields.as_slice()))
+                    .collect(),
+            );
         }
         let kw = keywords::find(base)?;
         Some(kw.cards.iter().map(|&c| CardRef::Static(c)).collect())
@@ -602,7 +718,10 @@ impl<'d> CardRef<'d> {
         match self {
             CardRef::Static(c) => (c[..col].iter().map(|f| scaled(f.w)).sum(), scaled(c[col].w)),
             CardRef::User(c) => (
-                c[..col].iter().map(|f| scaled(f.width) * f.count.max(1)).sum(),
+                c[..col]
+                    .iter()
+                    .map(|f| scaled(f.width) * f.count.max(1))
+                    .sum(),
                 scaled(c[col].width),
             ),
         }
@@ -669,11 +788,21 @@ impl<'d> Keyword<'d> {
     pub fn cards(&self) -> impl Iterator<Item = Card<'d>> + 'd {
         let n = self.rows().len();
         let (deck, file, block) = (self.deck, self.file, self.block);
-        (0..n).map(move |row| Card { deck, file, block, row })
+        (0..n).map(move |row| Card {
+            deck,
+            file,
+            block,
+            row,
+        })
     }
     /// The `i`-th data row as a [`Card`], if present.
     pub fn card(&self, i: usize) -> Option<Card<'d>> {
-        (i < self.rows().len()).then_some(Card { deck: self.deck, file: self.file, block: self.block, row: i })
+        (i < self.rows().len()).then_some(Card {
+            deck: self.deck,
+            file: self.file,
+            block: self.block,
+            row: i,
+        })
     }
 
     // ── schema layer ──
@@ -688,7 +817,12 @@ impl<'d> Keyword<'d> {
             if let Some(col) = card.position_by_name(name) {
                 let row = title + ci;
                 return (row < rows.len()).then_some(Field {
-                    deck: self.deck, file: self.file, block: self.block, row, col, card: Some(*card),
+                    deck: self.deck,
+                    file: self.file,
+                    block: self.block,
+                    row,
+                    col,
+                    card: Some(*card),
                 });
             }
         }
@@ -731,10 +865,18 @@ impl<'d> Keyword<'d> {
         let id = first_ref_to(self.deck, self.file, self.block, kind)?;
         self.deck.get(kind, id)
     }
-    pub fn material(&self) -> Option<Keyword<'d>> { self.reference_to(EntityKind::Material) }
-    pub fn section(&self) -> Option<Keyword<'d>> { self.reference_to(EntityKind::Section) }
-    pub fn eos(&self) -> Option<Keyword<'d>> { self.reference_to(EntityKind::Eos) }
-    pub fn hourglass(&self) -> Option<Keyword<'d>> { self.reference_to(EntityKind::Hourglass) }
+    pub fn material(&self) -> Option<Keyword<'d>> {
+        self.reference_to(EntityKind::Material)
+    }
+    pub fn section(&self) -> Option<Keyword<'d>> {
+        self.reference_to(EntityKind::Section)
+    }
+    pub fn eos(&self) -> Option<Keyword<'d>> {
+        self.reference_to(EntityKind::Eos)
+    }
+    pub fn hourglass(&self) -> Option<Keyword<'d>> {
+        self.reference_to(EntityKind::Hourglass)
+    }
 }
 
 /// One data row of a [`Keyword`] occurrence, plus the schema for that row when
@@ -768,13 +910,27 @@ impl<'d> Card<'d> {
     pub fn field(&self, name: &str) -> Option<Field<'d>> {
         let card = self.schema_card()?;
         let col = card.position_by_name(name)?;
-        Some(Field { deck: self.deck, file: self.file, block: self.block, row: self.row, col, card: Some(card) })
+        Some(Field {
+            deck: self.deck,
+            file: self.file,
+            block: self.block,
+            row: self.row,
+            col,
+            card: Some(card),
+        })
     }
     /// The `col`-th field of this row (positional): typed via the schema when
     /// present, raw otherwise. `None` if the row has no such column.
     pub fn at(&self, col: usize) -> Option<Field<'d>> {
         let card = self.schema_card();
-        let f = Field { deck: self.deck, file: self.file, block: self.block, row: self.row, col, card };
+        let f = Field {
+            deck: self.deck,
+            file: self.file,
+            block: self.block,
+            row: self.row,
+            col,
+            card,
+        };
         f.raw_bytes().is_some().then_some(f)
     }
     /// The trimmed raw token at column `col` — never needs a schema.
@@ -786,7 +942,14 @@ impl<'d> Card<'d> {
         let card = self.schema_card();
         let (deck, file, block, row) = (self.deck, self.file, self.block, self.row);
         let n = card.map_or(0, |c| c.len());
-        (0..n).map(move |col| Field { deck, file, block, row, col, card })
+        (0..n).map(move |col| Field {
+            deck,
+            file,
+            block,
+            row,
+            col,
+            card,
+        })
     }
 }
 
@@ -809,7 +972,10 @@ impl<'d> Field<'d> {
     }
     fn line(&self) -> &'d [u8] {
         let f = &self.deck.files[self.file];
-        data_lines(f, &f.blocks[self.block]).get(self.row).copied().unwrap_or(&[])
+        data_lines(f, &f.blocks[self.block])
+            .get(self.row)
+            .copied()
+            .unwrap_or(&[])
     }
     /// The raw (untrimmed) bytes of this slot.
     fn raw_bytes(&self) -> Option<&'d [u8]> {
@@ -821,7 +987,9 @@ impl<'d> Field<'d> {
                 if crate::schema::__is_free(line, self.block_format()) {
                     line.split(|&c| c == b',').nth(self.col)
                 } else {
-                    line.split(|&c| c == b' ' || c == b'\t').filter(|t| !t.is_empty()).nth(self.col)
+                    line.split(|&c| c == b' ' || c == b'\t')
+                        .filter(|t| !t.is_empty())
+                        .nth(self.col)
                 }
             }
         }
@@ -833,7 +1001,9 @@ impl<'d> Field<'d> {
     }
     /// The untrimmed source text of this slot.
     pub fn raw(&self) -> &'d str {
-        self.raw_bytes().and_then(|b| std::str::from_utf8(b).ok()).unwrap_or("")
+        self.raw_bytes()
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or("")
     }
     /// The typed value: `Int`/`Float`/`Str` per the schema, or `Str(raw)`
     /// without one (or if a numeric parse fails).
@@ -844,7 +1014,9 @@ impl<'d> Field<'d> {
         };
         let trimmed = || std::str::from_utf8(raw).unwrap_or("").trim().to_string();
         match self.card.and_then(|c| c.ty(self.col)) {
-            Some(T::I) => parse_i64(raw).map(Value::Int).unwrap_or_else(|| Value::Str(trimmed())),
+            Some(T::I) => parse_i64(raw)
+                .map(Value::Int)
+                .unwrap_or_else(|| Value::Str(trimmed())),
             Some(T::F) => std::str::from_utf8(raw)
                 .ok()
                 .and_then(|s| s.trim().parse().ok())
@@ -857,7 +1029,11 @@ impl<'d> Field<'d> {
         parse_i64(self.raw_bytes()?)
     }
     pub fn as_f64(&self) -> Option<f64> {
-        std::str::from_utf8(self.raw_bytes()?).ok()?.trim().parse().ok()
+        std::str::from_utf8(self.raw_bytes()?)
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
     }
     /// The trimmed text of this slot (any type).
     pub fn as_str(&self) -> Option<&'d str> {
@@ -916,7 +1092,10 @@ mod tests {
         assert_eq!(c2.field("nid").unwrap().as_i64(), Some(3));
         assert_eq!(c2.field("x").unwrap().as_f64(), Some(4.0));
         // and the value is typed, not a raw string fallback
-        assert_eq!(node.card(1).unwrap().field("nid").unwrap().value(), Value::Int(2));
+        assert_eq!(
+            node.card(1).unwrap().field("nid").unwrap().value(),
+            Value::Int(2)
+        );
     }
 
     #[test]
@@ -925,9 +1104,18 @@ mod tests {
         let d = deck(b"*PART\nsteel bracket\n7,2,3\n");
         let part = d.keywords("PART").next().expect("one *PART block");
 
-        assert_eq!(part.card(0).unwrap().field("heading").unwrap().as_str(), Some("steel bracket"));
-        assert_eq!(part.card(1).unwrap().field("pid").unwrap().as_i64(), Some(7));
-        assert_eq!(part.card(1).unwrap().field("secid").unwrap().as_i64(), Some(2));
+        assert_eq!(
+            part.card(0).unwrap().field("heading").unwrap().as_str(),
+            Some("steel bracket")
+        );
+        assert_eq!(
+            part.card(1).unwrap().field("pid").unwrap().as_i64(),
+            Some(7)
+        );
+        assert_eq!(
+            part.card(1).unwrap().field("secid").unwrap().as_i64(),
+            Some(2)
+        );
         // identity still resolves off the consolidated def metadata
         assert_eq!(part.id(), Some(7));
         assert_eq!(part.kind(), Some(EntityKind::Part));
@@ -944,7 +1132,10 @@ mod tests {
         let nodes = d.table("NODE").expect("NODE is built in");
         assert_eq!(nodes.rows(), 3);
         assert_eq!(nodes.column("nid").unwrap().as_int().unwrap(), &[1, 2, 3]);
-        assert_eq!(nodes.column("x").unwrap().as_float().unwrap(), &[0.0, 1.0, 2.0]);
+        assert_eq!(
+            nodes.column("x").unwrap().as_float().unwrap(),
+            &[0.0, 1.0, 2.0]
+        );
         // a keyword we ship no schema for → None (use table_with)
         assert!(d.table("NOT_A_REAL_KEYWORD_XYZ").is_none());
     }
@@ -964,7 +1155,10 @@ mod tests {
         let mut d = deck_multi(&[b"*VENDOR_WIDGET\n42,3.5,hello\n7,1.0,world\n"]);
 
         // Before registering: no schema → named access degrades to None.
-        let kw = d.keywords("VENDOR_WIDGET").next().expect("occurrence exists schema-or-not");
+        let kw = d
+            .keywords("VENDOR_WIDGET")
+            .next()
+            .expect("occurrence exists schema-or-not");
         assert!(!kw.has_schema());
         assert!(kw.field("wid").is_none());
         // ...but the document layer already works: positional, typed-on-parse.
@@ -973,7 +1167,10 @@ mod tests {
         // Describe it once (single repeating card).
         d.register_schema(
             Schema::new("VENDOR_WIDGET").card(
-                crate::schema::Card::new().int("wid", 8).float("mass", 8).str("tag", 8),
+                crate::schema::Card::new()
+                    .int("wid", 8)
+                    .float("mass", 8)
+                    .str("tag", 8),
             ),
         );
 
@@ -982,10 +1179,19 @@ mod tests {
         // flatten shortcut → first row
         assert_eq!(kw.field("wid").unwrap().as_i64(), Some(42));
         // per-row named + typed access, both rows (repeating card)
-        assert_eq!(kw.card(0).unwrap().field("mass").unwrap().as_f64(), Some(3.5));
+        assert_eq!(
+            kw.card(0).unwrap().field("mass").unwrap().as_f64(),
+            Some(3.5)
+        );
         assert_eq!(kw.card(1).unwrap().field("wid").unwrap().as_i64(), Some(7));
-        assert_eq!(kw.card(1).unwrap().field("tag").unwrap().as_str(), Some("world"));
-        assert_eq!(kw.card(0).unwrap().field("tag").unwrap().value(), Value::Str("hello".into()));
+        assert_eq!(
+            kw.card(1).unwrap().field("tag").unwrap().as_str(),
+            Some("world")
+        );
+        assert_eq!(
+            kw.card(0).unwrap().field("tag").unwrap().value(),
+            Value::Str("hello".into())
+        );
         // the field carries its schema name
         assert_eq!(kw.card(0).unwrap().at(1).unwrap().name(), Some("mass"));
     }
@@ -995,14 +1201,23 @@ mod tests {
         use crate::validate::Rule;
         // *MAT_ELASTIC defines Material 5; the custom keyword references a
         // material on each row — one valid (5), one dangling (99).
-        let mut d = deck_multi(&[b"*MAT_ELASTIC\n5,7.85e-9,210000.0,0.3\n*VENDOR_WIDGET\n1,5\n2,99\n"]);
-        d.register_schema(Schema::new("VENDOR_WIDGET").card(
-            crate::schema::Card::new().int("wid", 8).ref_to("mat", 8, EntityKind::Material),
-        ));
+        let mut d =
+            deck_multi(&[b"*MAT_ELASTIC\n5,7.85e-9,210000.0,0.3\n*VENDOR_WIDGET\n1,5\n2,99\n"]);
+        d.register_schema(
+            Schema::new("VENDOR_WIDGET").card(crate::schema::Card::new().int("wid", 8).ref_to(
+                "mat",
+                8,
+                EntityKind::Material,
+            )),
+        );
 
         // references_resolve now covers the user schema's declared reference.
         let report = d.validate([Rule::references_resolve()]);
-        let widget: Vec<_> = report.findings.iter().filter(|f| f.keyword == "VENDOR_WIDGET").collect();
+        let widget: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.keyword == "VENDOR_WIDGET")
+            .collect();
         assert_eq!(widget.len(), 1, "only mat=99 dangles");
         assert!(widget[0].message.contains("mat") && widget[0].message.contains("99"));
 
@@ -1011,6 +1226,13 @@ mod tests {
         let mat = w.card(0).unwrap().field("mat").unwrap().reference();
         assert_eq!(mat.and_then(|m| m.id()), Some(5));
         // the dangling row resolves to nothing.
-        assert!(w.card(1).unwrap().field("mat").unwrap().reference().is_none());
+        assert!(
+            w.card(1)
+                .unwrap()
+                .field("mat")
+                .unwrap()
+                .reference()
+                .is_none()
+        );
     }
 }
