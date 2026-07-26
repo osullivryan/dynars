@@ -112,7 +112,7 @@ pub fn derive_keyword(input: TokenStream) -> TokenStream {
 
         impl #name {
             /// Parse this keyword from a file into a columnar `Table`.
-            pub fn parse(parsed: &::dynars::keyword::ParsedFile) -> ::dynars::schema::Table {
+            pub fn parse(parsed: &::dynars::file::ParsedFile) -> ::dynars::schema::Table {
                 #parse_body
             }
         }
@@ -197,7 +197,7 @@ fn specialized_parse(
     Ok(quote! {
         let __cols = ::dynars::schema::__drive_single_card(parsed, #keyword, |__chunk, __fmt| {
             let __scale: usize =
-                if __fmt == ::dynars::keyword::CardFormat::Long { 2 } else { 1 };
+                if __fmt == ::dynars::file::CardFormat::Long { 2 } else { 1 };
             #(#width_decls)*
             #(#decls)*
             for __line in __chunk.split(|&__b| __b == b'\n') {

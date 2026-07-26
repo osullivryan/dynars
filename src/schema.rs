@@ -16,7 +16,7 @@
 
 use rayon::prelude::*;
 
-use crate::keyword::{CardFormat, ParsedFile};
+use crate::file::{Block, CardFormat, ParsedFile};
 use crate::parser::Field;
 
 // --- shared chunking infrastructure (parallel splitting of block bodies) ---
@@ -51,17 +51,20 @@ fn line_chunks(body: &[u8], max_chunks: usize) -> Vec<&[u8]> {
 }
 
 /// Collect line-aligned chunks (with their format) across every block whose
-/// name matches `keyword` — a single huge block fans out into many chunks, many
-/// small blocks each contribute one.
-fn collect_chunks<'a>(parsed: &'a ParsedFile, keyword: &str) -> Vec<(&'a [u8], CardFormat)> {
+/// name matches `keyword`, over every file — a single huge block fans out into
+/// many chunks, many small blocks (across the root and its includes) each
+/// contribute one.
+fn collect_chunks<'a>(files: &'a [ParsedFile], keyword: &str) -> Vec<(&'a [u8], CardFormat)> {
     let max_chunks = rayon::current_num_threads() * 4;
     let mut chunks = Vec::new();
-    for block in &parsed.blocks {
-        if !parsed.keyword_name(block).eq_ignore_ascii_case(keyword) {
-            continue;
-        }
-        for c in line_chunks(parsed.body(block), max_chunks) {
-            chunks.push((c, block.format));
+    for parsed in files {
+        for block in &parsed.blocks {
+            if !parsed.keyword_name(block).eq_ignore_ascii_case(keyword) {
+                continue;
+            }
+            for c in line_chunks(parsed.body(block), max_chunks) {
+                chunks.push((c, block.format));
+            }
         }
     }
     chunks
@@ -166,6 +169,20 @@ impl Schema {
     pub fn once(mut self) -> Self {
         self.repeat = false;
         self
+    }
+
+    /// The card governing data row `i` (0-based, past any title). Mirrors
+    /// [`Kw::card_for_row`](crate::keywords::Kw::card_for_row) so a user schema
+    /// registered on a [`Deck`](crate::deck::Deck) tiles its rows the same way
+    /// the built-in table does: a single repeating card governs every row;
+    /// otherwise cards map 1:1. Used by the navigation spine, not the columnar
+    /// marshaller (which groups rows itself).
+    pub fn card_for_row(&self, i: usize) -> Option<&[FieldSpec]> {
+        if self.repeat && self.cards.len() == 1 {
+            self.cards.first().map(|c| c.fields.as_slice())
+        } else {
+            self.cards.get(i).map(|c| c.fields.as_slice())
+        }
     }
 }
 
@@ -339,7 +356,7 @@ pub fn __drive_single_card<F>(parsed: &ParsedFile, keyword: &str, per_chunk: F) 
 where
     F: Fn(&[u8], CardFormat) -> Vec<Column> + Sync + Send,
 {
-    let chunks = collect_chunks(parsed, keyword);
+    let chunks = collect_chunks(std::slice::from_ref(parsed), keyword);
     if chunks.is_empty() {
         // Run once on empty input to get the (empty) column template.
         return per_chunk(&[], CardFormat::Fixed);
@@ -367,19 +384,28 @@ pub trait CardLayout {
     fn card() -> Card;
 }
 
-/// Parse every block matching `schema.keyword` into a columnar [`Table`].
+/// Parse every block matching `schema.keyword` in one file into a columnar
+/// [`Table`]. A convenience wrapper over [`parse_schema_files`] for the
+/// single-file case (`#[derive(Keyword)]`, tests). Deck-wide reads should go
+/// through [`crate::deck::Deck::table`], which spans the root and all includes.
+pub fn parse_schema(parsed: &ParsedFile, schema: &Schema) -> Table {
+    parse_schema_files(std::slice::from_ref(parsed), schema)
+}
+
+/// Parse every block matching `schema.keyword` across `files` (a whole deck:
+/// root + includes) into one columnar [`Table`], columns merged in file order.
 ///
 /// Single-card repeating keywords (the bulk ones, `*NODE` / `*ELEMENT_*`) are
 /// parsed in parallel across cores; multi-card or single-entity keywords are
 /// parsed sequentially (they are almost always low volume).
-pub fn parse_schema(parsed: &ParsedFile, schema: &Schema) -> Table {
+pub fn parse_schema_files(files: &[ParsedFile], schema: &Schema) -> Table {
     if schema.cards.is_empty() {
         return Table::default();
     }
     if schema.cards.len() == 1 && schema.repeat {
-        parse_parallel(parsed, schema)
+        parse_parallel(files, schema)
     } else {
-        parse_sequential(parsed, schema)
+        parse_sequential(files, schema)
     }
 }
 
@@ -441,27 +467,29 @@ fn parse_card_line(line: &[u8], card: &Card, format: CardFormat, cols: &mut [Col
     ci
 }
 
-fn parse_sequential(parsed: &ParsedFile, schema: &Schema) -> Table {
+fn parse_sequential(files: &[ParsedFile], schema: &Schema) -> Table {
     let mut cols = empty_columns(schema);
     let k = schema.cards.len();
 
-    for block in &parsed.blocks {
-        if !parsed.keyword_name(block).eq_ignore_ascii_case(&schema.keyword) {
-            continue;
-        }
-        let format = block.format;
-        let lines: Vec<&[u8]> = parsed
-            .body(block)
-            .split(|&c| c == b'\n')
-            .filter(|l| !is_skippable(l))
-            .collect();
+    for parsed in files {
+        for block in &parsed.blocks {
+            if !parsed.keyword_name(block).eq_ignore_ascii_case(&schema.keyword) {
+                continue;
+            }
+            let format = block.format;
+            let lines: Vec<&[u8]> = parsed
+                .body(block)
+                .split(|&c| c == b'\n')
+                .filter(|l| !is_skippable(l))
+                .collect();
 
-        let groups = if schema.repeat { lines.len() / k } else { usize::from(lines.len() >= k) };
-        for g in 0..groups {
-            let base = g * k;
-            let mut ci = 0;
-            for (kk, card) in schema.cards.iter().enumerate() {
-                ci = parse_card_line(lines[base + kk], card, format, &mut cols, ci);
+            let groups = if schema.repeat { lines.len() / k } else { usize::from(lines.len() >= k) };
+            for g in 0..groups {
+                let base = g * k;
+                let mut ci = 0;
+                for (kk, card) in schema.cards.iter().enumerate() {
+                    ci = parse_card_line(lines[base + kk], card, format, &mut cols, ci);
+                }
             }
         }
     }
@@ -469,9 +497,9 @@ fn parse_sequential(parsed: &ParsedFile, schema: &Schema) -> Table {
     Table { columns: field_names(schema).into_iter().zip(cols).collect() }
 }
 
-fn parse_parallel(parsed: &ParsedFile, schema: &Schema) -> Table {
+fn parse_parallel(files: &[ParsedFile], schema: &Schema) -> Table {
     let card = &schema.cards[0];
-    let chunks = collect_chunks(parsed, &schema.keyword);
+    let chunks = collect_chunks(files, &schema.keyword);
 
     let partials: Vec<Vec<Column>> = chunks
         .par_iter()
@@ -497,10 +525,15 @@ fn parse_parallel(parsed: &ParsedFile, schema: &Schema) -> Table {
     Table { columns: field_names(schema).into_iter().zip(cols).collect() }
 }
 
+/// 1-based line of a block's `*KEYWORD` line, for clickable locations.
+pub(crate) fn block_line(file: &ParsedFile, block: &Block) -> usize {
+    1 + file.src()[..block.name_start].iter().filter(|&&b| b == b'\n').count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keyword::ParsedFile;
+    use crate::file::ParsedFile;
     use crate::parser::split_blocks;
 
     fn parsed(src: &[u8]) -> ParsedFile {

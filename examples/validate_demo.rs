@@ -4,79 +4,79 @@
 
 use std::collections::HashMap;
 
-use dynars::deck::Deck;
+use dynars::deck::{parse_deck, Deck};
 use dynars::keywords::names;
-use dynars::validate::{pred, visit_rows, Check, Cmp, Expr, Finding, Rule, Severity, Validator, Value};
+use dynars::validate::{pred, Check, Cmp, Expr, Finding, Rule, Severity, Value};
 
 /// A custom rule (arbitrary Rust logic): SECIDs must be unique across the deck.
-/// The built-in `Rule`s are per-row and can't express cross-row aggregation —
-/// this is exactly the kind of thing you drop to a `Check` for. It reuses
-/// `visit_rows`, the same primary-card view the built-in field rules use.
+/// The built-in `Rule`s are per-occurrence and can't express cross-occurrence
+/// aggregation — this is what you drop to a `Check` for. It just iterates
+/// `deck.keywords(...)`, the same view the built-in rules use.
 struct UniqueSectionIds;
 impl Check for UniqueSectionIds {
     fn name(&self) -> String {
         "custom:unique_section_ids".into()
     }
-    fn run(&self, deck: &Deck, out: &mut Vec<Finding>) {
+    fn run(&self, deck: &Deck) -> Vec<Finding> {
+        let mut out = Vec::new();
         let mut seen: HashMap<i64, String> = HashMap::new();
-        visit_rows(deck, names::SECTION_SHELL, |r| {
-            let Some(Value::Int(id)) = r.field("SECID") else { return };
-            let here = format!("{}:{}", r.file.display(), r.line);
+        for kw in deck.keywords(names::SECTION_SHELL) {
+            let Some(id) = kw.field("SECID").and_then(|f| f.as_i64()) else { continue };
+            let here = format!("{}:{}", kw.file().display(), kw.line());
             if let Some(first) = seen.get(&id) {
                 out.push(Finding {
                     rule: self.name(),
                     severity: Severity::Error,
                     keyword: "SECTION_SHELL".into(),
-                    file: r.file.to_path_buf(),
-                    line: r.line,
+                    file: kw.file().to_path_buf(),
+                    line: kw.line(),
                     message: format!("duplicate SECID {id} (first defined at {first})"),
                 });
             } else {
                 seen.insert(id, here);
             }
-        });
+        }
+        out
     }
 }
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: validate_demo <main.k>");
+    let deck = parse_deck(std::path::Path::new(&path)).expect("parse deck");
 
-    let validator = Validator::new()
+    // One entry — `deck.validate([rules])` — off the deck we already parsed.
+    // Built-ins and the custom check are the same currency: a `Rule`.
+    let report = deck.validate([
         // 1. a material *type* that can't be used
-        .rule(Rule::keyword_forbidden(names::MAT_ADD_EROSION))
+        Rule::keyword_forbidden(names::MAT_ADD_EROSION),
         // 2. a specific id that can't be used (SECTION with SECID == 2)
-        .rule(Rule::field_forbidden_values(names::SECTION_SHELL, "SECID", [Value::Int(2)]))
+        Rule::field_forbidden_values(names::SECTION_SHELL, "SECID", [Value::Int(2)]),
         // 3. every *INCLUDE must resolve on disk
-        .rule(Rule::include_missing().with_severity(Severity::Warning))
+        Rule::include_missing().with_severity(Severity::Warning),
         // 4. combinator (tier 2): if NIP >= 3 AND PROPT == 1, ELFORM must be 16
-        .rule(Rule::field_required(
+        Rule::field_required(
             names::SECTION_SHELL,
             Some(Expr::all([
                 pred("NIP", Cmp::Ge, Value::Int(3)),
                 pred("PROPT", Cmp::Eq, Value::Int(1)),
             ])),
             pred("ELFORM", Cmp::Eq, Value::Int(16)),
-        ))
+        ),
         // 5. same shape, but demand ELFORM == 2 → violated, proves detection
-        .rule(
-            Rule::field_required(
-                names::SECTION_SHELL,
-                Some(pred("NIP", Cmp::Ge, Value::Int(3))),
-                pred("ELFORM", Cmp::Eq, Value::Int(2)),
-            )
-            .with_severity(Severity::Warning),
+        Rule::field_required(
+            names::SECTION_SHELL,
+            Some(pred("NIP", Cmp::Ge, Value::Int(3))),
+            pred("ELFORM", Cmp::Eq, Value::Int(2)),
         )
+        .with_severity(Severity::Warning),
         // 6. scoped rule: MAT_RIGID is fine only inside geometry includes,
         //    flagged anywhere else (here: the main deck).
-        .rule(
-            Rule::keyword_forbidden(names::MAT_RIGID)
-                .except_in(["00_Includes", "geo_"])
-                .with_severity(Severity::Warning),
-        )
-        // 7. a custom rule (impl Check) doing cross-row logic
-        .check(Box::new(UniqueSectionIds));
-
-    let report = validator.run(&path).expect("parse+validate");
+        Rule::keyword_forbidden(names::MAT_RIGID)
+            .except_in(["00_Includes", "geo_"])
+            .with_severity(Severity::Warning),
+        // 7. a custom rule (impl Check) doing cross-row logic, lifted to a Rule
+        Rule::custom(UniqueSectionIds),
+    ]);
 
     println!(
         "{} findings  ({} errors, {} warnings)  clean={}\n",

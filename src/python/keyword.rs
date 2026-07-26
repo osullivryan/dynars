@@ -1,0 +1,235 @@
+//! PyO3 bindings: keyword-file marshalling.
+
+use std::path::Path;
+
+use pyo3::prelude::*;
+use pyo3::PyResult;
+
+// -- Phase 4: keyword-file marshalling ---------------------------------
+
+use numpy::IntoPyArray;
+use pyo3::types::{PyDict, PyList};
+use pyo3::Bound;
+
+use crate::file::ParsedFile;
+use crate::parser::Keyword;
+use crate::schema::{Card, Column, FieldSpec, FieldType, Schema};
+
+/// A parsed LS-DYNA keyword file: keyword blocks with lossless round-trip,
+/// columnar bulk access as numpy arrays, and block-level editing.
+#[pyclass(name = "KeywordFile")]
+pub struct PyKeywordFile {
+    inner: ParsedFile,
+}
+
+#[pymethods]
+impl PyKeywordFile {
+    /// Number of keyword blocks in the file.
+    #[getter]
+    fn num_blocks(&self) -> usize {
+        self.inner.blocks.len()
+    }
+
+    /// The keyword name of every block, in file order.
+    fn block_names(&self) -> Vec<String> {
+        self.inner
+            .blocks
+            .iter()
+            .map(|b| self.inner.keyword_name(b).to_string())
+            .collect()
+    }
+
+    /// A block as a dict: `{"name": str, "options": [str], "cards": [[str]]}`.
+    fn keyword<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyDict>> {
+        let block = self.inner.blocks.get(index).ok_or_else(|| {
+            pyo3::exceptions::PyIndexError::new_err(format!("block index {} out of range", index))
+        })?;
+        let kw = self.inner.keyword(block);
+        let d = PyDict::new(py);
+        d.set_item("name", kw.name)?;
+        d.set_item("options", kw.options)?;
+        let cards = PyList::empty(py);
+        for card in kw.cards {
+            cards.append(card)?;
+        }
+        d.set_item("cards", cards)?;
+        Ok(d)
+    }
+
+    /// Replace a block's keyword. Cards are re-emitted in free format; the
+    /// rest of the file stays byte-for-byte intact.
+    #[pyo3(signature = (index, name, cards, options=None))]
+    fn set_keyword(
+        &mut self,
+        index: usize,
+        name: String,
+        cards: Vec<Vec<String>>,
+        options: Option<Vec<String>>,
+    ) -> PyResult<()> {
+        if index >= self.inner.blocks.len() {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "block index {} out of range",
+                index
+            )));
+        }
+        let kw = Keyword {
+            name,
+            options: options.unwrap_or_default(),
+            cards,
+        };
+        self.inner.set_keyword(index, &kw);
+        Ok(())
+    }
+
+    /// Parse a keyword against a user-defined schema, returning a dict of
+    /// columns (numpy arrays for numeric fields, lists for strings).
+    ///
+    /// Low-level: the Python `@keyword` class layer lowers to this. `cards`
+    /// is a list of cards, each a list of `(name, type, width, count)` field
+    /// tuples where `type` is "int" | "float" | "str".
+    #[pyo3(signature = (keyword, cards, repeat=false))]
+    fn parse_schema<'py>(
+        &self,
+        py: Python<'py>,
+        keyword: String,
+        cards: Vec<Vec<(String, String, usize, usize)>>,
+        repeat: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let schema = build_schema(&keyword, cards, repeat)?;
+        let table = py.detach(|| crate::schema::parse_schema(&self.inner, &schema));
+        table_to_pydict(py, table)
+    }
+
+    /// Parse a keyword using dynars' built-in library (generated from the
+    /// pyDYNA field database), returning the same column dict. Errors if the
+    /// keyword is not in the library.
+    fn parse_builtin<'py>(
+        &self,
+        py: Python<'py>,
+        keyword: String,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let schema = crate::keywords::schema(&keyword).ok_or_else(|| {
+            pyo3::exceptions::PyKeyError::new_err(format!(
+                "'{}' is not in the built-in keyword library",
+                keyword
+            ))
+        })?;
+        let table = py.detach(|| crate::schema::parse_schema(&self.inner, &schema));
+        table_to_pydict(py, table)
+    }
+
+    /// Whether any block has a pending edit.
+    #[getter]
+    fn dirty(&self) -> bool {
+        self.inner.is_dirty()
+    }
+
+    /// The (possibly edited) file contents as bytes.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, pyo3::types::PyBytes> {
+        pyo3::types::PyBytes::new(py, &self.inner.to_bytes())
+    }
+
+    /// Write the (possibly edited) file to disk.
+    fn write(&self, path: String) -> PyResult<()> {
+        self.inner
+            .write(Path::new(&path))
+            .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "KeywordFile('{}', {} blocks{})",
+            self.inner.path.display(),
+            self.inner.blocks.len(),
+            if self.inner.is_dirty() { ", edited" } else { "" },
+        )
+    }
+}
+
+/// Build a runtime [`Schema`] from the `(name, type, width, count)` card tuples
+/// the Python `@keyword` layer lowers to. Shared by the per-file
+/// [`PyKeywordFile`] and the deck-wide [`PyDeck`](super::deck::PyDeck) columnar
+/// entry points, so there is one lowering.
+pub(crate) fn build_schema(
+    keyword: &str,
+    cards: Vec<Vec<(String, String, usize, usize)>>,
+    repeat: bool,
+) -> PyResult<Schema> {
+    let mut schema = Schema::new(keyword);
+    schema.repeat = repeat;
+    for card in cards {
+        let mut c = Card::new();
+        for (name, ty, width, count) in card {
+            let ty = match ty.as_str() {
+                "int" => FieldType::Int,
+                "float" => FieldType::Float,
+                "str" => FieldType::Str,
+                other => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "unknown field type '{}' (expected int/float/str)",
+                        other
+                    )));
+                }
+            };
+            c.fields.push(FieldSpec { name, ty, width, count: count.max(1) });
+        }
+        schema.cards.push(c);
+    }
+    Ok(schema)
+}
+
+/// Convert a columnar [`Table`](crate::schema::Table) into a Python dict of
+/// numpy arrays (2-D for array fields) and string lists.
+pub(crate) fn table_to_pydict<'py>(
+    py: Python<'py>,
+    table: crate::schema::Table,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    for (name, col) in table.columns {
+        match col {
+            Column::Int { data, ncols } => {
+                if ncols <= 1 {
+                    d.set_item(name, data.into_pyarray(py))?;
+                } else {
+                    let rows = data.len() / ncols;
+                    let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
+                        .expect("int column shape");
+                    d.set_item(name, a.into_pyarray(py))?;
+                }
+            }
+            Column::Float { data, ncols } => {
+                if ncols <= 1 {
+                    d.set_item(name, data.into_pyarray(py))?;
+                } else {
+                    let rows = data.len() / ncols;
+                    let a = numpy::ndarray::Array2::from_shape_vec((rows, ncols), data)
+                        .expect("float column shape");
+                    d.set_item(name, a.into_pyarray(py))?;
+                }
+            }
+            Column::Str { data, ncols } => {
+                if ncols <= 1 {
+                    d.set_item(name, data)?;
+                } else {
+                    let rows: Vec<Vec<String>> =
+                        data.chunks(ncols).map(|c| c.to_vec()).collect();
+                    d.set_item(name, rows)?;
+                }
+            }
+        }
+    }
+    Ok(d)
+}
+
+/// Parse an LS-DYNA keyword file into an editable [`PyKeywordFile`].
+///
+/// Releases the GIL during the file read and block split.
+#[pyfunction]
+#[pyo3(signature = (path))]
+pub fn parse_keyword_file(py: Python<'_>, path: String) -> PyResult<PyKeywordFile> {
+    let file_path = Path::new(&path);
+    let inner = py
+        .detach(|| crate::parser::parse_file_blocks(file_path))
+        .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))?;
+    Ok(PyKeywordFile { inner })
+}

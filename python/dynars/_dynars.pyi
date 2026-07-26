@@ -350,3 +350,159 @@ def parse_keyword_file(path: str) -> KeywordFile:
     
     Releases the GIL during the file read and block split.
     """
+
+# ── Deck: parse once, validate + navigate ────────────────────────────────────
+
+@final
+class Severity(enum.Enum):
+    """How serious a validation finding is."""
+    Error = ...
+    Warning = ...
+    Info = ...
+
+@final
+class Cmp(enum.Enum):
+    """A comparison operator for field predicates."""
+    Eq = ...
+    Ne = ...
+    Lt = ...
+    Le = ...
+    Gt = ...
+    Ge = ...
+
+@final
+class Predicate:
+    """A boolean predicate tree over card fields (evaluated in Rust)."""
+    @staticmethod
+    def field(field: str, cmp: Cmp, value: int | float | str) -> Predicate:
+        """`field <cmp> value`."""
+    @staticmethod
+    def all_(preds: Sequence[Predicate]) -> Predicate:
+        """All sub-predicates must hold (logical AND)."""
+    @staticmethod
+    def any_(preds: Sequence[Predicate]) -> Predicate:
+        """Any sub-predicate holds (logical OR)."""
+    @staticmethod
+    def not_(pred: Predicate) -> Predicate:
+        """Negation."""
+
+@final
+class Rule:
+    """A built-in declarative validation rule. Constructed in Python, run in Rust."""
+    @staticmethod
+    def keyword_forbidden(keyword: str) -> Rule: ...
+    @staticmethod
+    def field_forbidden_values(keyword: str, field: str, values: Sequence[int | float | str]) -> Rule: ...
+    @staticmethod
+    def field_required(keyword: str, require: Predicate, when: Predicate | None = None) -> Rule: ...
+    @staticmethod
+    def include_missing() -> Rule:
+        """Every `*INCLUDE` must resolve to a file that exists."""
+    @staticmethod
+    def references_resolve() -> Rule:
+        """Every cross-keyword id reference resolves (PART.mid -> *MAT, *LOAD.lcid -> *DEFINE_CURVE, ...). Does not check element connectivity."""
+    @staticmethod
+    def references_resolve_with_connectivity() -> Rule:
+        """As `references_resolve`, and additionally checks every element's nodes are defined. Heavy on large meshes."""
+    def with_severity(self, severity: Severity) -> Rule: ...
+    def only_in(self, patterns: Sequence[str]) -> Rule: ...
+    def except_in(self, patterns: Sequence[str]) -> Rule: ...
+
+@final
+class Finding:
+    """One rule violation with a clickable `file:line`."""
+    @property
+    def rule(self) -> str: ...
+    @property
+    def severity(self) -> Severity: ...
+    @property
+    def keyword(self) -> str: ...
+    @property
+    def file(self) -> str: ...
+    @property
+    def line(self) -> int: ...
+    @property
+    def message(self) -> str: ...
+    def location(self) -> str:
+        """`file:line`."""
+
+@final
+class Report:
+    """The result of a validation run."""
+    @property
+    def findings(self) -> list[Finding]: ...
+    def is_clean(self) -> bool:
+        """True if there are no Error-severity findings."""
+    def count(self, severity: Severity) -> int: ...
+    def __len__(self) -> int: ...
+
+@final
+class Entity:
+    """A handle to one definition entity: fields, source location, reference-following."""
+    @property
+    def id(self) -> int: ...
+    @property
+    def kind(self) -> str: ...
+    @property
+    def keyword(self) -> str:
+        """The exact keyword defining this entity (e.g. `MAT_RIGID_TITLE`)."""
+    @property
+    def file(self) -> str:
+        """The include file this entity is defined in."""
+    @property
+    def line(self) -> int:
+        """1-based line of the entity's `*KEYWORD` line (jump-to location)."""
+    def field(self, name: str) -> int | float | str | None:
+        """Read a card field by name (case-insensitive)."""
+    def reference(self, name: str) -> Entity | None:
+        """Follow the reference in field `name` to the entity it points at."""
+    def material(self) -> Entity | None: ...
+    def section(self) -> Entity | None: ...
+    def eos(self) -> Entity | None: ...
+    def hourglass(self) -> Entity | None: ...
+
+@final
+class Deck:
+    """
+    A parsed LS-DYNA deck (root + all includes).
+
+    Parse once with `parse_deck`, then validate and navigate off the same
+    object. Resolution indices are built lazily on first use.
+    """
+    def __init__(self, path: str) -> None: ...
+    def validate(self, rules: Sequence[Rule]) -> Report:
+        """Run a set of rules over this deck (reuses the parse). No default rule set."""
+    def part(self, id: int) -> Entity | None: ...
+    def material(self, id: int) -> Entity | None: ...
+    def section(self, id: int) -> Entity | None: ...
+    def curve(self, id: int) -> Entity | None: ...
+    def parts(self) -> list[Entity]:
+        """Every part in the deck (enumerate, don't guess ids)."""
+    def materials(self) -> list[Entity]: ...
+    def sections(self) -> list[Entity]: ...
+    def curves(self) -> list[Entity]: ...
+    def definition_counts(self) -> list[tuple[str, int]]:
+        """`(kind, count)` of defined ids, most-numerous first."""
+    def table(self, keyword: str) -> dict:
+        """
+        Bulk columnar read of a keyword across the whole deck (root + includes)
+        using the built-in library: a dict of numpy arrays (numeric fields) and
+        string lists. Include-aware, unlike the per-file `KeywordFile`. Raises
+        `KeyError` if the keyword is not built in (use `table_with`).
+        """
+    def table_with(self, keyword: str, cards: Sequence[Sequence[tuple[str, str, int, int]]], repeat: bool = False) -> dict:
+        """
+        Bulk columnar read across the whole deck against a user-defined schema —
+        the escape hatch for a keyword not in the built-in library. Each card is
+        a list of `(name, type, width, count)` tuples; `type` is int/float/str.
+        """
+    def register_schema(self, keyword: str, cards: Sequence[Sequence[tuple[str, str, int, int]]], repeat: bool = False) -> None:
+        """
+        Register a user schema for a keyword the built-in library doesn't cover,
+        so navigation (`keywords`, `part`, …) gets named, typed field access for
+        it. Each card is a list of `(name, type, width, count)` tuples; `type`
+        is int/float/str. Keyed by canonical base (re-registering replaces).
+        """
+
+def parse_deck(path: str) -> Deck:
+    """Parse a deck (root + all includes) once and return a navigable `Deck`."""

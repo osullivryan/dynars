@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use dynars::{include_tree, testgen};
+use dynars::{include, testgen};
 
 use clap::{Parser, Subcommand};
 
@@ -74,7 +74,7 @@ fn cmd_parse(file_path: &PathBuf) {
     println!();
 
     let start = Instant::now();
-    let tree = include_tree::build_include_tree(file_path);
+    let tree = include::build_include_tree(file_path);
     let elapsed = start.elapsed();
 
     match tree {

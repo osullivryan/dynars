@@ -1,3 +1,9 @@
+//! `*INCLUDE` directives and the include tree.
+//!
+//! An LS-DYNA deck is a root file plus everything it pulls in via `*INCLUDE`
+//! (and `*INCLUDE_PATH` for search directories). This module defines the
+//! directive kinds and the tree of resolved files ([`build_include_tree`]).
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -5,8 +11,74 @@ use std::sync::Mutex;
 use crossbeam::queue::SegQueue;
 use dashmap::{DashMap, DashSet};
 
-use crate::keyword::{IncludeKind, IncludeNode};
 use crate::parser::parse_file_from_path;
+
+/// The flavour of an `*INCLUDE` directive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncludeKind {
+    Include,
+    IncludePath,
+    IncludePathRelative,
+    IncludeTransform,
+    IncludeAutoZzfree,
+    IncludeBinary,
+    IncludeCompensated,
+    IncludeStampedPart,
+}
+
+/// One `*INCLUDE` directive: its kind, the path as written, and the path it
+/// resolves to on disk.
+#[derive(Debug, Clone)]
+pub struct IncludeDirective {
+    pub kind: IncludeKind,
+    pub raw_path: String,
+    pub resolved_path: PathBuf,
+}
+
+/// The result of scanning one file for its includes (feeds the tree builder).
+#[derive(Debug)]
+pub struct FileParseResult {
+    pub path: PathBuf,
+    pub byte_count: usize,
+    pub includes: Vec<IncludeDirective>,
+}
+
+/// One node in the resolved include tree.
+#[derive(Debug)]
+pub struct IncludeNode {
+    pub path: PathBuf,
+    pub byte_count: usize,
+    pub kind: Option<IncludeKind>,
+    pub children: Vec<IncludeNode>,
+}
+
+impl IncludeNode {
+    pub fn total_files(&self) -> usize {
+        1 + self.children.iter().map(|c| c.total_files()).sum::<usize>()
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        self.byte_count + self.children.iter().map(|c| c.total_bytes()).sum::<usize>()
+    }
+
+    pub fn print_tree(&self, indent: usize) {
+        let prefix = "  ".repeat(indent);
+        let kind_str = match &self.kind {
+            Some(k) => format!(" [{:?}]", k),
+            None => String::new(),
+        };
+        println!(
+            "{}{}{} ({} bytes)",
+            prefix,
+            self.path.display(),
+            kind_str,
+            self.byte_count,
+        );
+        for child in &self.children {
+            child.print_tree(indent + 1);
+        }
+    }
+}
 
 struct WorkItem {
     id: usize,

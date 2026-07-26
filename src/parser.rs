@@ -6,9 +6,8 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use rayon::slice::ParallelSlice;
 
-use crate::keyword::{
-    Block, CardFormat, FileParseResult, IncludeDirective, IncludeKind, ParsedFile, Source,
-};
+use crate::file::{Block, CardFormat, ParsedFile, Source};
+use crate::include::{FileParseResult, IncludeDirective, IncludeKind};
 
 #[inline(always)]
 fn match_include_keyword(line: &[u8]) -> Option<IncludeKind> {
@@ -762,7 +761,7 @@ impl ParsedFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keyword::ParsedFile;
+    use crate::file::ParsedFile;
 
     fn parsed(src: &[u8]) -> ParsedFile {
         ParsedFile::new(PathBuf::from("deck.k"), src.to_vec(), split_blocks(src))

@@ -2,7 +2,7 @@
 //! Usage: cargo run --release --example validate_bench -- <root.k>
 use dynars::deck::parse_deck;
 use dynars::keywords::names;
-use dynars::validate::{pred, Cmp, Rule, Validator, Value};
+use dynars::validate::{pred, Cmp, Rule, Value};
 use std::time::Instant;
 
 fn main() {
@@ -23,16 +23,17 @@ fn main() {
     let mb = deck.total_bytes() as f64 / 1e6;
 
     // rule evaluation over the parsed deck
-    let v = Validator::new()
-        .rule(Rule::keyword_forbidden(names::MAT_ADD_EROSION))
-        .rule(Rule::keyword_forbidden(names::MAT_RIGID))
-        .rule(Rule::field_forbidden_values(names::SECTION_SHELL, "SECID", [Value::Int(999)]))
-        .rule(Rule::field_required(names::SECTION_SHELL, Some(pred("NIP", Cmp::Ge, Value::Int(3))), pred("ELFORM", Cmp::Eq, Value::Int(16))))
-        .rule(Rule::include_missing());
+    let rules = vec![
+        Rule::keyword_forbidden(names::MAT_ADD_EROSION),
+        Rule::keyword_forbidden(names::MAT_RIGID),
+        Rule::field_forbidden_values(names::SECTION_SHELL, "SECID", [Value::Int(999)]),
+        Rule::field_required(names::SECTION_SHELL, Some(pred("NIP", Cmp::Ge, Value::Int(3))), pred("ELFORM", Cmp::Eq, Value::Int(16))),
+        Rule::include_missing(),
+    ];
     let mut best_run = f64::MAX;
     for _ in 0..50 {
         let t = Instant::now();
-        let _ = v.run_on(&deck);
+        let _ = deck.validate(rules.clone());
         best_run = best_run.min(t.elapsed().as_secs_f64());
     }
 

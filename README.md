@@ -115,10 +115,66 @@ raw = kf.to_bytes()                     # the (edited) deck as bytes
 kf.write("deck_edited.k")
 ```
 
+### Deck: navigate and bulk-read off one handle
+
+`parse_deck` parses the root and every `*INCLUDE` once. The resulting `Deck` is
+the single handle for both **navigation** (by id / kind, following references)
+and **bulk columnar** reads — include-aware, so columns span every file:
+
+```python
+import dynars
+
+deck = dynars.parse_deck("root.k")
+
+# Bulk columns across the whole deck (root + includes), via built-in schemas:
+nodes = deck.table("NODE")             # {"nid": int64[N], "x": ..., ...}
+shells = deck.table("ELEMENT_SHELL")   # {"eid", "pid", "nodes": int64[N, 4]}
+
+# Same handle, navigate by id and follow references:
+part = deck.part(1)
+mat = part.material()
+print(part.field("secid"), mat.id if mat else None)
+```
+
+The equivalent in Rust — the columnar fast path and occurrence navigation share
+one vocabulary (keyword names, field names) over the same `Deck`:
+
+```rust
+use dynars::deck::parse_deck;
+
+let deck = parse_deck(std::path::Path::new("root.k")).unwrap();
+
+// Bulk columns across the whole deck:
+let nodes = deck.table("NODE").unwrap();
+let ids = nodes.column("nid").unwrap().as_int().unwrap();
+
+// Navigate the same handle; per-row typed field access:
+if let Some(part) = deck.part(1) {
+    let secid = part.field("secid").and_then(|f| f.as_i64());
+    let mat_id = part.material().and_then(|m| m.id());
+    let _ = (ids, secid, mat_id);
+}
+```
+
+**Unknown keywords.** Hit a keyword dynars ships no layout for (rare, vendor, or
+newer than our snapshot)? Describe it once and get the same named, typed access —
+no fork in the API, just a schema that comes from you instead of the table:
+
+```rust
+use dynars::schema::{Schema, Card};
+
+// (`deck` must be declared `let mut` to register schemas)
+deck.register_schema(Schema::new("VENDOR_WIDGET").card(
+    Card::new().int("wid", 8).float("mass", 8).str("tag", 8),
+));
+let w = deck.keywords("VENDOR_WIDGET").next().unwrap();
+let mass = w.card(0).and_then(|c| c.field("mass")).and_then(|f| f.as_f64());
+```
+
 ## Rust API
 
 ```rust
-use dynars::include_tree::build_include_tree;
+use dynars::include::build_include_tree;
 use dynars::parser::parse_file_blocks;
 
 // Include tree
