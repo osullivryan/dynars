@@ -141,56 +141,83 @@ impl std::hash::Hasher for IntHasher {
     }
 }
 
-/// A set of defined entity ids, split into shards. Sharding lets the build fan
-/// out across cores — a single `HashSet` insert loop is serial and dominates the
-/// index build on a big mesh (millions of node/element ids) — while membership
-/// tests stay O(1) and, because each shard is smaller, more cache-friendly.
-pub(crate) struct IdSet {
-    shards: Box<[HashSet<i64, BuildIntHasher>]>,
+/// A set of defined entity ids. LS-DYNA ids are non-negative and, in practice,
+/// densely packed — `1..N`, or a few contiguous ranges — so a **bitset** keyed
+/// by id builds and probes far faster than a hash set (the connectivity check
+/// does tens of millions of membership tests). The bitset is offset by the
+/// minimum id, so a *high but compact* id range (e.g. ids around `10^9`) still
+/// uses it — absolute magnitude doesn't matter, only the span. Genuinely sparse
+/// ids (a small count spread over a huge span) fall back to a hash set.
+pub(crate) enum IdSet {
+    /// Dense bitset covering `min..=max`: bit `i` set ⇔ id `min + i` is defined.
+    Bits {
+        words: Box<[u64]>,
+        min: i64,
+        max: i64,
+    },
+    /// Sparse fallback.
+    Hash(HashSet<i64, BuildIntHasher>),
 }
 
 impl IdSet {
-    /// Power of two so `& (SHARDS - 1)` selects a shard.
-    const SHARDS: usize = 16;
-
-    /// The shard an id lives in — top bits of a multiply-hash, decorrelated from
-    /// the low bits each shard's `HashSet` uses for bucketing.
-    #[inline]
-    fn shard_of(id: i64) -> usize {
-        ((id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58) as usize & (Self::SHARDS - 1)
-    }
+    /// Cap on the id *span* (`max - min`), independent of id magnitude — a bitset
+    /// this wide is 128 MiB. The span must also stay within 128× the id count, so
+    /// a lone far-away id can't blow the allocation up.
+    const SPAN_CAP: u64 = 1 << 30;
 
     #[inline]
     pub(crate) fn contains(&self, id: i64) -> bool {
-        self.shards[Self::shard_of(id)].contains(&id)
+        match self {
+            IdSet::Bits { words, min, max } => {
+                if id < *min || id > *max {
+                    return false;
+                }
+                let bit = (id - *min) as usize;
+                (words[bit >> 6] >> (bit & 63)) & 1 != 0
+            }
+            IdSet::Hash(s) => s.contains(&id),
+        }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.shards.iter().map(HashSet::len).sum()
+        match self {
+            IdSet::Bits { words, .. } => words.iter().map(|w| w.count_ones() as usize).sum(),
+            IdSet::Hash(s) => s.len(),
+        }
     }
 
-    /// Build from per-file id chunks: bucket ids by shard in one pass, then hash
-    /// each shard in parallel.
+    /// Build from per-file id chunks — an offset bitset when ids are dense
+    /// enough, else a hash set.
     fn build(chunks: Vec<Vec<i64>>) -> Self {
-        let total: usize = chunks.iter().map(Vec::len).sum();
-        let mut buckets: Vec<Vec<i64>> = (0..Self::SHARDS)
-            .map(|_| Vec::with_capacity(total / Self::SHARDS + 1))
-            .collect();
-        for chunk in &chunks {
-            for &id in chunk {
-                buckets[Self::shard_of(id)].push(id);
+        let (mut min, mut max, mut total) = (i64::MAX, -1i64, 0u64);
+        for &id in chunks.iter().flatten() {
+            if id >= 0 {
+                min = min.min(id);
+                max = max.max(id);
+                total += 1;
             }
         }
-        let shards: Vec<_> = buckets
-            .into_par_iter()
-            .map(|ids| {
-                let mut s = HashSet::with_capacity_and_hasher(ids.len(), BuildIntHasher);
-                s.extend(ids);
-                s
-            })
-            .collect();
-        IdSet {
-            shards: shards.into_boxed_slice(),
+        let span = if max >= 0 { (max - min) as u64 + 1 } else { 0 };
+        if max >= 0 && span <= Self::SPAN_CAP && span <= 128 * total {
+            let mut words = vec![0u64; span.div_ceil(64) as usize];
+            for &id in chunks.iter().flatten() {
+                if id >= 0 {
+                    let bit = (id - min) as usize;
+                    words[bit >> 6] |= 1u64 << (bit & 63);
+                }
+            }
+            IdSet::Bits {
+                words: words.into_boxed_slice(),
+                min,
+                max,
+            }
+        } else {
+            let n: usize = chunks.iter().map(Vec::len).sum();
+            let mut s = HashSet::with_capacity_and_hasher(n, BuildIntHasher);
+            for c in chunks {
+                s.extend(c);
+            }
+            IdSet::Hash(s)
         }
     }
 }
@@ -1376,6 +1403,39 @@ mod tests {
                 .unwrap()
                 .reference()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn dangling_check_handles_high_offset_ids() {
+        use crate::validate::Rule;
+        // Node ids around 3e9 — far above any absolute cap, but a compact range,
+        // so the offset bitset still applies. Free format so the wide ids fit.
+        let b: i64 = 3_000_000_000;
+        let src = format!(
+            "*PART\npart\n1,1,1\n\
+             *NODE\n{n1},0,0,0\n{n2},0,0,0\n\
+             *ELEMENT_SHELL\n1,1,{n1},{n2},{n1},{bad}\n",
+            n1 = b + 1,
+            n2 = b + 2,
+            bad = b + 999,
+        );
+        let d = deck_multi(&[src.as_bytes()]);
+        let report = d.validate([Rule::references_resolve_with_connectivity()]);
+
+        // The two defined high ids resolve; only the undefined one dangles.
+        let node_findings: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.keyword == "ELEMENT_SHELL")
+            .collect();
+        assert_eq!(node_findings.len(), 1, "only {bad} dangles", bad = b + 999);
+        assert!(node_findings[0].message.contains(&(b + 999).to_string()));
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.message.contains(&(b + 1).to_string()))
         );
     }
 }
