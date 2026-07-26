@@ -52,6 +52,115 @@ pub enum EntityKind {
     Define,
 }
 
+/// The id offsets carried by an `*INCLUDE_TRANSFORM` directive (card 2/3 of the
+/// keyword: `IDNOFF … IDROFF`). Every id *written in the included file* — both
+/// the ids it **defines** and the ids it **references** — is shifted by the
+/// offset for its entity kind, giving that file its own id namespace. This is
+/// how the same mesh can be included several times at different offsets without
+/// collision.
+///
+/// Offsets **compose** down a chain of nested transforms ([`compose`]), so a
+/// file's *effective* offset is the sum along its include path from the root.
+/// The value is a pure function of the deck text; applying it ([`apply`]) is how
+/// the resolution core turns a *physical* id (as written) into the *logical*
+/// (global) id every cross-reference is resolved against — see
+/// [`crate::model`]. The dangling check itself never sees this type; it only
+/// ever compares logical ids.
+///
+/// [`compose`]: TransformOffsets::compose
+/// [`apply`]: TransformOffsets::apply
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransformOffsets {
+    pub idnoff: i64,
+    pub ideoff: i64,
+    pub idpoff: i64,
+    pub idmoff: i64,
+    pub idsoff: i64,
+    pub idfoff: i64,
+    pub iddoff: i64,
+    pub idroff: i64,
+}
+
+impl TransformOffsets {
+    /// The no-op transform (a plain `*INCLUDE`, or the root file).
+    pub const IDENTITY: TransformOffsets = TransformOffsets {
+        idnoff: 0,
+        ideoff: 0,
+        idpoff: 0,
+        idmoff: 0,
+        idsoff: 0,
+        idfoff: 0,
+        iddoff: 0,
+        idroff: 0,
+    };
+
+    /// Whether this shifts nothing — the overwhelmingly common case, which the
+    /// resolution core keeps on its existing zero-overhead path (represented as
+    /// `None` rather than an identity `TransformOffsets`).
+    #[inline]
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+
+    /// Compose a parent's effective offsets with a child directive's own offsets.
+    /// Nested `*INCLUDE_TRANSFORM`s accumulate additively — a file two transforms
+    /// deep is shifted by the sum of both.
+    #[inline]
+    pub fn compose(self, child: TransformOffsets) -> TransformOffsets {
+        TransformOffsets {
+            idnoff: self.idnoff + child.idnoff,
+            ideoff: self.ideoff + child.ideoff,
+            idpoff: self.idpoff + child.idpoff,
+            idmoff: self.idmoff + child.idmoff,
+            idsoff: self.idsoff + child.idsoff,
+            idfoff: self.idfoff + child.idfoff,
+            iddoff: self.iddoff + child.iddoff,
+            idroff: self.idroff + child.idroff,
+        }
+    }
+
+    /// The offset that applies to ids of `kind` (`0` if none).
+    ///
+    /// The high-traffic buckets — nodes, elements, parts, sets, curves — follow
+    /// the LS-DYNA manual directly and are what referential validation leans on.
+    /// The `IDMOFF`/`IDDOFF` groupings (section/eos/hourglass, and the `*DEFINE`
+    /// family) are best-effort and worth confirming against the manual for a
+    /// given solver version — but note that *within* a file, defs and refs of
+    /// the same kind always share a bucket, so internal reference resolution is
+    /// correct regardless; only a cross-file reference *into* a transformed
+    /// include depends on the exact bucket.
+    #[inline]
+    pub fn for_kind(&self, kind: EntityKind) -> i64 {
+        use EntityKind::*;
+        match kind {
+            Node => self.idnoff,
+            Element => self.ideoff,
+            // Manual: IDPOFF offsets part IDs *and* part-set IDs.
+            Part | PartSet => self.idpoff,
+            NodeSet | SegmentSet | ShellSet | SolidSet | BeamSet | DiscreteSet => self.idsoff,
+            // IDFOFF: function, table, and curve ids (dynars models these as Curve).
+            Curve => self.idfoff,
+            // Material family. Section/Eos/Hourglass grouping is best-effort.
+            Material | ThermalMaterial | Section | Eos | Hourglass => self.idmoff,
+            // *DEFINE family (coord, vector, box, transformation, …).
+            Box | Coord | Vector | Transform | Define | Sensor => self.iddoff,
+        }
+    }
+
+    /// Turn a *physical* id of `kind` (as written in this file) into its
+    /// *logical* (global) id. A `0`/blank id means "none" and is left untouched;
+    /// a negative id (a signed reference — LS-DYNA denotes entity `|id|`) keeps
+    /// its sign while its magnitude is shifted.
+    #[inline]
+    pub fn apply(&self, raw: i64, kind: EntityKind) -> i64 {
+        let off = self.for_kind(kind);
+        if off == 0 || raw == 0 {
+            return raw;
+        }
+        raw.signum() * (raw.abs() + off)
+    }
+}
+
 /// What a field references, if anything. Stored inline on each [`Fld`] in the
 /// one keyword table — there is no separate reference file to keep in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,6 +678,59 @@ pub fn canonical_base(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_offsets_route_ids_to_the_right_bucket() {
+        let t = TransformOffsets {
+            idnoff: 100,
+            ideoff: 200,
+            idpoff: 300,
+            idsoff: 500,
+            idfoff: 600,
+            ..TransformOffsets::IDENTITY
+        };
+        // Each kind draws from its own offset; a zero/blank id is "none".
+        assert_eq!(t.apply(7, EntityKind::Node), 107);
+        assert_eq!(t.apply(7, EntityKind::Element), 207);
+        assert_eq!(t.apply(7, EntityKind::Part), 307);
+        assert_eq!(t.apply(7, EntityKind::PartSet), 307); // part set shares IDPOFF
+        assert_eq!(t.apply(7, EntityKind::NodeSet), 507);
+        assert_eq!(t.apply(7, EntityKind::Curve), 607);
+        assert_eq!(t.apply(0, EntityKind::Node), 0); // 0 = unset, untouched
+        // A kind with no configured offset is left alone.
+        assert_eq!(t.apply(7, EntityKind::Material), 7);
+    }
+
+    #[test]
+    fn transform_offsets_preserve_sign_of_references() {
+        let t = TransformOffsets {
+            idfoff: 1000,
+            ..TransformOffsets::IDENTITY
+        };
+        // A signed reference (e.g. -curve) denotes entity |id|: shift the
+        // magnitude, keep the sign, so it still resolves to the shifted def.
+        assert_eq!(t.apply(-5, EntityKind::Curve), -1005);
+        assert_eq!(t.apply(5, EntityKind::Curve), 1005);
+    }
+
+    #[test]
+    fn transform_offsets_compose_additively() {
+        let outer = TransformOffsets {
+            idnoff: 1000,
+            ..TransformOffsets::IDENTITY
+        };
+        let inner = TransformOffsets {
+            idnoff: 40,
+            ideoff: 7,
+            ..TransformOffsets::IDENTITY
+        };
+        // Nested transforms accumulate: a node two levels deep is shifted by both.
+        let eff = outer.compose(inner);
+        assert_eq!(eff.apply(2, EntityKind::Node), 1042);
+        assert_eq!(eff.apply(2, EntityKind::Element), 9);
+        assert!(!eff.is_identity());
+        assert!(TransformOffsets::IDENTITY.is_identity());
+    }
 
     #[test]
     fn registry_is_populated_and_sorted() {

@@ -34,6 +34,10 @@ pub struct Deck {
     pub includes: Vec<(usize, IncludeDirective)>,
     /// Defined ids per entity kind — the resolution core (validation + `is_defined`).
     pub(crate) defs: OnceLock<crate::model::Defs>,
+    /// Effective `*INCLUDE_TRANSFORM` offsets per file (parallel to `files`);
+    /// `None` where a file applies no shift. Built lazily; folds into the id
+    /// namespace so `defs` and the dangling check resolve transformed ids.
+    pub(crate) file_transforms: OnceLock<Vec<Option<crate::keywords::TransformOffsets>>>,
     /// `(kind, id) -> defining block` for navigable definition entities.
     pub(crate) sites: OnceLock<crate::model::Sites>,
     /// User schemas for keywords the built-in library doesn't cover, keyed by
@@ -124,6 +128,7 @@ pub fn parse_deck(root: &Path) -> Result<Deck, String> {
         files,
         includes,
         defs: OnceLock::new(),
+        file_transforms: OnceLock::new(),
         sites: OnceLock::new(),
         user_schemas: HashMap::new(),
     })

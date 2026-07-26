@@ -263,6 +263,10 @@ fn process_star_line(
                     kind,
                     raw_path: path_str.to_string(),
                     resolved_path: resolved,
+                    // The streaming scanner feeds the include-*tree* (paths only);
+                    // id offsets are read on the block path (`extract_includes`),
+                    // which the validation deck uses.
+                    offsets: crate::keywords::TransformOffsets::IDENTITY,
                 });
             }
             break;
@@ -477,10 +481,16 @@ pub fn extract_includes(parsed: &ParsedFile, include_paths: &[PathBuf]) -> Vec<I
             let path_str = String::from_utf8_lossy(filename);
             let path_str = path_str.trim();
             let resolved = resolve_include_path(path_str, parent_dir, include_paths);
+            let offsets = if kind == IncludeKind::IncludeTransform {
+                crate::model::read_transform_offsets(parsed, block)
+            } else {
+                crate::keywords::TransformOffsets::IDENTITY
+            };
             includes.push(IncludeDirective {
                 kind: kind.clone(),
                 raw_path: path_str.to_string(),
                 resolved_path: resolved,
+                offsets,
             });
         }
     }

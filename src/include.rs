@@ -26,13 +26,17 @@ pub enum IncludeKind {
     IncludeStampedPart,
 }
 
-/// One `*INCLUDE` directive: its kind, the path as written, and the path it
-/// resolves to on disk.
+/// One `*INCLUDE` directive: its kind, the path as written, the path it
+/// resolves to on disk, and — for `*INCLUDE_TRANSFORM` — the id offsets it
+/// applies to everything in the included file (identity for every other kind).
 #[derive(Debug, Clone)]
 pub struct IncludeDirective {
     pub kind: IncludeKind,
     pub raw_path: String,
     pub resolved_path: PathBuf,
+    /// Id offsets applied to the included file. [`TransformOffsets::IDENTITY`]
+    /// for a plain `*INCLUDE`; populated from the card for `*INCLUDE_TRANSFORM`.
+    pub offsets: crate::keywords::TransformOffsets,
 }
 
 /// The result of scanning one file for its includes (feeds the tree builder).

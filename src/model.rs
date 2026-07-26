@@ -16,7 +16,8 @@ use rayon::prelude::*;
 
 use crate::deck::Deck;
 use crate::file::{Block, CardFormat, ParsedFile};
-use crate::keywords::{self, EntityKind, Ref, canonical_base};
+use crate::include::IncludeKind;
+use crate::keywords::{self, EntityKind, Ref, TransformOffsets, canonical_base};
 use crate::parser::Field as RawField;
 use crate::schema::{FieldSpec, FieldType, Schema, Table, parse_schema_files};
 
@@ -80,6 +81,40 @@ fn card_field_i64(line: &[u8], card: &[keywords::Fld], idx: usize, fmt: CardForm
 /// Options + title handling.
 fn title_offset(exact_kw: &str) -> usize {
     usize::from(exact_kw.to_ascii_uppercase().ends_with("_TITLE"))
+}
+
+/// Read the id offsets off an `*INCLUDE_TRANSFORM` block, using the keyword
+/// table's own field widths (`IDNOFF … IDDOFF` on card 1, `IDROFF` on card 2 —
+/// all `I10`). Called from the parser as it records each directive; a malformed
+/// or truncated card just yields `0` for the missing fields (identity).
+///
+/// The keyword's cards map one-to-one onto the block's data lines (no `_TITLE`),
+/// so card index == line index: line 0 is the filename, line 1 the first offset
+/// card, line 2 the second.
+pub(crate) fn read_transform_offsets(file: &ParsedFile, block: &Block) -> TransformOffsets {
+    let Some(kw) = keywords::find("INCLUDE_TRANSFORM") else {
+        return TransformOffsets::IDENTITY;
+    };
+    let lines = data_lines(file, block);
+    let fmt = block.format;
+    let read = |card_idx: usize, field_idx: usize| -> i64 {
+        match (kw.cards.get(card_idx), lines.get(card_idx)) {
+            (Some(card), Some(line)) => {
+                card_field_i64(line, card, field_idx, fmt).unwrap_or(0)
+            }
+            _ => 0,
+        }
+    };
+    TransformOffsets {
+        idnoff: read(1, 0),
+        ideoff: read(1, 1),
+        idpoff: read(1, 2),
+        idmoff: read(1, 3),
+        idsoff: read(1, 4),
+        idfoff: read(1, 5),
+        iddoff: read(1, 6),
+        idroff: read(2, 0),
+    }
 }
 
 // ── The resolution core ──────────────────────────────────────────────────────
@@ -234,8 +269,13 @@ pub(crate) type Defs = HashMap<EntityKind, IdSet>;
 /// (≈`log(files)` times); this hashes each id once, which dominates the index
 /// build on a large mesh.
 pub(crate) fn build_defs(deck: &Deck) -> Defs {
-    let per_file: Vec<HashMap<EntityKind, Vec<i64>>> =
-        deck.files.par_iter().map(collect_def_ids).collect();
+    let transforms = deck.file_transforms();
+    let per_file: Vec<HashMap<EntityKind, Vec<i64>>> = deck
+        .files
+        .par_iter()
+        .zip(transforms.par_iter())
+        .map(|(f, transform)| collect_def_ids(f, transform.as_ref()))
+        .collect();
 
     // Gather each kind's id chunks (moves `Vec`s, no element copy).
     let mut by_kind: HashMap<EntityKind, Vec<Vec<i64>>> = HashMap::new();
@@ -258,19 +298,38 @@ impl Deck {
         self.defs.get_or_init(|| build_defs(self))
     }
 
+    /// Effective `*INCLUDE_TRANSFORM` offsets for each file, parallel to
+    /// [`Deck::files`] — `None` where a file has no transform (the common case,
+    /// kept off the offset path entirely). Built once on first use and cached.
+    pub(crate) fn file_transforms(&self) -> &[Option<TransformOffsets>] {
+        self.file_transforms
+            .get_or_init(|| compute_file_transforms(self))
+    }
+
+    /// The effective transform for file `file`, or `None` when it applies no
+    /// shift. The one place navigation and resolution turn a *physical* id (as
+    /// written in that file) into its *logical* (global) id.
+    pub(crate) fn transform_of(&self, file: usize) -> Option<&TransformOffsets> {
+        self.file_transforms().get(file).and_then(Option::as_ref)
+    }
+
     /// References that point at an id nothing defines. `connectivity` includes
     /// element→node references (millions on a big mesh) — off keeps it cheap.
     /// Reuses the cached definition sets, so a prior `check`/navigation call is
     /// not re-done here.
     pub(crate) fn dangling(&self, connectivity: bool) -> Vec<Dangling> {
         let defs = self.definitions();
+        let transforms = self.file_transforms();
         // `flat_map_iter`, not `flat_map`: each file yields a small (usually
         // empty) `Vec<Dangling>`, so we want the *files* parallelised and the
         // per-file results flattened sequentially — `flat_map` treats each
         // result as its own parallel iterator and schedules far worse here.
         self.files
             .par_iter()
-            .flat_map_iter(|f| check_refs(f, defs, &self.user_schemas, connectivity))
+            .zip(transforms.par_iter())
+            .flat_map_iter(|(f, transform)| {
+                check_refs(f, defs, &self.user_schemas, connectivity, transform.as_ref())
+            })
             .collect()
     }
 
@@ -286,9 +345,64 @@ impl Deck {
     }
 }
 
+/// The effective transform offset for every file, parallel to [`Deck::files`].
+///
+/// `None` means "no shift" — the root, plain `*INCLUDE`s, and any file whose
+/// composed offsets happen to cancel to identity. This keeps the resolution
+/// core's hot paths on their existing zero-offset branch for the common
+/// (transform-free) deck.
+///
+/// Offsets accumulate down the include chain, so this is a forward pass: files
+/// come out of [`parse_deck`](crate::deck::parse_deck) in breadth-first order, so
+/// a parent always precedes its children and its effective offset is final by
+/// the time a child reads it.
+///
+/// Note: [`parse_deck`] de-dupes shared files by canonical path, so a file
+/// included more than once (e.g. the *same* mesh instanced at two different
+/// offsets — a classic `*INCLUDE_TRANSFORM` idiom) is represented once and takes
+/// the first directive's offsets. Distinct files and single inclusions — the
+/// cases that matter for reference validation — are exact.
+fn compute_file_transforms(deck: &Deck) -> Vec<Option<TransformOffsets>> {
+    // canonical child path -> (parent file index, that directive's own offsets).
+    // First writer wins, matching `parse_deck`'s de-dup order.
+    let mut edge: HashMap<PathBuf, (usize, TransformOffsets)> = HashMap::new();
+    for (parent_fi, dir) in &deck.includes {
+        // `*INCLUDE_PATH[_RELATIVE]` widen the search path; they pull in no file.
+        if matches!(
+            dir.kind,
+            IncludeKind::IncludePath | IncludeKind::IncludePathRelative
+        ) {
+            continue;
+        }
+        let canon = std::fs::canonicalize(&dir.resolved_path)
+            .unwrap_or_else(|_| dir.resolved_path.clone());
+        edge.entry(canon).or_insert((*parent_fi, dir.offsets));
+    }
+
+    let mut eff: Vec<TransformOffsets> = vec![TransformOffsets::IDENTITY; deck.files.len()];
+    for ci in 1..deck.files.len() {
+        if let Some((parent_fi, off)) = edge.get(&deck.files[ci].path) {
+            eff[ci] = eff[*parent_fi].compose(*off);
+        }
+    }
+    // Collapse identity to `None` so the hot path can skip the offset logic.
+    eff.into_iter()
+        .map(|x| (!x.is_identity()).then_some(x))
+        .collect()
+}
+
 /// Extract a file's defined ids grouped by kind, as plain `Vec`s (no hashing —
 /// dedup/hashing happens once in [`build_defs`]).
-fn collect_def_ids(file: &ParsedFile) -> HashMap<EntityKind, Vec<i64>> {
+///
+/// Ids are stored *logical* (post-transform): under `*INCLUDE_TRANSFORM`,
+/// `transform` shifts each id by its kind's offset, so the whole deck shares one
+/// global id namespace and the dangling check never has to know a transform was
+/// involved. `transform` is `None` for the transform-free common case, which
+/// stays on the plain push path.
+fn collect_def_ids(
+    file: &ParsedFile,
+    transform: Option<&TransformOffsets>,
+) -> HashMap<EntityKind, Vec<i64>> {
     let mut out: HashMap<EntityKind, Vec<i64>> = HashMap::new();
     for block in &file.blocks {
         let exact = file.keyword_name(block);
@@ -304,6 +418,8 @@ fn collect_def_ids(file: &ParsedFile) -> HashMap<EntityKind, Vec<i64>> {
 
         let id_card = kw.cards.get(def.id_card).copied().unwrap_or(&[]);
 
+        // Offset for this kind, hoisted out of the per-id loop (0 = no shift).
+        let off = transform.map_or(0, |t| t.for_kind(def.kind));
         let lines = data_lines(file, block);
         let title = title_offset(exact);
         let ids = out.entry(def.kind).or_default();
@@ -313,31 +429,55 @@ fn collect_def_ids(file: &ParsedFile) -> HashMap<EntityKind, Vec<i64>> {
                 if let Some(id) = card_field_i64(line, card0, 0, block.format)
                     && id != 0
                 {
-                    ids.push(id);
+                    // Def ids are non-negative, so a plain add is the shift.
+                    ids.push(if off == 0 { id } else { id + off });
                 }
             }
         } else if let Some(line) = lines.get(title + def.id_card)
             && let Some(id) = card_field_i64(line, id_card, 0, block.format)
             && id != 0
         {
-            ids.push(id);
+            ids.push(if off == 0 { id } else { id + off });
         }
     }
     out
 }
 
-fn is_dangling(defs: &Defs, r: &Ref, id: i64) -> bool {
+/// Does reference `id` (as written in the file) resolve to nothing defined?
+///
+/// `transform` is the file's transform (or `None`). The membership test is done
+/// on the *logical* id — the physical `id` shifted by the offset for the kind
+/// actually being probed — so an `*INCLUDE_TRANSFORM`'d reference is matched
+/// against the same shifted defs. For a polymorphic [`Ref::AnyOf`], each
+/// candidate kind is shifted by *its own* bucket before probing that kind's set.
+/// The caller still reports the physical `id`; only resolution is
+/// transform-aware.
+fn is_dangling(defs: &Defs, r: &Ref, id: i64, transform: Option<&TransformOffsets>) -> bool {
     // Conservative: only flag when we actually track the target kind (else the
     // entity type is externally defined / untracked — don't raise noise).
     // A negative id references the entity |id| (LS-DYNA convention, esp. curves).
-    let hit = |s: &IdSet| s.contains(id) || s.contains(id.abs());
-    match r {
-        Ref::None => false,
-        Ref::To(k) => defs.get(k).is_some_and(|s| !hit(s)),
-        Ref::AnyOf(ks) => {
-            let tracked: Vec<&IdSet> = ks.iter().filter_map(|k| defs.get(k)).collect();
-            !tracked.is_empty() && !tracked.iter().any(|s| hit(s))
-        }
+    let probe = |s: &IdSet, logical: i64| s.contains(logical) || s.contains(logical.abs());
+    match transform {
+        // Fast path: no transform on this file — the original zero-offset logic.
+        None => match r {
+            Ref::None => false,
+            Ref::To(k) => defs.get(k).is_some_and(|s| !probe(s, id)),
+            Ref::AnyOf(ks) => {
+                let tracked: Vec<&IdSet> = ks.iter().filter_map(|k| defs.get(k)).collect();
+                !tracked.is_empty() && !tracked.iter().any(|s| probe(s, id))
+            }
+        },
+        Some(transform) => match r {
+            Ref::None => false,
+            Ref::To(k) => defs.get(k).is_some_and(|s| !probe(s, transform.apply(id, *k))),
+            Ref::AnyOf(ks) => {
+                let tracked: Vec<(&IdSet, i64)> = ks
+                    .iter()
+                    .filter_map(|k| defs.get(k).map(|s| (s, transform.apply(id, *k))))
+                    .collect();
+                !tracked.is_empty() && !tracked.iter().any(|(s, l)| probe(s, *l))
+            }
+        },
     }
 }
 
@@ -346,6 +486,7 @@ fn check_refs(
     defs: &Defs,
     user_schemas: &HashMap<String, Schema>,
     connectivity: bool,
+    transform: Option<&TransformOffsets>,
 ) -> Vec<Dangling> {
     let mut out = Vec::new();
     for block in &file.blocks {
@@ -353,7 +494,7 @@ fn check_refs(
         let base = canonical_base(exact);
         // A registered user schema wins — check the references it declares.
         if let Some(schema) = user_schemas.get(&base) {
-            check_refs_user(file, block, &base, schema, defs, &mut out);
+            check_refs_user(file, block, &base, schema, defs, transform, &mut out);
             continue;
         }
         let Some(kw) = keywords::find(&base) else {
@@ -400,7 +541,7 @@ fn check_refs(
                         if !matches!(f.r, Ref::None)
                             && let Some(v) = parse_i64(tok)
                             && v != 0
-                            && is_dangling(defs, &f.r, v)
+                            && is_dangling(defs, &f.r, v, transform)
                         {
                             out.push(Dangling {
                                 from_keyword: base.clone(),
@@ -422,7 +563,7 @@ fn check_refs(
                         if !matches!(f.r, Ref::None)
                             && let Some(v) = parse_i64(crate::schema::__slice(line, off, w))
                             && v != 0
-                            && is_dangling(defs, &f.r, v)
+                            && is_dangling(defs, &f.r, v, transform)
                         {
                             out.push(Dangling {
                                 from_keyword: base.clone(),
@@ -449,7 +590,7 @@ fn check_refs(
                     let Some(v) = card_field_i64(line, card, fi, block.format) else {
                         continue;
                     };
-                    if v != 0 && is_dangling(defs, &f.r, v) {
+                    if v != 0 && is_dangling(defs, &f.r, v, transform) {
                         out.push(Dangling {
                             from_keyword: base.clone(),
                             field: f.n.to_string(),
@@ -478,6 +619,7 @@ fn check_refs_user(
     base: &str,
     schema: &Schema,
     defs: &Defs,
+    transform: Option<&TransformOffsets>,
     out: &mut Vec<Dangling>,
 ) {
     if schema
@@ -514,7 +656,7 @@ fn check_refs_user(
             else {
                 continue;
             };
-            if v != 0 && is_dangling(defs, &r, v) {
+            if v != 0 && is_dangling(defs, &r, v, transform) {
                 out.push(Dangling {
                     from_keyword: base.to_string(),
                     field: card.name(col).unwrap_or("").to_string(),
@@ -582,9 +724,15 @@ pub(crate) type Sites = HashMap<(EntityKind, i64), (usize, usize)>;
 /// Index every definition entity (parts, materials, sections, curves, sets, …)
 /// by `(kind, id)` → its defining block. Skips per-line entities (nodes,
 /// elements) and modifier keywords.
+///
+/// Ids are keyed *logical* (post-`*INCLUDE_TRANSFORM`), matching the defined-id
+/// sets, so `Deck::get` and reference-following both work in the deck's global
+/// id namespace — a node/part in a transformed include is found at its offset id.
 pub(crate) fn build_sites(deck: &Deck) -> Sites {
     let mut sites = Sites::new();
+    let transforms = deck.file_transforms();
     for (fi, file) in deck.files.iter().enumerate() {
+        let transform = transforms[fi].as_ref();
         for (bi, block) in file.blocks.iter().enumerate() {
             let exact = file.keyword_name(block);
             let base = canonical_base(exact);
@@ -607,6 +755,7 @@ pub(crate) fn build_sites(deck: &Deck) -> Sites {
                 && let Some(id) = card_field_i64(line, id_card, 0, block.format)
                 && id != 0
             {
+                let id = transform.map_or(id, |t| t.apply(id, def.kind));
                 sites.entry((def.kind, id)).or_insert((fi, bi));
             }
         }
@@ -1002,6 +1151,7 @@ impl<'d> Keyword<'d> {
     /// This occurrence's own id, when it defines an entity (`None` for a
     /// non-definition keyword like `*CONTROL_TERMINATION`, or with no schema).
     pub fn id(&self) -> Option<i64> {
+        // Reached by lookup/kind: identity already carries the logical id.
         if let Some((_, id)) = self.identity {
             return Some(id);
         }
@@ -1015,7 +1165,16 @@ impl<'d> Keyword<'d> {
         let rows = self.rows();
         let line = rows.get(title_offset(self.name()) + def.id_card)?;
         let id = card_field_i64(line, id_card, 0, self.block_format())?;
-        (id != 0).then_some(id)
+        if id == 0 {
+            return None;
+        }
+        // Reached by name: the card holds the file-local id — report the global
+        // one, so it agrees with `Deck::get`/`entities` on a transformed include.
+        Some(
+            self.deck
+                .transform_of(self.file)
+                .map_or(id, |t| t.apply(id, def.kind)),
+        )
     }
     /// The entity kind this occurrence defines, if any.
     pub fn kind(&self) -> Option<EntityKind> {
@@ -1023,6 +1182,14 @@ impl<'d> Keyword<'d> {
             return Some(k);
         }
         keywords::definition_of(&self.base()).map(|d| d.kind)
+    }
+
+    /// The effective `*INCLUDE_TRANSFORM` offsets applied to this occurrence's
+    /// file — composed down the include chain — or `None` if it sits in the root
+    /// or a plain `*INCLUDE`. This is why [`id`](Keyword::id) and the reference
+    /// followers report global ids: `raw_id.apply(offsets)` is the id you see.
+    pub fn transform(&self) -> Option<TransformOffsets> {
+        self.deck.transform_of(self.file).copied()
     }
 
     // ── reference following ──
@@ -1033,6 +1200,9 @@ impl<'d> Keyword<'d> {
     /// Follow this occurrence's (first) reference to an entity of `kind`.
     pub fn reference_to(&self, kind: EntityKind) -> Option<Keyword<'d>> {
         let id = first_ref_to(self.deck, self.file, self.block, kind)?;
+        // The ref is written in this file's local ids; resolve it in the deck's
+        // global namespace before the lookup.
+        let id = self.deck.transform_of(self.file).map_or(id, |t| t.apply(id, kind));
         self.deck.get(kind, id)
     }
     pub fn material(&self) -> Option<Keyword<'d>> {
@@ -1214,10 +1384,14 @@ impl<'d> Field<'d> {
     /// [`Card::ref_to`](crate::schema::Card::ref_to).
     pub fn reference(&self) -> Option<Keyword<'d>> {
         let id = self.as_i64()?;
+        // Shift the local ref id into the deck's global namespace per candidate
+        // kind (a no-op for a file with no `*INCLUDE_TRANSFORM`).
+        let transform = self.deck.transform_of(self.file);
+        let logical = |k: EntityKind| transform.map_or(id, |t| t.apply(id, k));
         match self.card?.ref_of(self.col) {
             Ref::None => None,
-            Ref::To(k) => self.deck.get(k, id),
-            Ref::AnyOf(ks) => ks.iter().find_map(|k| self.deck.get(*k, id)),
+            Ref::To(k) => self.deck.get(k, logical(k)),
+            Ref::AnyOf(ks) => ks.iter().find_map(|k| self.deck.get(*k, logical(*k))),
         }
     }
 }
@@ -1244,6 +1418,7 @@ mod tests {
             files,
             includes: vec![],
             defs: OnceLock::new(),
+            file_transforms: OnceLock::new(),
             sites: OnceLock::new(),
             user_schemas: HashMap::new(),
         }

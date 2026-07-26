@@ -452,6 +452,10 @@ class Entity:
     @property
     def line(self) -> int:
         """1-based line of the entity's `*KEYWORD` line (jump-to location)."""
+    @property
+    def offsets(self) -> dict[str, int] | None:
+        """Effective ``*INCLUDE_TRANSFORM`` id offsets applied to this entity's
+        file (``idnoff``, ``ideoff``, …), or ``None`` outside a transform."""
     def field(self, name: str) -> int | float | str | None:
         """Read a card field by name (case-insensitive)."""
     def reference(self, name: str) -> Entity | None:

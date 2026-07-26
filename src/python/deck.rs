@@ -1,5 +1,7 @@
 //! PyO3 bindings: the `Deck` handle — parse once, validate + navigate.
 
+use std::collections::HashMap;
+
 use pyo3::Bound;
 use pyo3::PyResult;
 use pyo3::prelude::*;
@@ -188,7 +190,12 @@ impl PyEntity {
     fn ref_to(slf: PyRef<'_, Self>, py: Python<'_>, kind: EntityKind) -> Option<PyEntity> {
         let id = {
             let d = slf.deck.borrow(py);
-            model::first_ref_to(&d.deck, slf.file, slf.block, kind)?
+            let id = model::first_ref_to(&d.deck, slf.file, slf.block, kind)?;
+            // The ref is written in the file's local ids; resolve it globally
+            // (a no-op outside an *INCLUDE_TRANSFORM) — parity with Rust nav.
+            d.deck
+                .transform_of(slf.file)
+                .map_or(id, |t| t.apply(id, kind))
         };
         PyEntity::make(slf.deck.clone_ref(py), py, kind, id)
     }
@@ -223,6 +230,26 @@ impl PyEntity {
             .filter(|&&c| c == b'\n')
             .count()
     }
+    /// The effective `*INCLUDE_TRANSFORM` offsets applied to this entity's file
+    /// (composed down the include chain) as a dict `{"idnoff": …, "ideoff": …}`,
+    /// or `None` if it sits in the root or a plain `*INCLUDE`. These are the
+    /// shifts that turn the file-local ids into the global ones `id` reports.
+    #[getter]
+    fn offsets(&self, py: Python<'_>) -> Option<HashMap<&'static str, i64>> {
+        let d = self.deck.borrow(py);
+        let t = d.deck.transform_of(self.file).copied()?;
+        Some(HashMap::from([
+            ("idnoff", t.idnoff),
+            ("ideoff", t.ideoff),
+            ("idpoff", t.idpoff),
+            ("idmoff", t.idmoff),
+            ("idsoff", t.idsoff),
+            ("idfoff", t.idfoff),
+            ("iddoff", t.iddoff),
+            ("idroff", t.idroff),
+        ]))
+    }
+
     /// Read a field by name (case-insensitive) → int / float / str.
     fn field<'py>(&self, py: Python<'py>, name: String) -> Option<Bound<'py, pyo3::PyAny>> {
         let d = self.deck.borrow(py);
@@ -235,17 +262,20 @@ impl PyEntity {
     }
     /// Follow the reference in field `name` to the entity it points at.
     fn reference(slf: PyRef<'_, Self>, py: Python<'_>, name: String) -> Option<PyEntity> {
-        let (r, id) = {
+        let (r, id, transform) = {
             let d = slf.deck.borrow(py);
-            model::ref_field(&d.deck, slf.file, slf.block, &name)?
+            let (r, id) = model::ref_field(&d.deck, slf.file, slf.block, &name)?;
+            (r, id, d.deck.transform_of(slf.file).copied())
         };
+        // Shift the local ref id to global per candidate kind before lookup.
+        let logical = |k: EntityKind| transform.map_or(id, |t| t.apply(id, k));
         let deck = slf.deck.clone_ref(py);
         match r {
             crate::keywords::Ref::None => None,
-            crate::keywords::Ref::To(k) => PyEntity::make(deck, py, k, id),
+            crate::keywords::Ref::To(k) => PyEntity::make(deck, py, k, logical(k)),
             crate::keywords::Ref::AnyOf(ks) => ks
                 .iter()
-                .find_map(|k| PyEntity::make(deck.clone_ref(py), py, *k, id)),
+                .find_map(|k| PyEntity::make(deck.clone_ref(py), py, *k, logical(*k))),
         }
     }
     fn material(slf: PyRef<'_, Self>, py: Python<'_>) -> Option<PyEntity> {
