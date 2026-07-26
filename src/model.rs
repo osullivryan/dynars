@@ -95,16 +95,134 @@ pub struct Dangling {
     pub line: usize,
 }
 
+/// An FxHash-style hasher for the defined-id sets. They hold tens of millions of
+/// `i64`s and are probed once per element→node/part reference during validation,
+/// where the default SipHash dominated the cost; a single-multiply integer hash
+/// spreads LS-DYNA's dense id ranges well and is several times faster.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct BuildIntHasher;
+
+impl std::hash::BuildHasher for BuildIntHasher {
+    type Hasher = IntHasher;
+    #[inline]
+    fn build_hasher(&self) -> IntHasher {
+        IntHasher(0)
+    }
+}
+
+pub(crate) struct IntHasher(u64);
+
+impl IntHasher {
+    const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+}
+
+impl std::hash::Hasher for IntHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write_i64(&mut self, i: i64) {
+        self.write_u64(i as u64);
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(Self::K);
+    }
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        // Fallback for non-integer keys (unused by the `i64` id sets).
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ b as u64).wrapping_mul(Self::K);
+        }
+    }
+}
+
+/// A set of defined entity ids, split into shards. Sharding lets the build fan
+/// out across cores — a single `HashSet` insert loop is serial and dominates the
+/// index build on a big mesh (millions of node/element ids) — while membership
+/// tests stay O(1) and, because each shard is smaller, more cache-friendly.
+pub(crate) struct IdSet {
+    shards: Box<[HashSet<i64, BuildIntHasher>]>,
+}
+
+impl IdSet {
+    /// Power of two so `& (SHARDS - 1)` selects a shard.
+    const SHARDS: usize = 16;
+
+    /// The shard an id lives in — top bits of a multiply-hash, decorrelated from
+    /// the low bits each shard's `HashSet` uses for bucketing.
+    #[inline]
+    fn shard_of(id: i64) -> usize {
+        ((id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 58) as usize & (Self::SHARDS - 1)
+    }
+
+    #[inline]
+    pub(crate) fn contains(&self, id: i64) -> bool {
+        self.shards[Self::shard_of(id)].contains(&id)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.shards.iter().map(HashSet::len).sum()
+    }
+
+    /// Build from per-file id chunks: bucket ids by shard in one pass, then hash
+    /// each shard in parallel.
+    fn build(chunks: Vec<Vec<i64>>) -> Self {
+        let total: usize = chunks.iter().map(Vec::len).sum();
+        let mut buckets: Vec<Vec<i64>> = (0..Self::SHARDS)
+            .map(|_| Vec::with_capacity(total / Self::SHARDS + 1))
+            .collect();
+        for chunk in &chunks {
+            for &id in chunk {
+                buckets[Self::shard_of(id)].push(id);
+            }
+        }
+        let shards: Vec<_> = buckets
+            .into_par_iter()
+            .map(|ids| {
+                let mut s = HashSet::with_capacity_and_hasher(ids.len(), BuildIntHasher);
+                s.extend(ids);
+                s
+            })
+            .collect();
+        IdSet {
+            shards: shards.into_boxed_slice(),
+        }
+    }
+}
+
 /// Defined ids grouped by entity kind — the shared resolution core, cached on
 /// the [`Deck`] and reused by validation and navigation alike.
-pub(crate) type Defs = HashMap<EntityKind, HashSet<i64>>;
+pub(crate) type Defs = HashMap<EntityKind, IdSet>;
 
-/// Every defined id in the deck, per kind (parallel over files, then merge).
+/// Every defined id in the deck, per kind.
+///
+/// Extract ids into plain `Vec`s per file (parallel, no hashing), then build
+/// each kind's [`IdSet`] exactly once — in parallel across kinds. The previous
+/// `map(collect)+reduce(merge)` re-hashed every id through a merge tree
+/// (≈`log(files)` times); this hashes each id once, which dominates the index
+/// build on a large mesh.
 pub(crate) fn build_defs(deck: &Deck) -> Defs {
-    deck.files
-        .par_iter()
-        .map(collect_defs)
-        .reduce(HashMap::new, merge_defs)
+    let per_file: Vec<HashMap<EntityKind, Vec<i64>>> =
+        deck.files.par_iter().map(collect_def_ids).collect();
+
+    // Gather each kind's id chunks (moves `Vec`s, no element copy).
+    let mut by_kind: HashMap<EntityKind, Vec<Vec<i64>>> = HashMap::new();
+    for m in per_file {
+        for (k, v) in m {
+            by_kind.entry(k).or_default().push(v);
+        }
+    }
+
+    // Each kind's set is built once, sharded across cores (see `IdSet::build`).
+    by_kind
+        .into_iter()
+        .map(|(k, chunks)| (k, IdSet::build(chunks)))
+        .collect()
 }
 
 impl Deck {
@@ -119,9 +237,13 @@ impl Deck {
     /// not re-done here.
     pub(crate) fn dangling(&self, connectivity: bool) -> Vec<Dangling> {
         let defs = self.definitions();
+        // `flat_map_iter`, not `flat_map`: each file yields a small (usually
+        // empty) `Vec<Dangling>`, so we want the *files* parallelised and the
+        // per-file results flattened sequentially — `flat_map` treats each
+        // result as its own parallel iterator and schedules far worse here.
         self.files
             .par_iter()
-            .flat_map(|f| check_refs(f, defs, &self.user_schemas, connectivity))
+            .flat_map_iter(|f| check_refs(f, defs, &self.user_schemas, connectivity))
             .collect()
     }
 
@@ -137,18 +259,10 @@ impl Deck {
     }
 }
 
-fn merge_defs(
-    mut a: HashMap<EntityKind, HashSet<i64>>,
-    b: HashMap<EntityKind, HashSet<i64>>,
-) -> HashMap<EntityKind, HashSet<i64>> {
-    for (k, s) in b {
-        a.entry(k).or_default().extend(s);
-    }
-    a
-}
-
-fn collect_defs(file: &ParsedFile) -> HashMap<EntityKind, HashSet<i64>> {
-    let mut out: HashMap<EntityKind, HashSet<i64>> = HashMap::new();
+/// Extract a file's defined ids grouped by kind, as plain `Vec`s (no hashing —
+/// dedup/hashing happens once in [`build_defs`]).
+fn collect_def_ids(file: &ParsedFile) -> HashMap<EntityKind, Vec<i64>> {
+    let mut out: HashMap<EntityKind, Vec<i64>> = HashMap::new();
     for block in &file.blocks {
         let exact = file.keyword_name(block);
         let base = canonical_base(exact);
@@ -165,36 +279,36 @@ fn collect_defs(file: &ParsedFile) -> HashMap<EntityKind, HashSet<i64>> {
 
         let lines = data_lines(file, block);
         let title = title_offset(exact);
-        let set = out.entry(def.kind).or_default();
+        let ids = out.entry(def.kind).or_default();
         if def.per_line {
             let card0 = kw.cards.first().copied().unwrap_or(&[]);
             for line in lines.iter().skip(title) {
                 if let Some(id) = card_field_i64(line, card0, 0, block.format)
                     && id != 0
                 {
-                    set.insert(id);
+                    ids.push(id);
                 }
             }
         } else if let Some(line) = lines.get(title + def.id_card)
             && let Some(id) = card_field_i64(line, id_card, 0, block.format)
             && id != 0
         {
-            set.insert(id);
+            ids.push(id);
         }
     }
     out
 }
 
-fn is_dangling(defs: &HashMap<EntityKind, HashSet<i64>>, r: &Ref, id: i64) -> bool {
+fn is_dangling(defs: &Defs, r: &Ref, id: i64) -> bool {
     // Conservative: only flag when we actually track the target kind (else the
     // entity type is externally defined / untracked — don't raise noise).
     // A negative id references the entity |id| (LS-DYNA convention, esp. curves).
-    let hit = |s: &HashSet<i64>| s.contains(&id) || s.contains(&id.abs());
+    let hit = |s: &IdSet| s.contains(id) || s.contains(id.abs());
     match r {
         Ref::None => false,
         Ref::To(k) => defs.get(k).is_some_and(|s| !hit(s)),
         Ref::AnyOf(ks) => {
-            let tracked: Vec<&HashSet<i64>> = ks.iter().filter_map(|k| defs.get(k)).collect();
+            let tracked: Vec<&IdSet> = ks.iter().filter_map(|k| defs.get(k)).collect();
             !tracked.is_empty() && !tracked.iter().any(|s| hit(s))
         }
     }
@@ -202,7 +316,7 @@ fn is_dangling(defs: &HashMap<EntityKind, HashSet<i64>>, r: &Ref, id: i64) -> bo
 
 fn check_refs(
     file: &ParsedFile,
-    defs: &HashMap<EntityKind, HashSet<i64>>,
+    defs: &Defs,
     user_schemas: &HashMap<String, Schema>,
     connectivity: bool,
 ) -> Vec<Dangling> {
@@ -235,34 +349,64 @@ fn check_refs(
 
         let lines = data_lines(file, block);
         let title = title_offset(exact);
-        let line_no = |ln: usize| {
-            1 + file.src()[..block.name_start]
-                .iter()
-                .filter(|&&b| b == b'\n')
-                .count()
-                + ln
-        };
+        // Line of the block's `*KEYWORD`, counted once — not per finding. (A
+        // deck riddled with dangling refs is exactly when this closure fires
+        // most, so recounting newlines from file start each time was quadratic.)
+        let block_line0 = 1 + file.src()[..block.name_start]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count();
+        let line_no = |ln: usize| block_line0 + ln;
 
         if per_line {
-            // Element cards: all ref fields on card 0, one element per line.
+            // Element cards: all ref fields on card 0, one element per line. This
+            // is the hot path (millions of rows), so walk each line once: decide
+            // free/fixed a single time, and advance the fixed-format offset
+            // incrementally rather than re-summing field widths per field.
             let card0 = kw.cards.first().copied().unwrap_or(&[]);
+            let long = block.format == CardFormat::Long;
             for (row, line) in lines.iter().enumerate().skip(title) {
-                for (fi, f) in card0.iter().enumerate() {
-                    if matches!(f.r, Ref::None) {
-                        continue;
+                if crate::schema::__is_free(line, block.format) {
+                    let mut toks = line.split(|&c| c == b',');
+                    for f in card0 {
+                        let Some(tok) = toks.next() else { break };
+                        if !matches!(f.r, Ref::None)
+                            && let Some(v) = parse_i64(tok)
+                            && v != 0
+                            && is_dangling(defs, &f.r, v)
+                        {
+                            out.push(Dangling {
+                                from_keyword: base.clone(),
+                                field: f.n.to_string(),
+                                target: f.r,
+                                id: v,
+                                file: file.path.clone(),
+                                line: line_no(row),
+                            });
+                        }
                     }
-                    let Some(v) = card_field_i64(line, card0, fi, block.format) else {
-                        continue;
-                    };
-                    if v != 0 && is_dangling(defs, &f.r, v) {
-                        out.push(Dangling {
-                            from_keyword: base.clone(),
-                            field: f.n.to_string(),
-                            target: f.r,
-                            id: v,
-                            file: file.path.clone(),
-                            line: line_no(row),
-                        });
+                } else {
+                    let mut off = 0usize;
+                    for f in card0 {
+                        if off >= line.len() {
+                            break;
+                        }
+                        let w = if long { f.w * 2 } else { f.w };
+                        if !matches!(f.r, Ref::None)
+                            && let Some(v) = parse_i64(crate::schema::__slice(line, off, w))
+                            && v != 0
+                            && is_dangling(defs, &f.r, v)
+                        {
+                            out.push(Dangling {
+                                from_keyword: base.clone(),
+                                field: f.n.to_string(),
+                                target: f.r,
+                                id: v,
+                                file: file.path.clone(),
+                                line: line_no(row),
+                            });
+                        }
+                        off += w;
                     }
                 }
             }
@@ -306,7 +450,7 @@ fn check_refs_user(
     block: &Block,
     base: &str,
     schema: &Schema,
-    defs: &HashMap<EntityKind, HashSet<i64>>,
+    defs: &Defs,
     out: &mut Vec<Dangling>,
 ) {
     if schema
@@ -320,13 +464,12 @@ fn check_refs_user(
     let exact = file.keyword_name(block);
     let title = title_offset(exact);
     let lines = data_lines(file, block);
-    let line_no = |ln: usize| {
-        1 + file.src()[..block.name_start]
-            .iter()
-            .filter(|&&b| b == b'\n')
-            .count()
-            + ln
-    };
+    // Counted once per block, not per finding (see `check_refs`).
+    let block_line0 = 1 + file.src()[..block.name_start]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count();
+    let line_no = |ln: usize| block_line0 + ln;
 
     for (row, line) in lines.iter().enumerate().skip(title) {
         let Some(fields) = schema.card_for_row(row - title) else {

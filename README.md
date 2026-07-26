@@ -14,16 +14,13 @@ Python bindings.
    in parallel, at memory-bandwidth speed.
 2. **Keyword marshalling** — index a file into keyword blocks, read the
    high-volume keywords (`*NODE`, `*ELEMENT_*`) as columnar numpy arrays, edit
-   individual keywords, and write the deck back with **byte-for-byte lossless
-   round-trip** of everything you didn't touch.
+   individual keywords, and write the deck back.
 
 ## Highlights
 
 - **Fast.** The `*INCLUDE` scanner runs at ~15 GB/s per core (SIMD `memchr`);
   cross-file work is spread over all cores. Node marshalling parses ~73 M
   nodes/s across 10 cores.
-- **Lossless.** A parse → write cycle of an unedited deck is a no-op diff.
-  Edits are tracked per keyword block; untouched blocks are re-emitted verbatim.
 - **Zero-copy to numpy.** Numeric schema columns (node coords, element
   connectivity, …) cross the FFI boundary as numpy arrays without a copy.
 - **Handles the awkward formats.** Fixed-width (8-col), long (`*KEYWORD LONG`),
@@ -31,43 +28,10 @@ Python bindings.
 
 ## Installation
 
-### Python
-
-Requires a Rust toolchain and [maturin](https://www.maturin.rs/).
-
 ```bash
-# Editable dev install into the active virtualenv
-maturin develop --release
-
-# Or build a distributable wheel
-maturin build --release
-pip install target/wheels/dynars-*.whl
-```
-
-The extension is built with pyo3 `abi3-py39`, so each build produces **one wheel
-per platform** that works on CPython 3.9+ (no per-version matrix).
-
-### Cross-platform wheels & release
-
-`.github/workflows/release.yml` builds wheels on GitHub Actions for
-**Linux (x86_64, aarch64) and Windows (x64)**, runs a per-OS import smoke-test,
-and (on a `v*` tag) can publish to PyPI. (macOS wheels are omitted to save CI
-minutes; macOS users can `pip install` from the sdist, which builds locally.) To
-cut a release:
-
-1. Configure a **PyPI trusted publisher** for this repo (project `dynars`,
-   workflow `release.yml`, environment `pypi`) — tokenless OIDC publishing.
-2. Uncomment the `publish:` job in the workflow.
-3. Bump the version in `pyproject.toml`/`Cargo.toml`, tag `vX.Y.Z`, and push —
-   CI builds all platforms and publishes.
-
-`numpy` is a runtime dependency of the Python package.
-
-### Rust / CLI
-
-```bash
-cargo build --release
-# binary at target/release/dynars
+pip install dynars        # Python package (pulls in numpy)
+cargo add dynars          # Rust library
+cargo install dynars      # the `dynars` CLI
 ```
 
 ## Command-line usage
@@ -75,6 +39,9 @@ cargo build --release
 ```bash
 # Parse a deck and print the include tree + throughput
 dynars parse root.k
+
+# ...as structured JSON instead (pipe to jq, feed a pipeline, etc.)
+dynars parse root.k --json
 
 # Generate a synthetic deck for benchmarking
 dynars generate --depth 6 --breadth 4 --nodes 100000 --output test_output
@@ -156,31 +123,129 @@ if let Some(part) = deck.part(1) {
 }
 ```
 
-**Unknown keywords.** Hit a keyword dynars ships no layout for (rare, vendor, or
-newer than our snapshot)? Describe it once and get the same named, typed access —
-no fork in the API, just a schema that comes from you instead of the table:
+### Validation & checks
+
+Rules run over a parsed `Deck`, reusing the parse and fanning out across cores.
+There's **no default rule set** — you pass exactly the checks you want and get
+back a report of findings, each with a clickable `file:line`.
+
+```python
+import dynars
+from dynars import Rule, Predicate, Cmp, Severity
+
+deck = dynars.parse_deck("root.k")
+
+report = deck.validate([
+    Rule.references_resolve(),                                # every id reference resolves
+    Rule.field_forbidden_values("MAT_ELASTIC", "PR", [0.5]),  # PR may not be 0.5
+    Rule.field_required(                                      # if ELFORM==2, NIP must be > 0
+        "SECTION_SHELL",
+        require=Predicate.field("NIP", Cmp.Gt, 0),
+        when=Predicate.field("ELFORM", Cmp.Eq, 2),
+    ),
+    Rule.keyword_forbidden("MAT_ADD_EROSION").only_in(["submodel/"]),  # scope to some files
+])
+
+print(report.is_clean(), report.count(Severity.Error))
+for f in report.findings:
+    print(f.severity, f.rule, f.location(), "-", f.message)
+```
+
+Built-in rules: `references_resolve()` / `references_resolve_with_connectivity()`
+(the latter also checks every element's nodes exist — heavy on big meshes),
+`field_forbidden_values`, `field_required`, `keyword_forbidden`,
+`include_missing`. Every rule takes `.only_in([...])` / `.except_in([...])` file
+scopes and `.with_severity(Severity.Warning)`; compose predicates with
+`Predicate.all_ / any_ / not_`.
+
+Rust runs the same rules, plus a **custom `Check`** for anything the built-ins
+don't cover — implement one trait, wrap it in `Rule::custom`:
+
+```rust
+use dynars::deck::parse_deck;
+use dynars::validate::{Rule, Cmp, Expr, Value, Severity, Check, Deck, Finding};
+
+let deck = parse_deck(std::path::Path::new("root.k")).unwrap();
+
+let report = deck.validate([
+    Rule::references_resolve(),
+    Rule::field_forbidden_values("MAT_ELASTIC", "PR", [Value::Float(0.5)]),
+    Rule::field_required(
+        "SECTION_SHELL",
+        Some(Expr::field("ELFORM", Cmp::Eq, Value::Int(2))),   // when
+        Expr::field("NIP", Cmp::Gt, Value::Int(0)),            // require
+    ),
+]);
+println!("{} error(s)", report.count(Severity::Error));
+
+// Arbitrary logic: any struct implementing Check becomes a rule.
+struct DensityPositive;
+impl Check for DensityPositive {
+    fn name(&self) -> String { "density_positive".into() }
+    fn run(&self, deck: &Deck) -> Vec<Finding> {
+        deck.keywords("MAT_ELASTIC").filter_map(|m| {
+            let ro = m.field("RO")?.as_f64()?;
+            (ro <= 0.0).then(|| Finding {
+                rule: self.name(), severity: Severity::Warning,
+                keyword: "MAT_ELASTIC".into(), file: m.file().to_path_buf(),
+                line: m.line(), message: format!("RO = {ro} must be positive"),
+            })
+        }).collect()
+    }
+}
+let _ = deck.validate([Rule::custom(DensityPositive)]);
+```
+
+### Extending: keywords dynars doesn't ship
+
+Decks carry vendor, rare, or newer-than-our-snapshot keywords. Describe one once
+with a schema and it becomes first-class on the deck — no fork in the API.
+
+In **Rust** the schema also declares references (`Card::ref_to`), so the
+registered keyword navigates, its fields type, and its references are
+dangling-checked like any built-in:
 
 ```rust
 use dynars::schema::{Schema, Card};
 use dynars::keywords::EntityKind;
 use dynars::validate::Rule;
 
-// (`deck` must be declared `let mut` to register schemas)
+// `deck` must be `let mut` to register.
 deck.register_schema(Schema::new("VENDOR_WIDGET").card(
     Card::new()
         .int("wid", 8)
         .float("mass", 8)
-        .ref_to("mat", 8, EntityKind::Material),   // an id that references a *MAT
+        .ref_to("mat", 8, EntityKind::Material),   // id references a *MAT
 ));
 
-// Named, typed parsing:
+// Navigate + typed field access, exactly like a built-in keyword:
 let w = deck.keywords("VENDOR_WIDGET").next().unwrap();
 let mass = w.card(0).and_then(|c| c.field("mass")).and_then(|f| f.as_f64());
+let mat  = w.card(0).and_then(|c| c.field("mat")).and_then(|f| f.reference());
 
-// Validation: fields validate like any keyword, and declared references are
-// dangling-checked by references_resolve() — no special-casing:
+// references_resolve() now dangling-checks VENDOR_WIDGET.mat -> *MAT:
 let report = deck.validate([Rule::references_resolve()]);
 ```
+
+In **Python**, register a schema (cards are `(name, type, width, count)` tuples)
+so the validation rules can target the keyword; read its columns with
+`table_with`:
+
+```python
+deck = dynars.parse_deck("root.k")
+cards = [[("wid", "int", 8, 1), ("mass", "float", 8, 1)]]
+
+deck.register_schema("VENDOR_WIDGET", cards)
+deck.validate([Rule.field_required("VENDOR_WIDGET",
+                                   require=Predicate.field("mass", Cmp.Gt, 0.0))])
+
+cols = deck.table_with("VENDOR_WIDGET", cards)   # {"wid": int64[N], "mass": float64[N]}
+```
+
+For a keyword that should ship *permanently* (not per-deck), add it to the
+hand-written `SUPPLEMENT` in `src/keywords/mod.rs`. For **columnar bulk** parsing
+of custom keywords via declared classes, see
+[User-defined keyword schemas](#user-defined-keyword-schemas) below.
 
 ## Rust API
 
@@ -193,9 +258,6 @@ let tree = build_include_tree(std::path::Path::new("root.k")).unwrap();
 
 // Marshalling: split into keyword blocks, parse via schemas (below)
 let parsed = parse_file_blocks(std::path::Path::new("deck.k")).unwrap();
-
-// Lossless round-trip: no edits -> identical bytes
-assert_eq!(parsed.to_bytes(), std::fs::read("deck.k").unwrap());
 ```
 
 ## User-defined keyword schemas

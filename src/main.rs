@@ -40,6 +40,10 @@ enum Command {
     Parse {
         /// Path to the root keyword file
         file: PathBuf,
+
+        /// Emit the include tree and stats as JSON instead of human-readable text
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -55,8 +59,8 @@ fn main() {
         } => {
             cmd_generate(depth, breadth, nodes, &output);
         }
-        Command::Parse { file } => {
-            cmd_parse(&file);
+        Command::Parse { file, json } => {
+            cmd_parse(&file, json);
         }
     }
 }
@@ -74,58 +78,86 @@ fn cmd_generate(depth: usize, breadth: usize, nodes: usize, output: &str) {
     println!("Generation completed in {:.3}s", elapsed.as_secs_f64());
 }
 
-fn cmd_parse(file_path: &Path) {
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
+/// The `parse --json` payload: the full include tree plus timing/throughput.
+#[derive(serde::Serialize)]
+struct ParseReport<'a> {
+    root: String,
+    total_files: usize,
+    total_bytes: usize,
+    parse_seconds: f64,
+    throughput_mb_s: f64,
+    tree: &'a include::IncludeNode,
+}
 
-    println!("Parsing: {}", file_path.display());
-    println!("Threads: {}", threads);
-    println!();
+fn cmd_parse(file_path: &Path, json: bool) {
+    if !json {
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        println!("Parsing: {}", file_path.display());
+        println!("Threads: {}", threads);
+        println!();
+    }
 
     let start = Instant::now();
     let tree = include::build_include_tree(file_path);
     let elapsed = start.elapsed();
 
-    match tree {
-        Ok(root) => {
-            let total_files = root.total_files();
-            let total_bytes = root.total_bytes();
-
-            println!("=== Include Tree ===");
-            if total_files <= 200 {
-                root.print_tree(0);
-                println!();
-            } else {
-                println!("(Tree too large to print — {} files)", total_files);
-                println!();
-            }
-
-            println!("=== Performance ===");
-            println!("Total files:  {}", total_files);
-            println!(
-                "Total bytes:  {} ({:.2} MB)",
-                total_bytes,
-                total_bytes as f64 / 1_048_576.0
-            );
-            println!(
-                "Parse time:   {:.6}s ({:.3}ms)",
-                elapsed.as_secs_f64(),
-                elapsed.as_secs_f64() * 1000.0
-            );
-
-            if elapsed.as_secs_f64() > 0.0 {
-                let mb_per_sec = (total_bytes as f64 / 1_048_576.0) / elapsed.as_secs_f64();
-                println!("Throughput:   {:.1} MB/s", mb_per_sec);
-                println!(
-                    "              {:.0} files/s",
-                    total_files as f64 / elapsed.as_secs_f64()
-                );
-            }
-        }
+    let root = match tree {
+        Ok(root) => root,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            if json {
+                eprintln!("{{\"error\":{}}}", serde_json::to_string(&e).unwrap());
+            } else {
+                eprintln!("Error: {}", e);
+            }
             std::process::exit(1);
         }
+    };
+
+    let total_files = root.total_files();
+    let total_bytes = root.total_bytes();
+    let secs = elapsed.as_secs_f64();
+    let mb = total_bytes as f64 / 1_048_576.0;
+    let throughput = if secs > 0.0 { mb / secs } else { 0.0 };
+
+    if json {
+        let report = ParseReport {
+            root: file_path.display().to_string(),
+            total_files,
+            total_bytes,
+            parse_seconds: secs,
+            throughput_mb_s: throughput,
+            tree: &root,
+        };
+        match serde_json::to_string_pretty(&report) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                eprintln!(
+                    "{{\"error\":{}}}",
+                    serde_json::to_string(&e.to_string()).unwrap()
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    println!("=== Include Tree ===");
+    if total_files <= 200 {
+        root.print_tree(0);
+        println!();
+    } else {
+        println!("(Tree too large to print — {} files)", total_files);
+        println!();
+    }
+
+    println!("=== Performance ===");
+    println!("Total files:  {}", total_files);
+    println!("Total bytes:  {} ({:.2} MB)", total_bytes, mb);
+    println!("Parse time:   {:.6}s ({:.3}ms)", secs, secs * 1000.0);
+    if secs > 0.0 {
+        println!("Throughput:   {:.1} MB/s", throughput);
+        println!("              {:.0} files/s", total_files as f64 / secs);
     }
 }

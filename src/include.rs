@@ -14,7 +14,7 @@ use dashmap::{DashMap, DashSet};
 use crate::parser::parse_file_from_path;
 
 /// The flavour of an `*INCLUDE` directive.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum IncludeKind {
     Include,
     IncludePath,
@@ -44,7 +44,7 @@ pub struct FileParseResult {
 }
 
 /// One node in the resolved include tree.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct IncludeNode {
     pub path: PathBuf,
     pub byte_count: usize,
