@@ -173,12 +173,25 @@ struct RawInclude {
     offsets: crate::keywords::TransformOffsets,
 }
 
+/// The search directory a single `*INCLUDE_PATH[_RELATIVE]` directive
+/// contributes, or `None` for any other directive. `*INCLUDE_PATH` dirs are
+/// relative to the run directory (or absolute); `*INCLUDE_PATH_RELATIVE` dirs
+/// are relative to the including file. The one place this rule lives, so the
+/// self-resolution below and the include walker's child propagation can never
+/// disagree on it.
+pub(crate) fn own_search_dir(kind: &IncludeKind, raw_path: &str, parent_dir: &Path) -> Option<PathBuf> {
+    match kind {
+        IncludeKind::IncludePath => Some(PathBuf::from(raw_path)),
+        IncludeKind::IncludePathRelative => Some(parent_dir.join(raw_path)),
+        _ => None,
+    }
+}
+
 /// Resolve detected directives into [`IncludeDirective`]s — the single source of
 /// truth for include-path resolution, shared by the streaming scanner and the
 /// block extractor. Each `raw_path` is resolved against `include_paths` **plus**
 /// the file's own `*INCLUDE_PATH[_RELATIVE]` directories, applied file-wide
-/// (order-independent): `*INCLUDE_PATH` dirs are relative to the run directory
-/// (or absolute), `*INCLUDE_PATH_RELATIVE` dirs relative to the including file.
+/// (order-independent).
 fn resolve_directives(
     raw: Vec<RawInclude>,
     parent_dir: &Path,
@@ -186,10 +199,8 @@ fn resolve_directives(
 ) -> Vec<IncludeDirective> {
     let mut search: Vec<PathBuf> = include_paths.to_vec();
     for r in &raw {
-        match r.kind {
-            IncludeKind::IncludePath => search.push(PathBuf::from(&r.raw_path)),
-            IncludeKind::IncludePathRelative => search.push(parent_dir.join(&r.raw_path)),
-            _ => {}
+        if let Some(dir) = own_search_dir(&r.kind, &r.raw_path, parent_dir) {
+            search.push(dir);
         }
     }
     raw.into_iter()
