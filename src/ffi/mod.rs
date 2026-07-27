@@ -19,6 +19,19 @@
 //!
 //! Nothing here can unwind into the caller: no method used below panics on
 //! valid input, and pointer arguments are null-checked before use.
+//!
+//! # Safety (shared by every function taking a handle)
+//!
+//! Each handle pointer must be either NULL or a live value returned by its
+//! constructor (`dynars_parse_deck` / `dynars_ruleset_new` /
+//! `dynars_deck_validate`) that has not yet been passed to its `*_free`. A freed
+//! handle must not be used or freed again. `dynars_parse_deck`'s `path` must be
+//! NULL or a valid NUL-terminated string. Given that, every call is sound.
+
+// The contract above is uniform across all 20 handle functions; repeating it as
+// a per-function `# Safety` stanza would be pure noise (cf. the module-level
+// allows in `keywords/names.rs`, `keywords/typed.rs`).
+#![allow(clippy::missing_safety_doc)]
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char};
@@ -67,7 +80,7 @@ pub struct DynarsDeck {
 /// Returns an owned handle, or NULL on error (see [`dynars_last_error`]).
 /// Free with [`dynars_deck_free`].
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_parse_deck(path: *const c_char) -> *mut DynarsDeck {
+pub unsafe extern "C" fn dynars_parse_deck(path: *const c_char) -> *mut DynarsDeck {
     clear_error();
     if path.is_null() {
         set_error("dynars_parse_deck: path is NULL");
@@ -91,7 +104,7 @@ pub extern "C" fn dynars_parse_deck(path: *const c_char) -> *mut DynarsDeck {
 
 /// Free a deck handle. NULL is ignored.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_deck_free(deck: *mut DynarsDeck) {
+pub unsafe extern "C" fn dynars_deck_free(deck: *mut DynarsDeck) {
     if !deck.is_null() {
         drop(unsafe { Box::from_raw(deck) });
     }
@@ -99,13 +112,13 @@ pub extern "C" fn dynars_deck_free(deck: *mut DynarsDeck) {
 
 /// Number of files in the deck (root + includes). 0 if `deck` is NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_deck_file_count(deck: *const DynarsDeck) -> usize {
+pub unsafe extern "C" fn dynars_deck_file_count(deck: *const DynarsDeck) -> usize {
     unsafe { deck.as_ref() }.map_or(0, |d| d.inner.files.len())
 }
 
 /// Total source bytes across all files. 0 if `deck` is NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_deck_total_bytes(deck: *const DynarsDeck) -> usize {
+pub unsafe extern "C" fn dynars_deck_total_bytes(deck: *const DynarsDeck) -> usize {
     unsafe { deck.as_ref() }.map_or(0, |d| d.inner.total_bytes())
 }
 
@@ -124,7 +137,7 @@ pub extern "C" fn dynars_ruleset_new() -> *mut DynarsRuleSet {
 
 /// Free a rule set. NULL is ignored.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_ruleset_free(rules: *mut DynarsRuleSet) {
+pub unsafe extern "C" fn dynars_ruleset_free(rules: *mut DynarsRuleSet) {
     if !rules.is_null() {
         drop(unsafe { Box::from_raw(rules) });
     }
@@ -134,7 +147,7 @@ pub extern "C" fn dynars_ruleset_free(rules: *mut DynarsRuleSet) {
 /// (PART.mid → *MAT, *LOAD.lcid → *DEFINE_CURVE, …). Does not check element
 /// connectivity. No-op if `rules` is NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_ruleset_add_references_resolve(rules: *mut DynarsRuleSet) {
+pub unsafe extern "C" fn dynars_ruleset_add_references_resolve(rules: *mut DynarsRuleSet) {
     if let Some(r) = unsafe { rules.as_mut() } {
         r.rules.push(Rule::references_resolve());
     }
@@ -144,7 +157,9 @@ pub extern "C" fn dynars_ruleset_add_references_resolve(rules: *mut DynarsRuleSe
 /// every element's nodes are defined. Heavy on large meshes. No-op if `rules`
 /// is NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_ruleset_add_references_resolve_with_connectivity(rules: *mut DynarsRuleSet) {
+pub unsafe extern "C" fn dynars_ruleset_add_references_resolve_with_connectivity(
+    rules: *mut DynarsRuleSet,
+) {
     if let Some(r) = unsafe { rules.as_mut() } {
         r.rules.push(Rule::references_resolve_with_connectivity());
     }
@@ -153,7 +168,7 @@ pub extern "C" fn dynars_ruleset_add_references_resolve_with_connectivity(rules:
 /// Flag every `*INCLUDE` whose target file is missing on disk. No-op if
 /// `rules` is NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_ruleset_add_include_missing(rules: *mut DynarsRuleSet) {
+pub unsafe extern "C" fn dynars_ruleset_add_include_missing(rules: *mut DynarsRuleSet) {
     if let Some(r) = unsafe { rules.as_mut() } {
         r.rules.push(Rule::include_missing());
     }
@@ -162,7 +177,7 @@ pub extern "C" fn dynars_ruleset_add_include_missing(rules: *mut DynarsRuleSet) 
 /// Flag any occurrence of `keyword` (case-insensitive, matched on canonical
 /// base). Returns 0 on success, -1 on error (see [`dynars_last_error`]).
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_ruleset_add_keyword_forbidden(
+pub unsafe extern "C" fn dynars_ruleset_add_keyword_forbidden(
     rules: *mut DynarsRuleSet,
     keyword: *const c_char,
 ) -> i32 {
@@ -243,7 +258,7 @@ pub struct DynarsReport {
 /// handle, or NULL if either argument is NULL (see [`dynars_last_error`]). Free
 /// with [`dynars_report_free`].
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_deck_validate(
+pub unsafe extern "C" fn dynars_deck_validate(
     deck: *const DynarsDeck,
     rules: *const DynarsRuleSet,
 ) -> *mut DynarsReport {
@@ -263,7 +278,7 @@ pub extern "C" fn dynars_deck_validate(
 
 /// Free a report handle. NULL is ignored.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_free(report: *mut DynarsReport) {
+pub unsafe extern "C" fn dynars_report_free(report: *mut DynarsReport) {
     if !report.is_null() {
         drop(unsafe { Box::from_raw(report) });
     }
@@ -271,13 +286,13 @@ pub extern "C" fn dynars_report_free(report: *mut DynarsReport) {
 
 /// Number of findings. 0 if `report` is NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_len(report: *const DynarsReport) -> usize {
+pub unsafe extern "C" fn dynars_report_len(report: *const DynarsReport) -> usize {
     unsafe { report.as_ref() }.map_or(0, |r| r.findings.len())
 }
 
 /// Number of findings at `severity`. 0 if `report` is NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_count(
+pub unsafe extern "C" fn dynars_report_count(
     report: *const DynarsReport,
     severity: DynarsSeverity,
 ) -> usize {
@@ -292,7 +307,7 @@ pub extern "C" fn dynars_report_count(
 /// 1 if the report has no `Error`-severity findings (warnings/info are still
 /// "clean"), else 0. Also 1 for a NULL report.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_is_clean(report: *const DynarsReport) -> i32 {
+pub unsafe extern "C" fn dynars_report_is_clean(report: *const DynarsReport) -> i32 {
     let clean = unsafe { report.as_ref() }
         .is_none_or(|r| !r.findings.iter().any(|f| f.severity == Severity::Error));
     clean as i32
@@ -305,7 +320,7 @@ fn finding_at<'a>(report: *const DynarsReport, i: usize) -> Option<&'a FfiFindin
 /// Severity of finding `i`. Returns `Error` for an out-of-range index or NULL
 /// report — check [`dynars_report_len`] first.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_finding_severity(
+pub unsafe extern "C" fn dynars_report_finding_severity(
     report: *const DynarsReport,
     i: usize,
 ) -> DynarsSeverity {
@@ -314,14 +329,17 @@ pub extern "C" fn dynars_report_finding_severity(
 
 /// 1-based source line of finding `i`. 0 if out of range.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_finding_line(report: *const DynarsReport, i: usize) -> usize {
+pub unsafe extern "C" fn dynars_report_finding_line(
+    report: *const DynarsReport,
+    i: usize,
+) -> usize {
     finding_at(report, i).map_or(0, |f| f.line)
 }
 
 /// Name of the rule that produced finding `i`, or NULL if out of range. Valid
 /// until the report is freed.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_finding_rule(
+pub unsafe extern "C" fn dynars_report_finding_rule(
     report: *const DynarsReport,
     i: usize,
 ) -> *const c_char {
@@ -331,7 +349,7 @@ pub extern "C" fn dynars_report_finding_rule(
 /// Keyword the finding is about, or NULL if out of range. Valid until the
 /// report is freed.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_finding_keyword(
+pub unsafe extern "C" fn dynars_report_finding_keyword(
     report: *const DynarsReport,
     i: usize,
 ) -> *const c_char {
@@ -341,7 +359,7 @@ pub extern "C" fn dynars_report_finding_keyword(
 /// File the finding is in, or NULL if out of range. Valid until the report is
 /// freed.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_finding_file(
+pub unsafe extern "C" fn dynars_report_finding_file(
     report: *const DynarsReport,
     i: usize,
 ) -> *const c_char {
@@ -351,7 +369,7 @@ pub extern "C" fn dynars_report_finding_file(
 /// Human-readable message for finding `i`, or NULL if out of range. Valid until
 /// the report is freed.
 #[unsafe(no_mangle)]
-pub extern "C" fn dynars_report_finding_message(
+pub unsafe extern "C" fn dynars_report_finding_message(
     report: *const DynarsReport,
     i: usize,
 ) -> *const c_char {
