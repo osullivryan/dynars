@@ -25,47 +25,43 @@ use crate::parser::Field;
 /// Minimum bytes per parallel chunk; below this a block stays one chunk.
 const MIN_CHUNK: usize = 256 * 1024;
 
-/// Split a block body into line-aligned chunks for parallel parsing. Each chunk
-/// holds only whole lines, so concatenating their output preserves file order.
-fn line_chunks(body: &[u8], max_chunks: usize) -> Vec<&[u8]> {
-    if body.is_empty() {
-        return Vec::new();
-    }
-    let n = (body.len() / MIN_CHUNK).clamp(1, max_chunks.max(1));
-    if n <= 1 {
-        return vec![body];
-    }
-    let mut bounds = Vec::with_capacity(n + 1);
-    bounds.push(0usize);
-    for i in 1..n {
-        let target = body.len() * i / n;
-        let cut = match memchr::memchr(b'\n', &body[target..]) {
-            Some(off) => target + off + 1,
-            None => body.len(),
-        };
-        if cut > *bounds.last().unwrap() && cut < body.len() {
-            bounds.push(cut);
-        }
-    }
-    bounds.push(body.len());
-    bounds.windows(2).map(|w| &body[w[0]..w[1]]).collect()
-}
-
 /// Collect line-aligned chunks (with their format) across every block whose
-/// name matches `keyword`, over every file — a single huge block fans out into
-/// many chunks, many small blocks (across the root and its includes) each
-/// contribute one.
+/// name matches `keyword`, over every file, for parallel parsing.
+///
+/// The chunk budget is spread over the *whole* matching dataset, not multiplied
+/// per block: one huge block fans out into ~`cores·2` chunks; many small blocks
+/// (root + includes) each contribute one. (The old per-block split turned a
+/// 256-file deck into thousands of chunks.) Each chunk holds only whole lines,
+/// so per-chunk row counts sum to the total and outputs concatenate in order.
 fn collect_chunks<'a>(files: &'a [ParsedFile], keyword: &str) -> Vec<(&'a [u8], CardFormat)> {
-    let max_chunks = rayon::current_num_threads() * 4;
-    let mut chunks = Vec::new();
+    let mut bodies: Vec<(&[u8], CardFormat)> = Vec::new();
+    let mut total = 0usize;
     for parsed in files {
         for block in &parsed.blocks {
-            if !parsed.keyword_name(block).eq_ignore_ascii_case(keyword) {
-                continue;
+            if parsed.keyword_name(block).eq_ignore_ascii_case(keyword) {
+                let body = parsed.body(block);
+                total += body.len();
+                bodies.push((body, block.format));
             }
-            for c in line_chunks(parsed.body(block), max_chunks) {
-                chunks.push((c, block.format));
+        }
+    }
+    let target = (rayon::current_num_threads() * 2).max(1);
+    let chunk_bytes = total.div_ceil(target).max(MIN_CHUNK);
+
+    let mut chunks = Vec::new();
+    for (body, fmt) in bodies {
+        let mut start = 0;
+        while start < body.len() {
+            let mut end = (start + chunk_bytes).min(body.len());
+            if end < body.len() {
+                // extend to the next newline so lines never split across chunks.
+                match memchr::memchr(b'\n', &body[end..]) {
+                    Some(off) => end += off + 1,
+                    None => end = body.len(),
+                }
             }
+            chunks.push((&body[start..end], fmt));
+            start = end;
         }
     }
     chunks
@@ -581,6 +577,19 @@ fn parse_sequential(files: &[ParsedFile], schema: &Schema) -> Table {
 }
 
 fn parse_parallel(files: &[ParsedFile], schema: &Schema) -> Table {
+    // Numeric single-card keywords (`*NODE`, `*ELEMENT_*`) — the bulk ones — take
+    // the fast two-pass path. A repeating card with a string field falls back to
+    // the general per-chunk-partials path.
+    if schema.cards[0].fields.iter().any(|f| f.ty == FieldType::Str) {
+        parse_parallel_partials(files, schema)
+    } else {
+        parse_parallel_numeric(files, schema)
+    }
+}
+
+/// General parallel parse: each chunk builds partial columns, then they are
+/// concatenated. Used when a column is a `String` (can't be filled in place).
+fn parse_parallel_partials(files: &[ParsedFile], schema: &Schema) -> Table {
     let card = &schema.cards[0];
     let chunks = collect_chunks(files, &schema.keyword);
 
@@ -604,6 +613,144 @@ fn parse_parallel(files: &[ParsedFile], schema: &Schema) -> Table {
             into.extend(from);
         }
     }
+
+    Table {
+        columns: field_names(schema).into_iter().zip(cols).collect(),
+    }
+}
+
+/// Base pointers into the output columns, for disjoint parallel writes.
+///
+/// SAFETY: this is only ever used to write, from each worker, the contiguous row
+/// range this worker owns (its prefix-sum offset for a length equal to its own
+/// row count). Those ranges partition the columns exactly, so no two workers
+/// ever touch the same slot — the aliasing is disjoint and the raw writes are
+/// sound. `i64`/`f64` are plain data with no invalid bit patterns, and every
+/// slot is written before the `Table` is read (see `parse_parallel_numeric`).
+struct ColPtrs(Vec<ColPtr>);
+enum ColPtr {
+    Int(*mut i64),
+    Float(*mut f64),
+}
+// Disjoint parallel writes only (see the type doc). Impl on `ColPtr` too, since
+// disjoint closure capture borrows the inner `Vec<ColPtr>`, not the wrapper.
+unsafe impl Send for ColPtr {}
+unsafe impl Sync for ColPtr {}
+unsafe impl Send for ColPtrs {}
+unsafe impl Sync for ColPtrs {}
+
+#[inline]
+fn write_num(col: &ColPtr, index: usize, raw: &[u8]) {
+    match *col {
+        ColPtr::Int(p) => unsafe { *p.add(index) = Field { raw }.as_i64().unwrap_or(0) },
+        ColPtr::Float(p) => unsafe { *p.add(index) = Field { raw }.as_f64().unwrap_or(0.0) },
+    }
+}
+
+/// Fast columnar parse for all-numeric single-card keywords. Two passes: count
+/// rows per chunk to get each chunk's output offset, allocate the columns once,
+/// then parse each chunk directly into its row range in parallel — no per-chunk
+/// partial buffers and no final merge copy (both were the bottleneck on
+/// GB-scale meshes).
+// SAFETY (uninit_vec): the columns are allocated with `set_len` and left
+// uninitialized, then pass 2 writes *every* slot (each data row writes one value
+// per field across all columns, and the per-chunk row counts partition the rows
+// exactly) before the `Table` is returned or read. `i64`/`f64` have no invalid
+// bit patterns and no `Drop`, so even a panic mid-fill can't cause UB. Zeroing
+// first would cost a full extra pass over gigabytes — the whole point is to touch
+// the memory once.
+#[allow(clippy::uninit_vec)]
+fn parse_parallel_numeric(files: &[ParsedFile], schema: &Schema) -> Table {
+    let card = &schema.cards[0];
+    let chunks = collect_chunks(files, &schema.keyword);
+
+    // Pass 1: rows (non-skippable lines) per chunk → prefix-sum offsets. Must
+    // agree exactly with the line iteration in pass 2, or offsets would drift.
+    let counts: Vec<usize> = chunks
+        .par_iter()
+        .map(|(bytes, _)| bytes.split(|&b| b == b'\n').filter(|l| !is_skippable(l)).count())
+        .collect();
+    let mut offsets = Vec::with_capacity(chunks.len());
+    let mut total_rows = 0usize;
+    for &c in &counts {
+        offsets.push(total_rows);
+        total_rows += c;
+    }
+
+    // Allocate each column once, exactly sized. `set_len` leaves the buffer
+    // uninitialized; pass 2 writes every slot (each row writes one value per
+    // field across all columns), so nothing is read before it is written.
+    let mut cols: Vec<Column> = card
+        .fields
+        .iter()
+        .map(|f| {
+            let len = total_rows * f.count;
+            match f.ty {
+                FieldType::Int => {
+                    let mut data = Vec::<i64>::with_capacity(len);
+                    unsafe { data.set_len(len) };
+                    Column::Int { data, ncols: f.count }
+                }
+                // Str excluded by the caller.
+                _ => {
+                    let mut data = Vec::<f64>::with_capacity(len);
+                    unsafe { data.set_len(len) };
+                    Column::Float { data, ncols: f.count }
+                }
+            }
+        })
+        .collect();
+
+    // Pass 2: parse each chunk straight into its disjoint row range.
+    let ptrs = ColPtrs(
+        cols.iter_mut()
+            .map(|c| match c {
+                Column::Int { data, .. } => ColPtr::Int(data.as_mut_ptr()),
+                Column::Float { data, .. } => ColPtr::Float(data.as_mut_ptr()),
+                Column::Str { .. } => unreachable!(),
+            })
+            .collect(),
+    );
+    let counts_of = |i: usize| card.fields[i].count;
+    chunks
+        .par_iter()
+        .zip(offsets.par_iter())
+        .for_each(|((bytes, format), &off)| {
+            let mut row = off;
+            for line in bytes.split(|&b| b == b'\n') {
+                if is_skippable(line) {
+                    continue;
+                }
+                let line = strip_eol(line);
+                let free = *format == CardFormat::Free || memchr::memchr(b',', line).is_some();
+                if free {
+                    let mut toks = line.split(|&c| c == b',');
+                    for (fi, f) in card.fields.iter().enumerate() {
+                        let base = row * counts_of(fi);
+                        for j in 0..f.count {
+                            write_num(&ptrs.0[fi], base + j, toks.next().unwrap_or(&[]));
+                        }
+                    }
+                } else {
+                    let mut o = 0;
+                    for (fi, f) in card.fields.iter().enumerate() {
+                        let fw = if *format == CardFormat::Long { f.width * 2 } else { f.width };
+                        let base = row * counts_of(fi);
+                        for j in 0..f.count {
+                            let slice = if o >= line.len() {
+                                &[][..]
+                            } else {
+                                &line[o..(o + fw).min(line.len())]
+                            };
+                            write_num(&ptrs.0[fi], base + j, slice);
+                            o += fw;
+                        }
+                    }
+                }
+                row += 1;
+            }
+        });
+    drop(ptrs);
 
     Table {
         columns: field_names(schema).into_iter().zip(cols).collect(),

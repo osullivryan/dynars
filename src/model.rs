@@ -83,6 +83,26 @@ fn title_offset(exact_kw: &str) -> usize {
     usize::from(exact_kw.to_ascii_uppercase().ends_with("_TITLE"))
 }
 
+/// The 1-based line number of every block's `*KEYWORD` line, computed in a
+/// single pass over the file. Blocks tile the source in order, so one cursor
+/// walk counts each newline exactly once — replacing a per-block
+/// scan-from-file-start that was O(blocks²) on decks with many small
+/// reference-bearing keywords (tens of thousands of `*BOUNDARY_*` / `*LOAD_*` /
+/// set cards). Built lazily by the reference check, only when a file actually
+/// has a finding-eligible block.
+fn block_start_lines(file: &ParsedFile) -> Vec<usize> {
+    let src = file.src();
+    let mut out = Vec::with_capacity(file.blocks.len());
+    let mut pos = 0usize;
+    let mut line = 1usize;
+    for b in &file.blocks {
+        line += memchr::memchr_iter(b'\n', &src[pos..b.name_start]).count();
+        out.push(line);
+        pos = b.name_start;
+    }
+    out
+}
+
 /// Read the id offsets off an `*INCLUDE_TRANSFORM` block, using the keyword
 /// table's own field widths (`IDNOFF … IDDOFF` on card 1, `IDROFF` on card 2 —
 /// all `I10`). Called from the parser as it records each directive; a malformed
@@ -489,12 +509,16 @@ fn check_refs(
     transform: Option<&TransformOffsets>,
 ) -> Vec<Dangling> {
     let mut out = Vec::new();
-    for block in &file.blocks {
+    // 1-based `*KEYWORD` line for each block, built once on first use (O(bytes))
+    // and indexed O(1) thereafter — see `block_start_lines`.
+    let mut block_lines: Option<Vec<usize>> = None;
+    for (bi, block) in file.blocks.iter().enumerate() {
         let exact = file.keyword_name(block);
         let base = canonical_base(exact);
         // A registered user schema wins — check the references it declares.
         if let Some(schema) = user_schemas.get(&base) {
-            check_refs_user(file, block, &base, schema, defs, transform, &mut out);
+            let line0 = block_lines.get_or_insert_with(|| block_start_lines(file))[bi];
+            check_refs_user(file, block, schema, defs, transform, line0, &mut out);
             continue;
         }
         let Some(kw) = keywords::find(&base) else {
@@ -517,13 +541,9 @@ fn check_refs(
 
         let lines = data_lines(file, block);
         let title = title_offset(exact);
-        // Line of the block's `*KEYWORD`, counted once — not per finding. (A
-        // deck riddled with dangling refs is exactly when this closure fires
-        // most, so recounting newlines from file start each time was quadratic.)
-        let block_line0 = 1 + file.src()[..block.name_start]
-            .iter()
-            .filter(|&&b| b == b'\n')
-            .count();
+        // Line of the block's `*KEYWORD` — from the file's precomputed table, so
+        // it's O(1) here rather than a fresh scan-from-start per block.
+        let block_line0 = block_lines.get_or_insert_with(|| block_start_lines(file))[bi];
         let line_no = |ln: usize| block_line0 + ln;
 
         if per_line {
@@ -616,10 +636,10 @@ fn check_refs(
 fn check_refs_user(
     file: &ParsedFile,
     block: &Block,
-    base: &str,
     schema: &Schema,
     defs: &Defs,
     transform: Option<&TransformOffsets>,
+    block_line0: usize,
     out: &mut Vec<Dangling>,
 ) {
     if schema
@@ -631,13 +651,11 @@ fn check_refs_user(
         return; // no references declared
     }
     let exact = file.keyword_name(block);
+    let base = canonical_base(exact);
     let title = title_offset(exact);
     let lines = data_lines(file, block);
-    // Counted once per block, not per finding (see `check_refs`).
-    let block_line0 = 1 + file.src()[..block.name_start]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count();
+    // `block_line0` (the `*KEYWORD` line) is supplied by the caller from its
+    // one-pass table — no per-block scan-from-start here either.
     let line_no = |ln: usize| block_line0 + ln;
 
     for (row, line) in lines.iter().enumerate().skip(title) {

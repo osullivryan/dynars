@@ -453,6 +453,46 @@ memory bandwidth.
 Cold decks larger than RAM are limited by disk bandwidth (~2 GB/s sustained
 NVMe), not CPU — the scanner is ~7× faster than the disk can deliver bytes.
 
+### Scaling
+
+Every pipeline stage is linear in deck size and parallel across include files.
+The figure below sweeps deck size (number of keywords) for three include layouts
+— one **monolithic** file, a wide **flat** tree (256 leaf files), and a wide +
+**deep** tree (216 leaves, 3 levels) — timing each stage. Shared log-log axes, so
+panels are directly comparable.
+
+![time per stage vs deck size, per include layout](assets/perf_overview.png)
+
+Reading it (top point: a 5 M-keyword, ~1.1 GB deck — 5 M nodes + 5 M shells + 5 M
+constraints):
+
+- **Linear everywhere** — straight lines on log-log across ~1.6 decades.
+- **File parallelism is the big lever.** Spreading a deck over include files fans
+  the work across cores: the reference + connectivity check drops
+  **1.39 s → 0.23 s** (1 file → 256), the reference check **0.99 s → 0.16 s**,
+  reading the deck **160 ms → 46 ms**.
+- **Include depth is nearly free** — the flat and 3-deep trees track each other,
+  so a deep include hierarchy costs almost nothing.
+- **The field-value check is the one sequential stage** — a single keyword's
+  occurrences are scanned in order, so it doesn't gain from more files.
+
+**Extracting `*NODE` data into typed arrays** (the columnar path behind
+`deck.table("NODE")` / numpy) is its own curve — it scales with node count, and a
+two-pass parallel fill (count rows → allocate once → parse straight into disjoint
+ranges, no per-chunk merge) puts **100 M nodes under a second** and holds ~110 M
+nodes/s until the columns hit this box's 16 GB RAM ceiling (~140 M).
+
+![*NODE marshalling throughput vs node count](assets/perf_marshal.png)
+
+Regenerate (measurement and plotting are split, so figures re-render from the
+committed CSVs without re-running the sweeps):
+
+```bash
+cargo run --release --example bench_scaling   # per-stage → assets/bench_scaling.csv
+cargo run --release --example marshal_bench   # *NODE extraction → assets/bench_marshal.csv
+python scripts/plot_bench.py                  # CSVs → assets/perf_*.png
+```
+
 ## Development
 
 ```bash
