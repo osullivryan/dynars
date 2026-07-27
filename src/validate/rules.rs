@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::keywords::{self, canonical_base};
+use crate::keywords::{self, EntityKind, canonical_base};
 
 use super::expr::{Cmp, Expr};
 use super::report::{FileScope, Finding, Severity};
@@ -178,6 +178,170 @@ impl Check for ReferencesResolve {
     }
 }
 
+/// No two per-block definition entities of the same kind may share an id.
+struct DuplicateIds;
+impl Check for DuplicateIds {
+    fn name(&self) -> String {
+        "duplicate_ids".to_string()
+    }
+    fn run(&self, deck: &Deck) -> Vec<Finding> {
+        let mut out = Vec::new();
+        for dup in deck.duplicate_definitions() {
+            let n = dup.sites.len();
+            // Flag every colliding definition, so each is a clickable location.
+            for &(fi, bi) in &dup.sites {
+                let file = &deck.files[fi];
+                let block = &file.blocks[bi];
+                out.push(Finding {
+                    rule: self.name(),
+                    severity: Severity::Error,
+                    keyword: canonical_base(file.keyword_name(block)),
+                    file: file.path.clone(),
+                    line: crate::schema::block_line(file, block),
+                    message: format!(
+                        "duplicate {:?} id {} — defined by {n} keywords in the deck",
+                        dup.kind, dup.id
+                    ),
+                });
+            }
+        }
+        out
+    }
+}
+
+/// The "library" definition kinds — entities other cards point at — for which
+/// "defined but unused" is a meaningful warning. Excludes nodes/elements (a mesh
+/// concern) and parts (referenced by element connectivity, which this check does
+/// not scan).
+const UNREFERENCED_KINDS: &[EntityKind] = &[
+    EntityKind::Material,
+    EntityKind::ThermalMaterial,
+    EntityKind::Section,
+    EntityKind::Eos,
+    EntityKind::Hourglass,
+    EntityKind::Curve,
+    EntityKind::Coord,
+    EntityKind::Vector,
+    EntityKind::Box,
+    EntityKind::Transform,
+    EntityKind::NodeSet,
+    EntityKind::PartSet,
+    EntityKind::SegmentSet,
+    EntityKind::ShellSet,
+    EntityKind::SolidSet,
+    EntityKind::BeamSet,
+    EntityKind::DiscreteSet,
+    EntityKind::Sensor,
+    EntityKind::Define,
+];
+
+/// A library definition entity that nothing in the deck references — a dead
+/// definition. Reported per kind in `kinds`.
+struct UnreferencedEntities {
+    kinds: Vec<EntityKind>,
+}
+impl Check for UnreferencedEntities {
+    fn name(&self) -> String {
+        "unreferenced_entities".to_string()
+    }
+    fn run(&self, deck: &Deck) -> Vec<Finding> {
+        let referenced = deck.referenced_ids();
+        let mut out = Vec::new();
+        for &kind in &self.kinds {
+            let used = referenced.get(&kind);
+            for kw in deck.entities(kind) {
+                let Some(id) = kw.id() else {
+                    continue;
+                };
+                if used.is_some_and(|s| s.contains(&id)) {
+                    continue;
+                }
+                out.push(Finding {
+                    rule: self.name(),
+                    severity: Severity::Warning,
+                    keyword: canonical_base(kw.name()),
+                    file: kw.file().to_path_buf(),
+                    line: kw.line(),
+                    message: format!("{kind:?} {id} is defined but never referenced"),
+                });
+            }
+        }
+        out
+    }
+}
+
+/// Keywords that act on a *rigid body*, paired with the part-id field(s) that
+/// must therefore reference a `*MAT_RIGID` part. Chosen to be unambiguous — each
+/// entry's field is a part the solver treats as rigid, so a deformable target is
+/// a genuine modelling error, not a style choice.
+const RIGID_CONTEXT: &[(&str, &[&str])] = &[
+    ("LOAD_RIGID_BODY", &["PID"]),
+    ("CONSTRAINED_RIGID_BODIES", &["PIDL", "PIDC"]),
+    ("CONSTRAINED_EXTRA_NODES_NODE", &["PID"]),
+    ("CONSTRAINED_EXTRA_NODES_SET", &["PID"]),
+    ("CONSTRAINED_RIGID_BODY_STOPPERS", &["PID"]),
+    ("BOUNDARY_PRESCRIBED_MOTION_RIGID", &["PID"]),
+];
+
+/// Whether a material keyword's canonical base denotes `*MAT_RIGID` — LS-DYNA
+/// material 20, writable as `*MAT_RIGID` or `*MAT_020` (some decks drop the pad).
+fn is_rigid_material(base: &str) -> bool {
+    matches!(base, "MAT_RIGID" | "MAT_020" | "MAT_20")
+}
+
+/// Keywords that act on a rigid body must reference a part whose material is
+/// `*MAT_RIGID` (e.g. `*LOAD_RIGID_BODY`, `*CONSTRAINED_RIGID_BODIES`). Flags a
+/// reference to a part that resolves to a *deformable* material.
+struct RigidContext;
+impl Check for RigidContext {
+    fn name(&self) -> String {
+        "rigid_context".to_string()
+    }
+    fn run(&self, deck: &Deck) -> Vec<Finding> {
+        let mut out = Vec::new();
+        for &(keyword, fields) in RIGID_CONTEXT {
+            for kw in deck.keywords(keyword) {
+                let transform = kw.transform();
+                let base = canonical_base(kw.name());
+                for &field in fields {
+                    let Some(pid_raw) = kw.field(field).and_then(|f| f.as_i64()) else {
+                        continue;
+                    };
+                    if pid_raw == 0 {
+                        continue;
+                    }
+                    // The part id is written in this occurrence's file namespace;
+                    // shift it into the global one before resolving.
+                    let pid = transform.map_or(pid_raw, |t| t.apply(pid_raw, EntityKind::Part));
+                    // Only flag a *resolved* part whose material is positively
+                    // non-rigid. An unresolved part or material is a dangling
+                    // reference, reported by `references_resolve`, not here.
+                    let Some(part) = deck.part(pid) else {
+                        continue;
+                    };
+                    let Some(mat) = part.material() else {
+                        continue;
+                    };
+                    let mat_base = canonical_base(mat.name());
+                    if !is_rigid_material(&mat_base) {
+                        out.push(Finding {
+                            rule: self.name(),
+                            severity: Severity::Error,
+                            keyword: base.clone(),
+                            file: kw.file().to_path_buf(),
+                            line: kw.line(),
+                            message: format!(
+                                "{base}.{field} references part {pid}, whose material *{mat_base} is not *MAT_RIGID"
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 /// A [`Check`] plus a severity and file scope layered over its findings. This
 /// is the one currency validation deals in: every built-in is constructed here,
 /// and any custom [`Check`] becomes one via [`Rule::custom`]. Cheap to clone —
@@ -249,6 +413,47 @@ impl Rule {
     /// Heavy on large meshes (millions of element→node references).
     pub fn references_resolve_with_connectivity() -> Rule {
         Rule::wrap(ReferencesResolve { connectivity: true })
+    }
+
+    /// No two labelled definition entities of the same kind share an id (two
+    /// `*PART` pid=5, duplicate `*MAT`/`*SET`/`*SECTION`/`*DEFINE_CURVE` ids, …)
+    /// — an id collision LS-DYNA rejects for several entity types. Compared on
+    /// *logical* ids, so the same id reused across two `*INCLUDE_TRANSFORM`
+    /// instances is not a collision. Nodes/elements are out of scope (a mesh
+    /// concern).
+    pub fn duplicate_ids() -> Rule {
+        Rule::wrap(DuplicateIds)
+    }
+
+    /// Library definition entities that nothing references — dead `*MAT`,
+    /// `*SECTION`, `*DEFINE_CURVE`, `*SET`, `*DEFINE_COORDINATE`, … (the "unused
+    /// X" warnings other checkers report). Reports at [`Severity::Warning`].
+    /// Reference scanning uses the built-in schema and skips element/node
+    /// connectivity, so an entity reached only through a user-schema keyword or
+    /// a globally-applied control card may show as unreferenced.
+    pub fn unreferenced_entities() -> Rule {
+        Rule::wrap(UnreferencedEntities {
+            kinds: UNREFERENCED_KINDS.to_vec(),
+        })
+    }
+
+    /// As [`unreferenced_entities`](Rule::unreferenced_entities), but only for the
+    /// entity kinds you name — e.g. just unused `*DEFINE_CURVE`s.
+    pub fn unreferenced_entities_of(kinds: impl IntoIterator<Item = EntityKind>) -> Rule {
+        Rule::wrap(UnreferencedEntities {
+            kinds: kinds.into_iter().collect(),
+        })
+    }
+
+    /// Rigid-body keywords must target a rigid part: `*LOAD_RIGID_BODY`,
+    /// `*CONSTRAINED_RIGID_BODIES`, `*CONSTRAINED_EXTRA_NODES`,
+    /// `*CONSTRAINED_RIGID_BODY_STOPPERS`, and `*BOUNDARY_PRESCRIBED_MOTION_RIGID`
+    /// each name a part that the solver treats as rigid — this flags one that
+    /// resolves to a *deformable* (`*MAT`-other-than-020) material. Parts that
+    /// don't resolve at all are left to
+    /// [`references_resolve`](Rule::references_resolve).
+    pub fn rigid_context() -> Rule {
+        Rule::wrap(RigidContext)
     }
 
     /// Override the severity of every finding this rule produces (built-ins

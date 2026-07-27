@@ -404,6 +404,15 @@ class Rule:
     @staticmethod
     def references_resolve_with_connectivity() -> Rule:
         """As `references_resolve`, and additionally checks every element's nodes are defined. Heavy on large meshes."""
+    @staticmethod
+    def duplicate_ids() -> Rule:
+        """No two labelled definition entities of the same kind share an id (two *PART pid=5, duplicate *MAT/*SET/*SECTION ids, ...). Compared on logical ids, so *INCLUDE_TRANSFORM instances don't collide."""
+    @staticmethod
+    def unreferenced_entities() -> Rule:
+        """Library definition entities nothing references — dead *MAT, *SECTION, *DEFINE_CURVE, *SET, *DEFINE_COORDINATE, ... Reports at Warning severity."""
+    @staticmethod
+    def rigid_context() -> Rule:
+        """Rigid-body keywords (*LOAD_RIGID_BODY, *CONSTRAINED_RIGID_BODIES, *BOUNDARY_PRESCRIBED_MOTION_RIGID, ...) must target a *MAT_RIGID part; flags a reference to a deformable part."""
     def with_severity(self, severity: Severity) -> Rule: ...
     def only_in(self, patterns: Sequence[str]) -> Rule: ...
     def except_in(self, patterns: Sequence[str]) -> Rule: ...

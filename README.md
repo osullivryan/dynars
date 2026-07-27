@@ -140,6 +140,8 @@ deck = dynars.parse_deck("root.k")
 
 report = deck.validate([
     Rule.references_resolve(),                                # every id reference resolves
+    Rule.duplicate_ids(),                                     # no two entities share an id
+    Rule.unreferenced_entities(),                             # dead *MAT/*SET/*DEFINE_CURVE/... (warns)
     Rule.field_forbidden_values("MAT_ELASTIC", "PR", [0.5]),  # PR may not be 0.5
     Rule.field_required(                                      # if ELFORM==2, NIP must be > 0
         "SECTION_SHELL",
@@ -156,6 +158,11 @@ for f in report.findings:
 
 Built-in rules: `references_resolve()` / `references_resolve_with_connectivity()`
 (the latter also checks every element's nodes exist — heavy on big meshes),
+`duplicate_ids()` (two entities of the same kind claiming one id — logical, so
+`*INCLUDE_TRANSFORM` instances don't collide), `unreferenced_entities()` (dead
+library definitions — unused `*MAT`/`*SECTION`/`*DEFINE_CURVE`/`*SET`/…, at
+`Warning`), `rigid_context()` (rigid-body keywords like `*LOAD_RIGID_BODY` /
+`*CONSTRAINED_RIGID_BODIES` must target a `*MAT_RIGID` part),
 `field_forbidden_values`, `field_required`, `keyword_forbidden`,
 `include_missing`. Every rule takes `.only_in([...])` / `.except_in([...])` file
 scopes and `.with_severity(Severity.Warning)`; compose predicates with

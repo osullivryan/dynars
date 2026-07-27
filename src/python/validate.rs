@@ -140,6 +140,32 @@ impl PyRule {
             inner: validate::Rule::references_resolve_with_connectivity(),
         }
     }
+    /// No two labelled definition entities of the same kind share an id (two
+    /// *PART pid=5, duplicate *MAT/*SET/*SECTION/*DEFINE_CURVE ids, …). Compared
+    /// on logical ids, so *INCLUDE_TRANSFORM instances don't collide.
+    #[staticmethod]
+    fn duplicate_ids() -> Self {
+        Self {
+            inner: validate::Rule::duplicate_ids(),
+        }
+    }
+    /// Library definition entities nothing references — dead *MAT, *SECTION,
+    /// *DEFINE_CURVE, *SET, *DEFINE_COORDINATE, … Reports at Warning severity.
+    #[staticmethod]
+    fn unreferenced_entities() -> Self {
+        Self {
+            inner: validate::Rule::unreferenced_entities(),
+        }
+    }
+    /// Rigid-body keywords (*LOAD_RIGID_BODY, *CONSTRAINED_RIGID_BODIES,
+    /// *CONSTRAINED_EXTRA_NODES, *BOUNDARY_PRESCRIBED_MOTION_RIGID, …) must
+    /// target a *MAT_RIGID part; flags a reference to a deformable part.
+    #[staticmethod]
+    fn rigid_context() -> Self {
+        Self {
+            inner: validate::Rule::rigid_context(),
+        }
+    }
     /// Set severity (default Error).
     fn with_severity(&self, severity: validate::Severity) -> Self {
         Self {

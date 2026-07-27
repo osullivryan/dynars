@@ -768,6 +768,119 @@ pub(crate) fn site_of(sites: &Sites, kind: EntityKind, id: i64) -> Option<(usize
         .copied()
 }
 
+/// A definition entity id claimed by more than one block — an id collision.
+pub(crate) struct DuplicateDef {
+    pub kind: EntityKind,
+    /// The logical (post-`*INCLUDE_TRANSFORM`) id defined more than once.
+    pub id: i64,
+    /// Every block that defines it, `(file, block)`, in deck order.
+    pub sites: Vec<(usize, usize)>,
+}
+
+impl Deck {
+    /// Per-block definition entities (parts, materials, sections, sets, curves,
+    /// …) whose `(kind, logical id)` is claimed by more than one block. Ids are
+    /// compared *logical* (post-transform), so the same id reused across two
+    /// `*INCLUDE_TRANSFORM` instances at different offsets is **not** a collision.
+    ///
+    /// Per-line entities (nodes, elements) are out of scope here — a duplicate
+    /// node/element id is better surfaced by a mesh-oriented check that also
+    /// catches coincident geometry; this walks the labelled, block-level id space
+    /// where numbering collisions actually bite (LS-DYNA rejects some outright).
+    pub(crate) fn duplicate_definitions(&self) -> Vec<DuplicateDef> {
+        let transforms = self.file_transforms();
+        let mut by_id: HashMap<(EntityKind, i64), Vec<(usize, usize)>> = HashMap::new();
+        for (fi, file) in self.files.iter().enumerate() {
+            let transform = transforms[fi].as_ref();
+            for (bi, block) in file.blocks.iter().enumerate() {
+                let exact = file.keyword_name(block);
+                let base = canonical_base(exact);
+                let Some(def) = keywords::definition_of(&base) else {
+                    continue;
+                };
+                if def.per_line {
+                    continue;
+                }
+                let Some(kw) = keywords::find(&base) else {
+                    continue;
+                };
+                let id_card = kw.cards.get(def.id_card).copied().unwrap_or(&[]);
+                let title = title_offset(exact);
+                let lines = data_lines(file, block);
+                if let Some(line) = lines.get(title + def.id_card)
+                    && let Some(id) = card_field_i64(line, id_card, 0, block.format)
+                    && id != 0
+                {
+                    let id = transform.map_or(id, |t| t.apply(id, def.kind));
+                    by_id.entry((def.kind, id)).or_default().push((fi, bi));
+                }
+            }
+        }
+        let mut dups: Vec<DuplicateDef> = by_id
+            .into_iter()
+            .filter(|(_, sites)| sites.len() > 1)
+            .map(|((kind, id), sites)| DuplicateDef { kind, id, sites })
+            .collect();
+        // Deterministic: order by first defining site, then kind, then id.
+        dups.sort_by(|a, b| {
+            (a.sites[0], a.kind as usize, a.id).cmp(&(b.sites[0], b.kind as usize, b.id))
+        });
+        dups
+    }
+
+    /// The logical ids referenced by any built-in schema `Ref` field, grouped by
+    /// the kind they point at. Ids are shifted into the deck's global namespace
+    /// (the same `apply` the dangling check uses) and stored by magnitude (the
+    /// `|id|` convention), so a reference resolves regardless of sign or offset.
+    ///
+    /// The mesh-scale per-line blocks (`*ELEMENT_*`, `*NODE`) are skipped: their
+    /// only references are node/part connectivity, which doesn't bear on whether
+    /// a *library* entity (material, curve, set, …) is used — and walking them
+    /// would be O(mesh). User-schema references are not consulted here.
+    pub(crate) fn referenced_ids(&self) -> HashMap<EntityKind, HashSet<i64>> {
+        let transforms = self.file_transforms();
+        let mut refs: HashMap<EntityKind, HashSet<i64>> = HashMap::new();
+        for (fi, file) in self.files.iter().enumerate() {
+            let transform = transforms[fi].as_ref();
+            for block in &file.blocks {
+                let exact = file.keyword_name(block);
+                let base = canonical_base(exact);
+                if keywords::definition_of(&base).is_some_and(|d| d.per_line) {
+                    continue;
+                }
+                let Some(kw) = keywords::find(&base) else {
+                    continue;
+                };
+                let title = title_offset(exact);
+                let lines = data_lines(file, block);
+                for (ci, card) in kw.cards.iter().enumerate() {
+                    let Some(line) = lines.get(title + ci) else {
+                        break;
+                    };
+                    for (idx, f) in card.iter().enumerate() {
+                        let kinds: &[EntityKind] = match &f.r {
+                            Ref::None => continue,
+                            Ref::To(k) => std::slice::from_ref(k),
+                            Ref::AnyOf(ks) => ks,
+                        };
+                        let Some(v) = card_field_i64(line, card, idx, block.format) else {
+                            continue;
+                        };
+                        if v == 0 {
+                            continue;
+                        }
+                        for k in kinds {
+                            let logical = transform.map_or(v, |t| t.apply(v, *k)).abs();
+                            refs.entry(*k).or_default().insert(logical);
+                        }
+                    }
+                }
+            }
+        }
+        refs
+    }
+}
+
 /// Read a field by name (case-insensitive) from a specific block, typed.
 pub(crate) fn entity_field(deck: &Deck, file: usize, block: usize, name: &str) -> Option<Value> {
     let f = &deck.files[file];
