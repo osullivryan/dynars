@@ -132,9 +132,123 @@ fn navigation_resolves_ids_in_the_global_namespace() {
 }
 
 #[test]
+fn part_set_shifts_by_idsoff_not_idpoff() {
+    // Regression: a *SET_PART id is a *SET id, so it shifts by IDSOFF — not
+    // IDPOFF (which only moves *PART ids). With IDPOFF=100 and IDSOFF=500, the
+    // include's part-set 1 must land at global 501, never 101.
+    let dir = std::env::temp_dir().join("dynars_it_partset");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("mesh.k"), "*KEYWORD\n*SET_PART_LIST\n1\n*END\n").unwrap();
+    let root = dir.join("root.k");
+    fs::write(
+        &root,
+        format!(
+            "*KEYWORD\n*INCLUDE_TRANSFORM\nmesh.k\n\
+             {:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}\n{:>10}\n*END\n",
+            0, 0, 100, 0, 500, 0, 0, 0
+        ),
+    )
+    .unwrap();
+
+    let deck = parse_deck(&root).unwrap();
+    assert!(
+        deck.get(EntityKind::PartSet, 501).is_some(),
+        "part set shifts by IDSOFF (500)"
+    );
+    assert!(
+        deck.get(EntityKind::PartSet, 101).is_none(),
+        "part set must NOT shift by IDPOFF (100)"
+    );
+    assert!(
+        deck.get(EntityKind::PartSet, 1).is_none(),
+        "raw id must not resolve"
+    );
+}
+
+#[test]
 fn plain_include_keeps_raw_ids() {
     // Control: a plain *INCLUDE applies no shift, so the raw id 1 resolves and
     // the offset id 1_000_001 is the one that dangles — the exact opposite.
     let (_dir, root) = write_deck("plain", "*INCLUDE\nmesh.k\n", 1_000_001, 1);
     assert_eq!(dangling_node_ids(&root), vec![1_000_001]);
+}
+
+/// One `*INCLUDE_TRANSFORM mesh.k` block shifting nodes by `idnoff`.
+fn xform_block(idnoff: i64) -> String {
+    format!(
+        "*INCLUDE_TRANSFORM\nmesh.k\n\
+         {:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}\n{:>10}\n",
+        idnoff, 0, 0, 0, 0, 0, 0, 0
+    )
+}
+
+#[test]
+fn same_mesh_instanced_at_two_offsets_registers_both() {
+    // The instancing idiom: pull the *same* mesh in twice at different offsets
+    // to get two copies in disjoint id ranges. mesh nodes 1..3 become 1001..1003
+    // (idnoff=1000) and 2001..2003 (idnoff=2000). References into *both*
+    // instances must resolve; only a truly absent id dangles.
+    let dir = std::env::temp_dir().join("dynars_it_instance");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("mesh.k"),
+        "*NODE\n1,0.0,0.0,0.0\n2,1.0,0.0,0.0\n3,2.0,0.0,0.0\n",
+    )
+    .unwrap();
+    let root = dir.join("root.k");
+    fs::write(
+        &root,
+        format!(
+            "*KEYWORD\n\
+             *BOUNDARY_SPC_NODE\n1003,0,1,1,1,0,0,0\n\
+             *BOUNDARY_SPC_NODE\n2003,0,1,1,1,0,0,0\n\
+             *BOUNDARY_SPC_NODE\n9999,0,1,1,1,0,0,0\n\
+             {}{}*END\n",
+            xform_block(1000),
+            xform_block(2000),
+        ),
+    )
+    .unwrap();
+
+    let deck = parse_deck(&root).unwrap();
+    // The mesh is instanced, so it appears twice: root + two mesh instances.
+    assert_eq!(deck.files.len(), 3, "mesh instanced as two distinct files");
+    // Both instances register their nodes, so references into either namespace
+    // resolve; only the truly-absent id dangles. (Nodes are per-line defs, so
+    // they resolve through the dangling check, not the block-entity site map.)
+    assert_eq!(dangling_node_ids(&root), vec![9999]);
+}
+
+#[test]
+fn identical_includes_are_deduped() {
+    // The same file pulled in twice with the *same* effective offsets (here,
+    // two plain includes) is one file — no pointless re-read, no doubled ids.
+    let (_dir, root) = write_deck("dedup", "*INCLUDE\nmesh.k\n*INCLUDE\nmesh.k\n", 3, 1);
+    let deck = parse_deck(&root).unwrap();
+    assert_eq!(deck.files.len(), 2, "root + one shared mesh");
+}
+
+#[test]
+fn transform_cycle_terminates() {
+    // a.k --INCLUDE_TRANSFORM--> b.k --INCLUDE_TRANSFORM--> a.k. Each hop adds an
+    // offset, so (path, effective-transform) keys never repeat; only the
+    // ancestor-chain cycle guard stops it. Must return, not spin forever.
+    let dir = std::env::temp_dir().join("dynars_it_cycle");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let block = |target: &str| {
+        format!(
+            "*KEYWORD\n*INCLUDE_TRANSFORM\n{target}\n\
+             {:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}\n{:>10}\n*END\n",
+            100, 0, 0, 0, 0, 0, 0, 0
+        )
+    };
+    fs::write(dir.join("a.k"), block("b.k")).unwrap();
+    fs::write(dir.join("b.k"), block("a.k")).unwrap();
+
+    let deck = parse_deck(&dir.join("a.k")).unwrap();
+    // a (root) and b — the back-edge b→a is pruned as a cycle.
+    assert_eq!(deck.files.len(), 2);
 }

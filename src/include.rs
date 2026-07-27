@@ -92,6 +92,12 @@ pub struct GraphNode<T> {
     /// Node indices of the child files actually visited — existing file
     /// includes, de-duplicated — in declaration order.
     pub children: Vec<usize>,
+    /// This file's effective `*INCLUDE_TRANSFORM` offsets: the composition of
+    /// every transform on its include path from the root ([`TransformOffsets::
+    /// IDENTITY`] for the root, plain includes, and the byte-count walk, which
+    /// carries no offsets). The dedup key pairs this with the path, so the same
+    /// file instanced at two different offsets yields two nodes.
+    pub transform: crate::keywords::TransformOffsets,
     pub payload: T,
 }
 
@@ -101,18 +107,26 @@ pub struct Parsed<T> {
     pub payload: T,
 }
 
-/// Walk the `*INCLUDE` graph from `root`, once per unique file, and return every
-/// visited file as a flat node list — index 0 is the root, `children` are node
-/// indices, nodes are in deterministic BFS order.
+/// Walk the `*INCLUDE` graph from `root` and return every visited file as a flat
+/// node list — index 0 is the root, `children` are node indices, nodes are in
+/// deterministic BFS order.
 ///
 /// The single traversal both consumers share (the byte-count tree builder and
 /// the block-parsing [`parse_deck`](crate::deck::parse_deck)); the caller
 /// supplies only how to parse one file. The walker owns everything they used to
 /// duplicate: parsing each generation in parallel, propagating a file's own
-/// `*INCLUDE_PATH[_RELATIVE]` to its descendants, resolving/de-duplicating by
-/// canonical path, and skipping includes whose target is missing (recorded in
-/// `includes` for the caller to flag, but never traversed — so a missing file
-/// can't derail the walk).
+/// `*INCLUDE_PATH[_RELATIVE]` to its descendants, resolving includes, and
+/// skipping ones whose target is missing (recorded in `includes` for the caller
+/// to flag, but never traversed — so a missing file can't derail the walk).
+///
+/// De-duplication is by `(canonical path, effective transform)`, not path
+/// alone: a file pulled in twice with the *same* effective offsets is visited
+/// once (the diamond case — same ids, nothing gained by re-reading), but the
+/// same file `*INCLUDE_TRANSFORM`'d at two *different* offsets is visited once
+/// per distinct offset (the instancing idiom — genuinely different id
+/// namespaces). A separate ancestor-chain guard stops true cycles (a file
+/// including itself, directly or transitively) regardless of offsets, so an
+/// offset-accumulating cycle can't spin forever.
 ///
 /// `parse` gets a file's path and the search directories inherited down its
 /// include chain, and returns its directives plus a payload, or `None` if the
@@ -127,24 +141,35 @@ where
     let root = std::fs::canonicalize(root)
         .map_err(|e| format!("Cannot resolve root path {}: {}", root.display(), e))?;
 
+    use crate::keywords::TransformOffsets;
+
     /// A file we've decided to visit, awaiting its parse.
     struct Meta {
         path: PathBuf,
         kind: Option<IncludeKind>,
         search: Vec<PathBuf>,
+        /// Index of the file that pulled this one in (`None` for the root) —
+        /// walked to detect include cycles.
+        parent: Option<usize>,
+        /// Effective transform: this file's offsets composed down from the root.
+        eff: TransformOffsets,
     }
     let mut metas: Vec<Meta> = vec![Meta {
         path: root.clone(),
         kind: None,
         search: Vec::new(),
+        parent: None,
+        eff: TransformOffsets::IDENTITY,
     }];
     // Filled in discovery order, index-aligned with `metas`.
     let mut includes_of: Vec<Vec<IncludeDirective>> = Vec::new();
     let mut children_of: Vec<Vec<usize>> = Vec::new();
     let mut payload_of: Vec<Option<T>> = Vec::new(); // None => parse failed / pruned
 
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    seen.insert(root);
+    // Keyed by (path, effective transform): a file re-included at the same
+    // offsets is one node; at different offsets it's one per offset.
+    let mut seen: HashSet<(PathBuf, TransformOffsets)> = HashSet::new();
+    seen.insert((root, TransformOffsets::IDENTITY));
 
     // BFS generation by generation; [cursor, metas.len()) is the current front.
     let mut cursor = 0;
@@ -194,14 +219,30 @@ where
                 }
                 let canon = std::fs::canonicalize(&inc.resolved_path)
                     .unwrap_or_else(|_| inc.resolved_path.clone());
-                if !seen.insert(canon.clone()) {
-                    continue; // already visited via another edge
+                // Cycle guard: refuse to descend into a file already on the path
+                // from the root to here. Independent of offsets, so an
+                // offset-accumulating self-include still terminates.
+                let mut anc = Some(idx);
+                while let Some(a) = anc {
+                    if metas[a].path == canon {
+                        break;
+                    }
+                    anc = metas[a].parent;
+                }
+                if anc.is_some() {
+                    continue; // canon is an ancestor of this node → cycle
+                }
+                let eff = metas[idx].eff.compose(inc.offsets);
+                if !seen.insert((canon.clone(), eff)) {
+                    continue; // same file at the same effective offsets already visited
                 }
                 children.push(metas.len());
                 metas.push(Meta {
                     path: canon,
                     kind: Some(inc.kind.clone()),
                     search: child_search.clone(),
+                    parent: Some(idx),
+                    eff,
                 });
             }
 
@@ -236,6 +277,7 @@ where
             kind: metas[i].kind.take(),
             includes: std::mem::take(&mut includes_of[i]),
             children,
+            transform: metas[i].eff,
             payload,
         });
     }

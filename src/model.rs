@@ -16,7 +16,6 @@ use rayon::prelude::*;
 
 use crate::deck::Deck;
 use crate::file::{Block, CardFormat, ParsedFile};
-use crate::include::IncludeKind;
 use crate::keywords::{self, EntityKind, Ref, TransformOffsets, canonical_base};
 use crate::parser::Field as RawField;
 use crate::schema::{FieldSpec, FieldType, Schema, Table, parse_schema_files};
@@ -369,49 +368,23 @@ impl Deck {
     }
 }
 
-/// The effective transform offset for every file, parallel to [`Deck::files`].
+/// [`Deck::transforms`] with identity collapsed to `None`, parallel to
+/// [`Deck::files`].
 ///
 /// `None` means "no shift" — the root, plain `*INCLUDE`s, and any file whose
 /// composed offsets happen to cancel to identity. This keeps the resolution
 /// core's hot paths on their existing zero-offset branch for the common
 /// (transform-free) deck.
 ///
-/// Offsets accumulate down the include chain, so this is a forward pass: files
-/// come out of [`parse_deck`](crate::deck::parse_deck) in breadth-first order, so
-/// a parent always precedes its children and its effective offset is final by
-/// the time a child reads it.
-///
-/// Note: [`parse_deck`] de-dupes shared files by canonical path, so a file
-/// included more than once (e.g. the *same* mesh instanced at two different
-/// offsets — a classic `*INCLUDE_TRANSFORM` idiom) is represented once and takes
-/// the first directive's offsets. Distinct files and single inclusions — the
-/// cases that matter for reference validation — are exact.
+/// The effective offsets themselves are composed by the walker as it traverses
+/// (each node carries the composition down its include path), so a file
+/// instanced at two different offsets has two `files` entries with two distinct
+/// transforms here — this just drops the identity ones. See
+/// [`walk_includes`](crate::include::walk_includes).
 fn compute_file_transforms(deck: &Deck) -> Vec<Option<TransformOffsets>> {
-    // canonical child path -> (parent file index, that directive's own offsets).
-    // First writer wins, matching `parse_deck`'s de-dup order.
-    let mut edge: HashMap<PathBuf, (usize, TransformOffsets)> = HashMap::new();
-    for (parent_fi, dir) in &deck.includes {
-        // `*INCLUDE_PATH[_RELATIVE]` widen the search path; they pull in no file.
-        if matches!(
-            dir.kind,
-            IncludeKind::IncludePath | IncludeKind::IncludePathRelative
-        ) {
-            continue;
-        }
-        let canon =
-            std::fs::canonicalize(&dir.resolved_path).unwrap_or_else(|_| dir.resolved_path.clone());
-        edge.entry(canon).or_insert((*parent_fi, dir.offsets));
-    }
-
-    let mut eff: Vec<TransformOffsets> = vec![TransformOffsets::IDENTITY; deck.files.len()];
-    for ci in 1..deck.files.len() {
-        if let Some((parent_fi, off)) = edge.get(&deck.files[ci].path) {
-            eff[ci] = eff[*parent_fi].compose(*off);
-        }
-    }
-    // Collapse identity to `None` so the hot path can skip the offset logic.
-    eff.into_iter()
-        .map(|x| (!x.is_identity()).then_some(x))
+    deck.transforms
+        .iter()
+        .map(|t| (!t.is_identity()).then_some(*t))
         .collect()
 }
 
@@ -1436,14 +1409,16 @@ mod tests {
     }
 
     fn deck_multi(srcs: &[&[u8]]) -> Deck {
-        let files = srcs
+        let files: Vec<ParsedFile> = srcs
             .iter()
             .enumerate()
             .map(|(i, s)| ParsedFile::new(format!("f{i}.k").into(), s.to_vec(), split_blocks(s)))
             .collect();
+        let transforms = vec![crate::keywords::TransformOffsets::IDENTITY; files.len()];
         Deck {
             files,
             includes: vec![],
+            transforms,
             defs: OnceLock::new(),
             file_transforms: OnceLock::new(),
             sites: OnceLock::new(),

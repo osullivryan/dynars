@@ -69,7 +69,7 @@ pub enum EntityKind {
 ///
 /// [`compose`]: TransformOffsets::compose
 /// [`apply`]: TransformOffsets::apply
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct TransformOffsets {
     pub idnoff: i64,
     pub ideoff: i64,
@@ -121,29 +121,34 @@ impl TransformOffsets {
 
     /// The offset that applies to ids of `kind` (`0` if none).
     ///
-    /// The high-traffic buckets — nodes, elements, parts, sets, curves — follow
-    /// the LS-DYNA manual directly and are what referential validation leans on.
-    /// The `IDMOFF`/`IDDOFF` groupings (section/eos/hourglass, and the `*DEFINE`
-    /// family) are best-effort and worth confirming against the manual for a
-    /// given solver version — but note that *within* a file, defs and refs of
-    /// the same kind always share a bucket, so internal reference resolution is
-    /// correct regardless; only a cross-file reference *into* a transformed
-    /// include depends on the exact bucket.
+    /// Buckets follow the LS-DYNA `*INCLUDE_TRANSFORM` manual definition:
+    /// `IDNOFF`=nodes, `IDEOFF`=elements, `IDPOFF`=part ids, `IDSOFF`=**every**
+    /// `*SET` id (part sets included), `IDFOFF`=`*DEFINE_FUNCTION`/`_TABLE`/
+    /// `_CURVE`, `IDMOFF`=`*MAT`/`*EOS` only, `IDDOFF`=the other `*DEFINE`
+    /// entities (coordinate/vector/box/transformation), and `IDROFF`=every other
+    /// id (`*SECTION`, `*HOURGLASS`, `*SENSOR`, …). Within a file, defs and refs
+    /// of the same kind always share a bucket, so internal resolution is correct
+    /// regardless; only a cross-file reference *into* a transformed include
+    /// depends on the exact bucket.
     #[inline]
     pub fn for_kind(&self, kind: EntityKind) -> i64 {
         use EntityKind::*;
         match kind {
             Node => self.idnoff,
             Element => self.ideoff,
-            // Manual: IDPOFF offsets part IDs *and* part-set IDs.
-            Part | PartSet => self.idpoff,
-            NodeSet | SegmentSet | ShellSet | SolidSet | BeamSet | DiscreteSet => self.idsoff,
+            Part => self.idpoff,
+            // IDSOFF offsets every *SET id — part sets are sets, not parts.
+            PartSet | NodeSet | SegmentSet | ShellSet | SolidSet | BeamSet | DiscreteSet => {
+                self.idsoff
+            }
             // IDFOFF: function, table, and curve ids (dynars models these as Curve).
             Curve => self.idfoff,
-            // Material family. Section/Eos/Hourglass grouping is best-effort.
-            Material | ThermalMaterial | Section | Eos | Hourglass => self.idmoff,
-            // *DEFINE family (coord, vector, box, transformation, …).
-            Box | Coord | Vector | Transform | Define | Sensor => self.iddoff,
+            // IDMOFF is *MAT and *EOS only (thermal materials are *MAT).
+            Material | ThermalMaterial | Eos => self.idmoff,
+            // IDDOFF: the *DEFINE entities (coord, vector, box, transformation, …).
+            Box | Coord | Vector | Transform | Define => self.iddoff,
+            // IDROFF: everything else — *SECTION, *HOURGLASS, *SENSOR, …
+            Section | Hourglass | Sensor => self.idroff,
         }
     }
 
@@ -359,6 +364,44 @@ static DEF_RULES: &[DefRule] = &[
     DefRule {
         kind: EntityKind::DiscreteSet,
         m: NameMatch::Prefix("SET_DISCRETE"),
+        per_line: false,
+        id_card: 0,
+    },
+    // *SENSOR_DEFINE_* mints a sensor id (SENSID); *SENSOR_SWITCH and the
+    // calc/function sensors reference it via SENS1..6 / SENSID. The `_UPDATE`
+    // forms re-state an existing SENSID — harmless (same id, unioned in).
+    DefRule {
+        kind: EntityKind::Sensor,
+        m: NameMatch::Prefix("SENSOR_DEFINE"),
+        per_line: false,
+        id_card: 0,
+    },
+    // Occupant dummies: the base *COMPONENT_GEBOD_{MALE,FEMALE,CHILD} and
+    // *COMPONENT_HYBRIDIII define a dummy id (DID); the `_JOINT_*` and
+    // *CONTACT_GEBOD_* cards reference it (dynars models the kind as `Define`).
+    // Exact matches so the `_JOINT_*` referencers (whose DID is a ref) don't
+    // masquerade as definers.
+    DefRule {
+        kind: EntityKind::Define,
+        m: NameMatch::Exact("COMPONENT_GEBOD_MALE"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Define,
+        m: NameMatch::Exact("COMPONENT_GEBOD_FEMALE"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Define,
+        m: NameMatch::Exact("COMPONENT_GEBOD_CHILD"),
+        per_line: false,
+        id_card: 0,
+    },
+    DefRule {
+        kind: EntityKind::Define,
+        m: NameMatch::Exact("COMPONENT_HYBRIDIII"),
         per_line: false,
         id_card: 0,
     },
@@ -685,20 +728,32 @@ mod tests {
             idnoff: 100,
             ideoff: 200,
             idpoff: 300,
+            idmoff: 400,
             idsoff: 500,
             idfoff: 600,
-            ..TransformOffsets::IDENTITY
+            iddoff: 700,
+            idroff: 800,
         };
         // Each kind draws from its own offset; a zero/blank id is "none".
         assert_eq!(t.apply(7, EntityKind::Node), 107);
         assert_eq!(t.apply(7, EntityKind::Element), 207);
         assert_eq!(t.apply(7, EntityKind::Part), 307);
-        assert_eq!(t.apply(7, EntityKind::PartSet), 307); // part set shares IDPOFF
+        // Every *SET id — part sets included — shifts by IDSOFF, not IDPOFF.
+        assert_eq!(t.apply(7, EntityKind::PartSet), 507);
         assert_eq!(t.apply(7, EntityKind::NodeSet), 507);
-        assert_eq!(t.apply(7, EntityKind::Curve), 607);
+        assert_eq!(t.apply(7, EntityKind::SegmentSet), 507);
+        assert_eq!(t.apply(7, EntityKind::Curve), 607); // IDFOFF
+        // IDMOFF is *MAT/*EOS only.
+        assert_eq!(t.apply(7, EntityKind::Material), 407);
+        assert_eq!(t.apply(7, EntityKind::Eos), 407);
+        // *DEFINE entities take IDDOFF.
+        assert_eq!(t.apply(7, EntityKind::Coord), 707);
+        assert_eq!(t.apply(7, EntityKind::Vector), 707);
+        // Everything else (*SECTION, *HOURGLASS, *SENSOR) takes IDROFF.
+        assert_eq!(t.apply(7, EntityKind::Section), 807);
+        assert_eq!(t.apply(7, EntityKind::Hourglass), 807);
+        assert_eq!(t.apply(7, EntityKind::Sensor), 807);
         assert_eq!(t.apply(0, EntityKind::Node), 0); // 0 = unset, untouched
-        // A kind with no configured offset is left alone.
-        assert_eq!(t.apply(7, EntityKind::Material), 7);
     }
 
     #[test]
@@ -822,6 +877,30 @@ mod tests {
         assert!(definition_of("MAT_CHANGE_SOLID_TYPE").is_none());
         // control cards define no trackable entity
         assert!(definition_of("CONTROL_TERMINATION").is_none());
+
+        // *SENSOR_DEFINE_* mints a sensor id; *SENSOR_SWITCH references one.
+        assert_eq!(
+            definition_of("SENSOR_DEFINE_NODE").unwrap().kind,
+            EntityKind::Sensor
+        );
+        assert_eq!(
+            definition_of("SENSOR_DEFINE_FORCE_UPDATE").unwrap().kind,
+            EntityKind::Sensor
+        );
+        assert!(definition_of("SENSOR_SWITCH").is_none());
+
+        // Occupant dummies: the base *COMPONENT_* cards define the DID; the
+        // `_JOINT_*` referencers (exact-matched away) must not look like definers.
+        assert_eq!(
+            definition_of("COMPONENT_GEBOD_MALE").unwrap().kind,
+            EntityKind::Define
+        );
+        assert_eq!(
+            definition_of("COMPONENT_HYBRIDIII").unwrap().kind,
+            EntityKind::Define
+        );
+        assert!(definition_of("COMPONENT_GEBOD_JOINT_PELVIS").is_none());
+        assert!(definition_of("COMPONENT_HYBRIDIII_JOINT_LUMBAR").is_none());
     }
 
     #[test]

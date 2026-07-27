@@ -30,11 +30,18 @@ pub struct Deck {
     pub files: Vec<ParsedFile>,
     /// `(including-file index, directive)` for every `*INCLUDE`.
     pub includes: Vec<(usize, IncludeDirective)>,
+    /// Effective `*INCLUDE_TRANSFORM` offsets per file (parallel to `files`),
+    /// composed down the include chain by the walker. Identity for the root,
+    /// plain includes, and transform-free decks. The same physical file
+    /// instanced at two different offsets appears as two entries here, each with
+    /// its own offsets — the source of truth [`file_transforms`] collapses.
+    ///
+    /// [`file_transforms`]: Deck::file_transforms
+    pub(crate) transforms: Vec<crate::keywords::TransformOffsets>,
     /// Defined ids per entity kind — the resolution core (validation + `is_defined`).
     pub(crate) defs: OnceLock<crate::model::Defs>,
-    /// Effective `*INCLUDE_TRANSFORM` offsets per file (parallel to `files`);
-    /// `None` where a file applies no shift. Built lazily; folds into the id
-    /// namespace so `defs` and the dangling check resolve transformed ids.
+    /// `transforms` with identity collapsed to `None`, so the resolution core's
+    /// hot paths skip the offset logic on transform-free files. Cached on first use.
     pub(crate) file_transforms: OnceLock<Vec<Option<crate::keywords::TransformOffsets>>>,
     /// `(kind, id) -> defining block` for navigable definition entities.
     pub(crate) sites: OnceLock<crate::model::Sites>,
@@ -65,14 +72,16 @@ impl Deck {
     }
 }
 
-/// Parse `root` and every file it includes, exactly once each.
+/// Parse `root` and every file it includes.
 ///
-/// Traversal, `*INCLUDE_PATH` propagation, and canonical-path de-duplication all
-/// live in the shared [`walk_includes`]; this only says how to parse one file
-/// (block index + [`extract_includes`], which reads `*INCLUDE_TRANSFORM` offsets)
-/// and how to lay the walker's node list out as a [`Deck`]. Node order is the
-/// walker's deterministic BFS, and node index *is* the file index — so the
-/// `(file, directive)` pairs in `includes` reference `files` directly.
+/// Traversal, `*INCLUDE_PATH` propagation, and de-duplication all live in the
+/// shared [`walk_includes`]; this only says how to parse one file (block index +
+/// [`extract_includes`], which reads `*INCLUDE_TRANSFORM` offsets) and how to lay
+/// the walker's node list out as a [`Deck`]. Node order is the walker's
+/// deterministic BFS, and node index *is* the file index — so the
+/// `(file, directive)` pairs in `includes` reference `files` directly, and
+/// `transforms[fi]` is `files[fi]`'s effective offsets. A file included twice at
+/// different offsets appears as two nodes (see [`walk_includes`]).
 pub fn parse_deck(root: &Path) -> Result<Deck, String> {
     let nodes = walk_includes(root, |path, search| {
         let pf = parse_file_blocks(path).ok()?;
@@ -85,16 +94,19 @@ pub fn parse_deck(root: &Path) -> Result<Deck, String> {
 
     let mut files: Vec<ParsedFile> = Vec::with_capacity(nodes.len());
     let mut includes: Vec<(usize, IncludeDirective)> = Vec::new();
+    let mut transforms: Vec<crate::keywords::TransformOffsets> = Vec::with_capacity(nodes.len());
     for (fi, node) in nodes.into_iter().enumerate() {
         for inc in node.includes {
             includes.push((fi, inc));
         }
+        transforms.push(node.transform);
         files.push(node.payload);
     }
 
     Ok(Deck {
         files,
         includes,
+        transforms,
         defs: OnceLock::new(),
         file_transforms: OnceLock::new(),
         sites: OnceLock::new(),
