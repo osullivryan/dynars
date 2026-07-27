@@ -25,6 +25,9 @@ Python bindings.
   connectivity, …) cross the FFI boundary as numpy arrays without a copy.
 - **Handles the awkward formats.** Fixed-width (8-col), long (`*KEYWORD LONG`),
   and free (comma-separated) cards; Fortran float quirks (`1.5D+3`, `1.234-5`).
+- **Callable from C and Fortran.** The deck parse + validate path is exposed
+  over a C ABI (opt-in `ffi` feature); Fortran binds it via `iso_c_binding`.
+  See [C / Fortran API](#c--fortran-api).
 
 ## Installation
 
@@ -259,6 +262,67 @@ let tree = build_include_tree(std::path::Path::new("root.k")).unwrap();
 // Marshalling: split into keyword blocks, parse via schemas (below)
 let parsed = parse_file_blocks(std::path::Path::new("deck.k")).unwrap();
 ```
+
+## C / Fortran API
+
+The deck **parse + validate** path is exposed over a C ABI, behind the opt-in
+`ffi` cargo feature. Fortran uses that same ABI through `iso_c_binding` — there
+is no direct Rust↔Fortran bridge, so both languages meet at C. (Only parse +
+validate is exported — marshalling, navigation, and the result readers are not.)
+
+Build the C-linkable libraries. The feature is off by default, so a normal build
+never compiles the `unsafe` boundary code:
+
+```bash
+cargo build --release --features ffi
+# -> target/release/libdynars.{dylib,so}   (shared)
+#    target/release/libdynars.a            (static)
+```
+
+The header is `examples/ffi/dynars.h`; runnable C and Fortran examples plus a
+`Makefile` live in `examples/ffi/`.
+
+**C:**
+
+```c
+#include "dynars.h"
+
+DynarsDeck *deck = dynars_parse_deck("root.k");   // NULL on error; see dynars_last_error()
+DynarsRuleSet *rules = dynars_ruleset_new();
+dynars_ruleset_add_references_resolve(rules);      // every id reference resolves
+dynars_ruleset_add_include_missing(rules);         // no missing *INCLUDE targets
+
+DynarsReport *report = dynars_deck_validate(deck, rules);
+for (size_t i = 0; i < dynars_report_len(report); i++)
+    printf("%s:%zu  %s\n", dynars_report_finding_file(report, i),
+                           dynars_report_finding_line(report, i),
+                           dynars_report_finding_message(report, i));
+
+dynars_report_free(report);
+dynars_ruleset_free(rules);
+dynars_deck_free(deck);
+```
+
+**Fortran** (`iso_c_binding`; full interfaces in `examples/ffi/example.f90`):
+
+```fortran
+use iso_c_binding
+type(c_ptr) :: deck, rules, report
+deck   = dynars_parse_deck("root.k" // c_null_char)
+rules  = dynars_ruleset_new()
+call dynars_ruleset_add_references_resolve(rules)
+report = dynars_deck_validate(deck, rules)
+print '(i0,a)', dynars_report_len(report), " finding(s)"
+call dynars_report_free(report)
+call dynars_ruleset_free(rules)
+call dynars_deck_free(deck)
+```
+
+Conventions: every handle is owned by the caller and released with its matching
+`*_free`; fallible calls return `NULL`/`-1` and set a thread-local message read
+via `dynars_last_error()`; strings from a report stay valid until it is freed.
+Rules available: `references_resolve`, `references_resolve_with_connectivity`,
+`include_missing`, `keyword_forbidden`.
 
 ## User-defined keyword schemas
 
