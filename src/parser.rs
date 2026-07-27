@@ -157,43 +157,86 @@ pub fn parse_file_from_path(file_path: &Path, include_paths: &[PathBuf]) -> File
     }
 }
 
+/// An include directive as detected but not yet path-resolved — the common
+/// currency of both include-detection strategies (the streaming byte scanner
+/// and the block-index walk in [`extract_includes`]). Both hand a list of these,
+/// in file order, to [`resolve_directives`], which applies the one shared
+/// resolution rule. Resolution is deferred so a file's own
+/// `*INCLUDE_PATH[_RELATIVE]` — which may sit after the include, or in a
+/// different parallel scan chunk — can widen the search set first.
+struct RawInclude {
+    kind: IncludeKind,
+    raw_path: String,
+    /// `*INCLUDE_TRANSFORM` id offsets. Always [`TransformOffsets::IDENTITY`] on
+    /// the streaming path (the tree needs paths only); the block path fills it
+    /// from the card.
+    offsets: crate::keywords::TransformOffsets,
+}
+
+/// Resolve detected directives into [`IncludeDirective`]s — the single source of
+/// truth for include-path resolution, shared by the streaming scanner and the
+/// block extractor. Each `raw_path` is resolved against `include_paths` **plus**
+/// the file's own `*INCLUDE_PATH[_RELATIVE]` directories, applied file-wide
+/// (order-independent): `*INCLUDE_PATH` dirs are relative to the run directory
+/// (or absolute), `*INCLUDE_PATH_RELATIVE` dirs relative to the including file.
+fn resolve_directives(
+    raw: Vec<RawInclude>,
+    parent_dir: &Path,
+    include_paths: &[PathBuf],
+) -> Vec<IncludeDirective> {
+    let mut search: Vec<PathBuf> = include_paths.to_vec();
+    for r in &raw {
+        match r.kind {
+            IncludeKind::IncludePath => search.push(PathBuf::from(&r.raw_path)),
+            IncludeKind::IncludePathRelative => search.push(parent_dir.join(&r.raw_path)),
+            _ => {}
+        }
+    }
+    raw.into_iter()
+        .map(|r| {
+            let resolved_path = resolve_include_path(&r.raw_path, parent_dir, &search);
+            IncludeDirective {
+                kind: r.kind,
+                raw_path: r.raw_path,
+                resolved_path,
+                offsets: r.offsets,
+            }
+        })
+        .collect()
+}
+
 /// Scan mapped file bytes for include directives, splitting large files across
-/// cores. Results are returned in file order.
+/// cores, then resolve. Results are returned in file order.
 fn scan_includes(
     data: &[u8],
     parent_dir: &Path,
     include_paths: &[PathBuf],
 ) -> Vec<IncludeDirective> {
-    if data.len() < MIN_PARALLEL_SCAN {
-        return scan_range(data, 0, data.len(), parent_dir, include_paths);
-    }
-
-    let bounds = line_aligned_bounds(data, rayon::current_num_threads());
-    bounds
-        .par_windows(2)
-        .map(|w| scan_range(data, w[0], w[1], parent_dir, include_paths))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .flatten()
-        .collect()
+    let raw = if data.len() < MIN_PARALLEL_SCAN {
+        scan_range(data, 0, data.len())
+    } else {
+        let bounds = line_aligned_bounds(data, rayon::current_num_threads());
+        bounds
+            .par_windows(2)
+            .map(|w| scan_range(data, w[0], w[1]))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .flatten()
+            .collect()
+    };
+    resolve_directives(raw, parent_dir, include_paths)
 }
 
 /// Scan `data[start..end]` for `*` at line starts. Every chunk boundary is a
 /// line start, so `data[pos - 1] == '\n'` correctly identifies line starts even
 /// at `pos == start`. `process_star_line` reads forward into the full `data`
 /// slice, so a keyword whose filename lands in the next chunk is still resolved.
-fn scan_range(
-    data: &[u8],
-    start: usize,
-    end: usize,
-    parent_dir: &Path,
-    include_paths: &[PathBuf],
-) -> Vec<IncludeDirective> {
+fn scan_range(data: &[u8], start: usize, end: usize) -> Vec<RawInclude> {
     let mut includes = Vec::new();
     for off in memchr::memchr_iter(b'*', &data[start..end]) {
         let pos = start + off;
         if pos == 0 || data[pos - 1] == b'\n' {
-            process_star_line(data, pos, parent_dir, include_paths, &mut includes);
+            process_star_line(data, pos, &mut includes);
         }
     }
     includes
@@ -220,13 +263,7 @@ fn line_aligned_bounds(data: &[u8], n: usize) -> Vec<usize> {
 }
 
 #[inline]
-fn process_star_line(
-    data: &[u8],
-    star_pos: usize,
-    parent_dir: &Path,
-    include_paths: &[PathBuf],
-    includes: &mut Vec<IncludeDirective>,
-) {
+fn process_star_line(data: &[u8], star_pos: usize, includes: &mut Vec<RawInclude>) {
     let line_end_nl = find_line_end(data, star_pos);
     let line = get_line(data, star_pos, line_end_nl);
 
@@ -238,16 +275,13 @@ fn process_star_line(
         };
         // `read_include_filename` reads forward into the full `data` slice, so a
         // filename (or its continuation lines) spilling into the next chunk is
-        // still resolved.
-        if let Some(path_str) = read_include_filename(data, fname_start) {
-            let resolved = resolve_include_path(&path_str, parent_dir, include_paths);
-            includes.push(IncludeDirective {
+        // still captured.
+        if let Some(raw_path) = read_include_filename(data, fname_start) {
+            // The streaming scanner feeds the include *tree* (paths only); the
+            // block path reads `*INCLUDE_TRANSFORM` offsets from the card.
+            includes.push(RawInclude {
                 kind,
-                raw_path: path_str,
-                resolved_path: resolved,
-                // The streaming scanner feeds the include-*tree* (paths only);
-                // id offsets are read on the block path (`extract_includes`),
-                // which the validation deck uses.
+                raw_path,
                 offsets: crate::keywords::TransformOffsets::IDENTITY,
             });
         }
@@ -447,33 +481,35 @@ fn find_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Extract include directives from a parsed file's block index.
 ///
-/// Equivalent to the streaming scanner's include detection, but driven by the
-/// block model so the marshalling path shares a single source of truth.
+/// Detection differs from the streaming scanner (block-index walk vs. raw byte
+/// scan), but resolution is shared: this builds the same [`RawInclude`] list and
+/// hands it to [`resolve_directives`], so the file-wide `*INCLUDE_PATH` rule
+/// lives in exactly one place. The block path additionally reads
+/// `*INCLUDE_TRANSFORM` id offsets from the card (the streaming path can't — it
+/// never builds the block model — and doesn't need to, feeding paths only).
 pub fn extract_includes(parsed: &ParsedFile, include_paths: &[PathBuf]) -> Vec<IncludeDirective> {
     let parent_dir = parsed.path.parent().unwrap_or(Path::new("."));
-    let mut includes = Vec::new();
 
-    for block in &parsed.blocks {
-        let Some(kind) = match_include_keyword(parsed.name_line(block)) else {
-            continue;
-        };
-        if let Some(path_str) = read_include_filename(parsed.body(block), 0) {
-            let resolved = resolve_include_path(&path_str, parent_dir, include_paths);
+    let raw: Vec<RawInclude> = parsed
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let kind = match_include_keyword(parsed.name_line(block))?;
+            let raw_path = read_include_filename(parsed.body(block), 0)?;
             let offsets = if kind == IncludeKind::IncludeTransform {
                 crate::model::read_transform_offsets(parsed, block)
             } else {
                 crate::keywords::TransformOffsets::IDENTITY
             };
-            includes.push(IncludeDirective {
-                kind: kind.clone(),
-                raw_path: path_str,
-                resolved_path: resolved,
+            Some(RawInclude {
+                kind,
+                raw_path,
                 offsets,
-            });
-        }
-    }
+            })
+        })
+        .collect();
 
-    includes
+    resolve_directives(raw, parent_dir, include_paths)
 }
 
 /// Read an `*INCLUDE` filename starting at `data[start..]`, honoring LS-DYNA's

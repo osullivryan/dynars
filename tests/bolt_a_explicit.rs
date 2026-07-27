@@ -49,17 +49,21 @@ fn parses_full_include_tree_with_filename_continuation() {
     assert!(raws.contains(&"material_props.k"), "continuation join lost: {raws:?}");
 }
 
-/// The deck deliberately `*INCLUDE`s a file that isn't on disk to exercise the
-/// unresolved-include check.
+/// The deck deliberately `*INCLUDE`s a file that isn't on disk. It must be the
+/// *only* missing include: `material_props.k` is pulled in via the root's
+/// `*INCLUDE_PATH_RELATIVE submodels`, so it resolves despite living in a
+/// subdirectory (guards the same-file path-directive fix).
 #[test]
-fn validation_flags_the_intentionally_missing_include() {
+fn validation_flags_only_the_intentionally_missing_include() {
     let deck = parse_deck(&deck_root()).expect("deck parses");
     let report = deck.validate([Rule::include_missing()]);
 
-    let hits = report
+    let missing: Vec<&str> = report
         .findings
         .iter()
-        .filter(|f| f.severity == Severity::Error && f.message.contains("missing_geometry.k"))
-        .count();
-    assert_eq!(hits, 1, "expected exactly one missing_geometry.k finding");
+        .filter(|f| f.severity == Severity::Error)
+        .map(|f| f.message.as_str())
+        .collect();
+    assert_eq!(missing.len(), 1, "only missing_geometry.k should be missing: {missing:?}");
+    assert!(missing[0].contains("missing_geometry.k"), "unexpected: {missing:?}");
 }

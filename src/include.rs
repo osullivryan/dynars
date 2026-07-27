@@ -5,7 +5,6 @@
 //! directive kinds and the tree of resolved files ([`build_include_tree`]).
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam::queue::SegQueue;
@@ -88,6 +87,10 @@ struct WorkItem {
     id: usize,
     path: PathBuf,
     kind: Option<IncludeKind>,
+    /// Search directories inherited down this file's include chain (its
+    /// ancestors' `*INCLUDE_PATH[_RELATIVE]`). Carried per item, so resolution
+    /// is deterministic and free of the cross-worker races a shared set had.
+    search: Vec<PathBuf>,
 }
 
 struct ParsedEntry {
@@ -104,7 +107,6 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
     let queue: SegQueue<WorkItem> = SegQueue::new();
     let results: DashMap<usize, ParsedEntry> = DashMap::new();
     let visited: DashSet<PathBuf> = DashSet::new();
-    let include_paths: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
     let next_id = AtomicUsize::new(1);
     let in_flight = AtomicUsize::new(1);
 
@@ -114,6 +116,7 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
         id: root_id,
         path: root_path,
         kind: None,
+        search: Vec::new(),
     });
 
     let num_threads = std::thread::available_parallelism()
@@ -126,23 +129,22 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
                 loop {
                     match queue.pop() {
                         Some(item) => {
-                            let current_include_paths = include_paths.lock().unwrap().clone();
-                            let result = parse_file_from_path(&item.path, &current_include_paths);
+                            // The file's own includes resolve against the
+                            // inherited search set plus its own path directives
+                            // (handled inside parse_file_from_path).
+                            let result = parse_file_from_path(&item.path, &item.search);
 
+                            // Children inherit that set extended by this file's
+                            // own `*INCLUDE_PATH[_RELATIVE]` directives.
+                            let parent = item.path.parent().unwrap_or(Path::new(".")).to_path_buf();
+                            let mut child_search = item.search.clone();
                             for inc in &result.includes {
                                 match inc.kind {
                                     IncludeKind::IncludePath => {
-                                        include_paths
-                                            .lock()
-                                            .unwrap()
-                                            .push(inc.resolved_path.clone());
+                                        child_search.push(PathBuf::from(&inc.raw_path));
                                     }
                                     IncludeKind::IncludePathRelative => {
-                                        let parent = item.path.parent().unwrap_or(Path::new("."));
-                                        include_paths
-                                            .lock()
-                                            .unwrap()
-                                            .push(parent.join(&inc.raw_path));
+                                        child_search.push(parent.join(&inc.raw_path));
                                     }
                                     _ => {}
                                 }
@@ -166,6 +168,7 @@ pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
                                     id: child_id,
                                     path: inc.resolved_path.clone(),
                                     kind: Some(inc.kind.clone()),
+                                    search: child_search.clone(),
                                 });
                             }
 
