@@ -8,7 +8,10 @@ edition = "2024"
 
 [lib]
 name = "dynars"
-crate-type = ["cdylib", "rlib"]
+# staticlib/cdylib are for the C/Fortran FFI (build with `--features ffi`); rlib
+# is for Rust consumers. The FFI module is gated on the `ffi` feature, so a plain
+# build compiles none of the `unsafe` boundary code.
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [[bin]]
 name = "dynars"
@@ -17,6 +20,10 @@ path = "src/main.rs"
 [features]
 default = []
 python = ["pyo3", "numpy"]
+# C ABI / Fortran bindings for the deck parse + validate path (see src/ffi.rs
+# and examples/ffi/). Off by default so the `unsafe` layer is never built unless
+# asked for.
+ffi = []
 # Generated typed struct per keyword (~3170). Opt-in — adds a one-time compile.
 typed-keywords = []
 

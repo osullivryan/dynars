@@ -1,0 +1,15 @@
+# cbindgen config for regenerating dynars.h from src/ffi.rs.
+#   cbindgen --config cbindgen.toml --crate dynars --output dynars.h -- --features ffi
+# The committed dynars.h is hand-maintained and authoritative; this is a
+# convenience for keeping it in sync.
+language = "C"
+include_guard = "DYNARS_H"
+tab_width = 4
+style = "type"
+cpp_compat = true
+
+[export]
+include = ["DynarsDeck", "DynarsRuleSet", "DynarsReport", "DynarsSeverity"]
+
+[parse]
+parse_deps = false

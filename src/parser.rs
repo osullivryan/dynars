@@ -231,45 +231,25 @@ fn process_star_line(
     let line = get_line(data, star_pos, line_end_nl);
 
     if let Some(kind) = match_include_keyword(line) {
-        let mut fname_start = if line_end_nl < data.len() {
+        let fname_start = if line_end_nl < data.len() {
             line_end_nl + 1
         } else {
             data.len()
         };
-
-        loop {
-            if fname_start >= data.len() {
-                break;
-            }
-
-            let fname_end_nl = find_line_end(data, fname_start);
-            let fname_line = get_line(data, fname_start, fname_end_nl);
-
-            if !fname_line.is_empty() && fname_line[0] == b'$' {
-                fname_start = if fname_end_nl < data.len() {
-                    fname_end_nl + 1
-                } else {
-                    data.len()
-                };
-                continue;
-            }
-
-            let filename = trim(fname_line);
-            if !filename.is_empty() {
-                let path_str = String::from_utf8_lossy(filename);
-                let path_str = path_str.trim();
-                let resolved = resolve_include_path(path_str, parent_dir, include_paths);
-                includes.push(IncludeDirective {
-                    kind,
-                    raw_path: path_str.to_string(),
-                    resolved_path: resolved,
-                    // The streaming scanner feeds the include-*tree* (paths only);
-                    // id offsets are read on the block path (`extract_includes`),
-                    // which the validation deck uses.
-                    offsets: crate::keywords::TransformOffsets::IDENTITY,
-                });
-            }
-            break;
+        // `read_include_filename` reads forward into the full `data` slice, so a
+        // filename (or its continuation lines) spilling into the next chunk is
+        // still resolved.
+        if let Some(path_str) = read_include_filename(data, fname_start) {
+            let resolved = resolve_include_path(&path_str, parent_dir, include_paths);
+            includes.push(IncludeDirective {
+                kind,
+                raw_path: path_str,
+                resolved_path: resolved,
+                // The streaming scanner feeds the include-*tree* (paths only);
+                // id offsets are read on the block path (`extract_includes`),
+                // which the validation deck uses.
+                offsets: crate::keywords::TransformOffsets::IDENTITY,
+            });
         }
     }
 }
@@ -477,10 +457,8 @@ pub fn extract_includes(parsed: &ParsedFile, include_paths: &[PathBuf]) -> Vec<I
         let Some(kind) = match_include_keyword(parsed.name_line(block)) else {
             continue;
         };
-        if let Some(filename) = first_filename(parsed.body(block)) {
-            let path_str = String::from_utf8_lossy(filename);
-            let path_str = path_str.trim();
-            let resolved = resolve_include_path(path_str, parent_dir, include_paths);
+        if let Some(path_str) = read_include_filename(parsed.body(block), 0) {
+            let resolved = resolve_include_path(&path_str, parent_dir, include_paths);
             let offsets = if kind == IncludeKind::IncludeTransform {
                 crate::model::read_transform_offsets(parsed, block)
             } else {
@@ -488,7 +466,7 @@ pub fn extract_includes(parsed: &ParsedFile, include_paths: &[PathBuf]) -> Vec<I
             };
             includes.push(IncludeDirective {
                 kind: kind.clone(),
-                raw_path: path_str.to_string(),
+                raw_path: path_str,
                 resolved_path: resolved,
                 offsets,
             });
@@ -498,28 +476,56 @@ pub fn extract_includes(parsed: &ParsedFile, include_paths: &[PathBuf]) -> Vec<I
     includes
 }
 
-/// Find the filename card in an `*INCLUDE` body: skip `$`-comment lines, then
-/// take the first following line (matching the streaming scanner's behaviour).
-fn first_filename(body: &[u8]) -> Option<&[u8]> {
-    let mut start = 0;
-    while start < body.len() {
-        let end = match memchr(b'\n', &body[start..]) {
-            Some(off) => start + off,
-            None => body.len(),
-        };
-        let line = get_line(body, start, end);
-        if !line.is_empty() && line[0] == b'$' {
-            start = if end < body.len() {
-                end + 1
-            } else {
-                body.len()
-            };
+/// Read an `*INCLUDE` filename starting at `data[start..]`, honoring LS-DYNA's
+/// filename continuation: when a line's last non-blank character is `+`, the
+/// name continues on the next line — the `+` and the blanks around it are
+/// dropped and the segments joined with no separator, so
+///
+/// ```text
+/// *INCLUDE
+/// inclu +
+/// des.k
+/// ```
+///
+/// yields `includes.k`. Leading `$`-comment lines are skipped. Returns the
+/// joined name, or `None` if there is no non-empty filename line. Shared by the
+/// block path ([`extract_includes`]) and the streaming scanner
+/// ([`process_star_line`]) so the two stay in agreement.
+fn read_include_filename(data: &[u8], start: usize) -> Option<String> {
+    let mut pos = start;
+    let mut name = String::new();
+    let mut started = false;
+    while pos < data.len() {
+        let end = find_line_end(data, pos);
+        let line = get_line(data, pos, end);
+        pos = if end < data.len() { end + 1 } else { data.len() };
+
+        // Skip comment lines until the filename actually begins.
+        if !started && !line.is_empty() && line[0] == b'$' {
             continue;
         }
-        let f = trim(line);
-        return if f.is_empty() { None } else { Some(f) };
+        let (segment, continues) = split_continuation(trim(line));
+        name.push_str(&String::from_utf8_lossy(segment));
+        started = true;
+        if !continues {
+            break;
+        }
     }
-    None
+    if !started {
+        return None;
+    }
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Split an already-trimmed line into `(text, continues)`: if the line ends in a
+/// `+` continuation marker, `text` is the part before it (trailing blanks
+/// removed) and `continues` is true; otherwise the line is returned unchanged.
+fn split_continuation(trimmed: &[u8]) -> (&[u8], bool) {
+    match trimmed.last() {
+        Some(b'+') => (trim_right(&trimmed[..trimmed.len() - 1]), true),
+        _ => (trimmed, false),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +889,33 @@ mod tests {
         assert_eq!(incs[0].kind, IncludeKind::Include);
         assert_eq!(incs[1].kind, IncludeKind::IncludeTransform);
         assert_eq!(incs[2].kind, IncludeKind::Include);
+    }
+
+    #[test]
+    fn include_filename_continuation() {
+        // LS-DYNA `+` continuation: `inclu +` / `des.k` -> `includes.k`, and a
+        // three-line split `mat +` / `eri +` / `al_props.k` -> `material_props.k`.
+        // Comment lines before the name are still skipped.
+        let src = b"*KEYWORD\n\
+                    *INCLUDE\ninclu +\ndes.k\n\
+                    *INCLUDE\n$ split across three lines\nmat +\neri +\nal_props.k\n\
+                    *INCLUDE\nplain.k\n\
+                    *END\n";
+
+        // Block path (feeds parse_deck / validation).
+        let p = parsed(src);
+        let block_raw: Vec<_> = extract_includes(&p, &[])
+            .iter()
+            .map(|i| i.raw_path.clone())
+            .collect();
+        assert_eq!(block_raw, vec!["includes.k", "material_props.k", "plain.k"]);
+
+        // Streaming path (feeds the include tree) must agree.
+        let stream_raw: Vec<_> = scan_includes(src, Path::new("."), &[])
+            .iter()
+            .map(|i| i.raw_path.clone())
+            .collect();
+        assert_eq!(stream_raw, block_raw);
     }
 
     #[test]

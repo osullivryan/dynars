@@ -14,6 +14,13 @@ pub mod validate;
 pub use dynars_derive::{Card, Keyword};
 pub use schema::{CardLayout, KeywordSchema};
 
+/// C ABI (and, through it, Fortran) bindings for the deck parse + validate
+/// path. Opt-in and self-contained: the `unsafe` FFI layer only compiles under
+/// `--features ffi`, so a normal build, the Python extension, and the CLI never
+/// pull it in.
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
 #[cfg(feature = "python")]
 mod python;
 
