@@ -77,7 +77,10 @@ pub fn parse_deck(root: &Path) -> Result<Deck, String> {
     let nodes = walk_includes(root, |path, search| {
         let pf = parse_file_blocks(path).ok()?;
         let includes = extract_includes(&pf, search);
-        Some(Parsed { includes, payload: pf })
+        Some(Parsed {
+            includes,
+            payload: pf,
+        })
     })?;
 
     let mut files: Vec<ParsedFile> = Vec::with_capacity(nodes.len());

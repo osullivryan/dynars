@@ -31,8 +31,9 @@ fn main() {
     let n_sections = 100usize;
     let n_materials = 100usize;
 
-    let dir =
-        std::env::temp_dir().join(format!("dynars_validate_throughput_xform_{n_files}x{per_file}"));
+    let dir = std::env::temp_dir().join(format!(
+        "dynars_validate_throughput_xform_{n_files}x{per_file}"
+    ));
     let root = dir.join("root.k");
     let last = dir.join(format!("mesh_{}.k", n_files - 1));
 
@@ -61,7 +62,12 @@ fn main() {
         writeln!(w, "*KEYWORD").unwrap();
         for mid in 1..=n_materials {
             writeln!(w, "*MAT_ELASTIC").unwrap();
-            writeln!(w, "{:>10}{:>10}{:>10}{:>10}", mid, "7.85e-9", "210000.0", "0.3").unwrap();
+            writeln!(
+                w,
+                "{:>10}{:>10}{:>10}{:>10}",
+                mid, "7.85e-9", "210000.0", "0.3"
+            )
+            .unwrap();
         }
         for sid in 1..=n_sections {
             writeln!(w, "*SECTION_SHELL").unwrap();
@@ -101,7 +107,12 @@ fn main() {
             for i in 0..per_file {
                 let nid = i + 1; // local
                 let x = i as f64 * 1.5;
-                writeln!(w, "{:>8}{:>16.6}{:>16.6}{:>16.6}{:>8}{:>8}", nid, x, x, x, 0, 0).unwrap();
+                writeln!(
+                    w,
+                    "{:>8}{:>16.6}{:>16.6}{:>16.6}{:>8}{:>8}",
+                    nid, x, x, x, 0, 0
+                )
+                .unwrap();
             }
             writeln!(w, "*ELEMENT_SHELL").unwrap();
             for i in 0..per_file {
@@ -111,7 +122,12 @@ fn main() {
                 let n2 = ((i + 1) % per_file) + 1;
                 let n3 = ((i + 2) % per_file) + 1;
                 let n4 = ((i + 3) % per_file) + 1;
-                writeln!(w, "{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}", eid, pid, n1, n2, n3, n4).unwrap();
+                writeln!(
+                    w,
+                    "{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}",
+                    eid, pid, n1, n2, n3, n4
+                )
+                .unwrap();
             }
             writeln!(w, "*END").unwrap();
             w.flush().unwrap();
@@ -144,7 +160,11 @@ fn main() {
         gb
     );
     println!("  entities: {n_elements} elements, {n_nodes} nodes, {n_parts} parts");
-    println!("  parse_deck: {:.2} s ({:.0} MB/s)", parse_s, gb * 1e3 / parse_s);
+    println!(
+        "  parse_deck: {:.2} s ({:.0} MB/s)",
+        parse_s,
+        gb * 1e3 / parse_s
+    );
     println!("  rayon threads: {threads}");
 
     // The first validate is "cold": it builds the defined-id index (shifting
@@ -188,7 +208,10 @@ fn main() {
         "  index build (defs, one-time)         : {:8.1} ms",
         (cold_s - conn).max(0.0) * 1e3
     );
-    println!("  cold validate (index + connectivity) : {:8.1} ms", cold_s * 1e3);
+    println!(
+        "  cold validate (index + connectivity) : {:8.1} ms",
+        cold_s * 1e3
+    );
     println!(
         "  references_resolve_with_connectivity : {:8.1} ms   ({:.1} M lookups, {:.0} M/s)",
         conn * 1e3,
@@ -198,7 +221,10 @@ fn main() {
 
     // ── parallelism ─────────────────────────────────────────────────────────
     let time_in_pool = |n: usize, iters: usize| -> f64 {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .build()
+            .unwrap();
         pool.install(|| {
             let mut b = f64::MAX;
             for _ in 0..iters {
@@ -213,7 +239,11 @@ fn main() {
     let many = time_in_pool(threads, 3);
 
     println!("\n=== parallelism (connectivity check, offset path) ===");
-    println!("   1 thread  : {:8.1} ms   ({:.0} M ref/s)", one * 1e3, conn_checks as f64 / one / 1e6);
+    println!(
+        "   1 thread  : {:8.1} ms   ({:.0} M ref/s)",
+        one * 1e3,
+        conn_checks as f64 / one / 1e6
+    );
     println!(
         "  {:>2} threads : {:8.1} ms   ({:.0} M ref/s)",
         threads,

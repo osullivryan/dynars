@@ -47,5 +47,9 @@ fn dangling_check_is_linear_in_block_count() {
     // Layout: line 1 *KEYWORD, line 2 *NODE, lines 3..=N+2 the nodes, then the
     // SPC blocks two lines each. The bad block is index N-1, so its `*KEYWORD`
     // line is (N+2) + (N-1)*2 + 1 = 3N+1.
-    assert_eq!(errors[0].line, 3 * N + 1, "line number of the late block is exact");
+    assert_eq!(
+        errors[0].line,
+        3 * N + 1,
+        "line number of the late block is exact"
+    );
 }

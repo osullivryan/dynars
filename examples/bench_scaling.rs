@@ -48,9 +48,21 @@ struct Shape {
 }
 
 const SHAPES: [Shape; 3] = [
-    Shape { label: "monolithic", branch: 1, depth: 0 },
-    Shape { label: "flat", branch: 256, depth: 1 }, // 256 leaves, depth 1 (wide)
-    Shape { label: "deep-tree", branch: 6, depth: 3 }, // 216 leaves, depth 3 (wide + deep)
+    Shape {
+        label: "monolithic",
+        branch: 1,
+        depth: 0,
+    },
+    Shape {
+        label: "flat",
+        branch: 256,
+        depth: 1,
+    }, // 256 leaves, depth 1 (wide)
+    Shape {
+        label: "deep-tree",
+        branch: 6,
+        depth: 3,
+    }, // 216 leaves, depth 3 (wide + deep)
 ];
 
 impl Shape {
@@ -70,26 +82,51 @@ fn write_mesh(w: &mut impl Write, base: usize, m: usize) {
     for i in 0..m {
         let nid = base + i + 1;
         let x = i as f64 * 1.5;
-        writeln!(w, "{:>8}{:>16.6}{:>16.6}{:>16.6}{:>8}{:>8}", nid, x, x, x, 0, 0).unwrap();
+        writeln!(
+            w,
+            "{:>8}{:>16.6}{:>16.6}{:>16.6}{:>8}{:>8}",
+            nid, x, x, x, 0, 0
+        )
+        .unwrap();
     }
     writeln!(w, "*ELEMENT_SHELL").unwrap();
     for i in 0..m {
         let eid = base + i + 1;
         let pid = (i % N_PARTS) + 1;
         let n = |o: usize| base + ((i + o) % m) + 1;
-        writeln!(w, "{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}", eid, pid, n(0), n(1), n(2), n(3)).unwrap();
+        writeln!(
+            w,
+            "{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}",
+            eid,
+            pid,
+            n(0),
+            n(1),
+            n(2),
+            n(3)
+        )
+        .unwrap();
     }
     for i in 0..m {
         let nid = base + i + 1;
         writeln!(w, "*BOUNDARY_SPC_NODE").unwrap();
-        writeln!(w, "{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}", nid, 0, 1, 1, 1, 0, 0, 0).unwrap();
+        writeln!(
+            w,
+            "{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}",
+            nid, 0, 1, 1, 1, 0, 0, 0
+        )
+        .unwrap();
     }
 }
 
 fn shared_defs(w: &mut impl Write) {
     for mid in 1..=N_MATERIALS {
         writeln!(w, "*MAT_ELASTIC").unwrap();
-        writeln!(w, "{:>10}{:>10}{:>10}{:>10}", mid, "7.85e-9", "210000.0", "0.3").unwrap();
+        writeln!(
+            w,
+            "{:>10}{:>10}{:>10}{:>10}",
+            mid, "7.85e-9", "210000.0", "0.3"
+        )
+        .unwrap();
     }
     for sid in 1..=N_SECTIONS {
         writeln!(w, "*SECTION_SHELL").unwrap();
@@ -98,7 +135,14 @@ fn shared_defs(w: &mut impl Write) {
     for pid in 1..=N_PARTS {
         writeln!(w, "*PART").unwrap();
         writeln!(w, "part {pid}").unwrap();
-        writeln!(w, "{:>10}{:>10}{:>10}", pid, (pid % N_SECTIONS) + 1, (pid % N_MATERIALS) + 1).unwrap();
+        writeln!(
+            w,
+            "{:>10}{:>10}{:>10}",
+            pid,
+            (pid % N_SECTIONS) + 1,
+            (pid % N_MATERIALS) + 1
+        )
+        .unwrap();
     }
 }
 
@@ -127,7 +171,11 @@ fn gen_deck(shape: Shape, target_blocks: usize) -> PathBuf {
     for level in 0..=shape.depth {
         let count = shape.branch.pow(level);
         for i in 0..count {
-            let name = if level == 0 { "root.k".to_string() } else { format!("f{level}_{i}.k") };
+            let name = if level == 0 {
+                "root.k".to_string()
+            } else {
+                format!("f{level}_{i}.k")
+            };
             let f = File::create(dir.join(&name)).unwrap();
             let mut w = BufWriter::with_capacity(1 << 20, f);
             writeln!(w, "*KEYWORD").unwrap();
@@ -187,10 +235,18 @@ fn measure(shape: Shape, target_blocks: usize, idx: usize, total: usize) -> Row 
 
     let (blocks, bytes) = {
         let d = parse_deck(&root).unwrap();
-        (d.files.iter().map(|f| f.blocks.len()).sum(), d.total_bytes())
+        (
+            d.files.iter().map(|f| f.blocks.len()).sum(),
+            d.total_bytes(),
+        )
     };
     let nodes = shape.leaves() * (target_blocks / shape.leaves()).max(1);
-    eprint!("{}k blk {}MB {}f | ", blocks / 1000, bytes / 1_000_000, shape.files());
+    eprint!(
+        "{}k blk {}MB {}f | ",
+        blocks / 1000,
+        bytes / 1_000_000,
+        shape.files()
+    );
 
     let t_include = stage("incl", 3, || {
         build_include_tree(&root).unwrap();
@@ -219,7 +275,11 @@ fn measure(shape: Shape, target_blocks: usize, idx: usize, total: usize) -> Row 
         let _ = deck.validate([Rule::references_resolve()]);
     });
     let t_field = stage("field", 3, || {
-        let _ = deck.validate([Rule::field_forbidden_values("BOUNDARY_SPC_NODE", "DOFX", [Value::Int(7)])]);
+        let _ = deck.validate([Rule::field_forbidden_values(
+            "BOUNDARY_SPC_NODE",
+            "DOFX",
+            [Value::Int(7)],
+        )]);
     });
     eprintln!();
 
@@ -248,7 +308,11 @@ fn main() {
         3_500_000, 5_000_000,
     ];
     let total = SHAPES.len() * sizes.len();
-    eprintln!("scaling sweep: {total} points ({} shapes × {} sizes)\n", SHAPES.len(), sizes.len());
+    eprintln!(
+        "scaling sweep: {total} points ({} shapes × {} sizes)\n",
+        SHAPES.len(),
+        sizes.len()
+    );
 
     let mut grid: Vec<Row> = Vec::new();
     let mut idx = 0;
@@ -265,8 +329,18 @@ fn main() {
     for r in &grid {
         csv.push_str(&format!(
             "{},{},{},{},{},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
-            r.shape, r.files, r.blocks, r.bytes, r.nodes,
-            r.t_include, r.t_parse, r.t_marshal, r.t_index, r.t_dangle, r.t_conn, r.t_field
+            r.shape,
+            r.files,
+            r.blocks,
+            r.bytes,
+            r.nodes,
+            r.t_include,
+            r.t_parse,
+            r.t_marshal,
+            r.t_index,
+            r.t_dangle,
+            r.t_conn,
+            r.t_field
         ));
     }
     fs::write("assets/bench_scaling.csv", &csv).unwrap();

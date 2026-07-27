@@ -133,7 +133,11 @@ where
         kind: Option<IncludeKind>,
         search: Vec<PathBuf>,
     }
-    let mut metas: Vec<Meta> = vec![Meta { path: root.clone(), kind: None, search: Vec::new() }];
+    let mut metas: Vec<Meta> = vec![Meta {
+        path: root.clone(),
+        kind: None,
+        search: Vec::new(),
+    }];
     // Filled in discovery order, index-aligned with `metas`.
     let mut includes_of: Vec<Vec<IncludeDirective>> = Vec::new();
     let mut children_of: Vec<Vec<usize>> = Vec::new();
@@ -150,8 +154,10 @@ where
 
         // Parse the generation in parallel; assign children sequentially after,
         // so node indices are deterministic regardless of thread timing.
-        let parsed: Vec<Option<Parsed<T>>> =
-            metas[start..end].par_iter().map(|m| parse(&m.path, &m.search)).collect();
+        let parsed: Vec<Option<Parsed<T>>> = metas[start..end]
+            .par_iter()
+            .map(|m| parse(&m.path, &m.search))
+            .collect();
 
         for (offset, p) in parsed.into_iter().enumerate() {
             let idx = start + offset;
@@ -162,12 +168,18 @@ where
                 continue;
             };
 
-            let parent_dir = metas[idx].path.parent().unwrap_or(Path::new(".")).to_path_buf();
+            let parent_dir = metas[idx]
+                .path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf();
             // Children inherit this file's search set extended by its own
             // path directives (same rule the file used to resolve itself).
             let mut child_search = metas[idx].search.clone();
             for inc in &includes {
-                if let Some(dir) = crate::parser::own_search_dir(&inc.kind, &inc.raw_path, &parent_dir) {
+                if let Some(dir) =
+                    crate::parser::own_search_dir(&inc.kind, &inc.raw_path, &parent_dir)
+                {
                     child_search.push(dir);
                 }
             }
@@ -235,7 +247,10 @@ where
 pub fn build_include_tree(root_path: &Path) -> Result<IncludeNode, String> {
     let nodes = walk_includes(root_path, |path, search| {
         let result = parse_file_from_path(path, search);
-        Some(Parsed { includes: result.includes, payload: result.byte_count })
+        Some(Parsed {
+            includes: result.includes,
+            payload: result.byte_count,
+        })
     })?;
     Ok(build_node(0, &nodes))
 }

@@ -21,7 +21,11 @@ fn write_deck(tag: &str, include_block: &str, hi: i64, lo: i64) -> (PathBuf, Pat
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
 
-    fs::write(dir.join("mesh.k"), "*NODE\n1,0.0,0.0,0.0\n2,1.0,0.0,0.0\n3,2.0,0.0,0.0\n").unwrap();
+    fs::write(
+        dir.join("mesh.k"),
+        "*NODE\n1,0.0,0.0,0.0\n2,1.0,0.0,0.0\n3,2.0,0.0,0.0\n",
+    )
+    .unwrap();
 
     let root = format!(
         "*KEYWORD\n\
@@ -62,9 +66,7 @@ fn include_transform_shifts_node_id_namespace() {
         1_000_000, 0, 0, 0, 0, 0, 0, 0
     );
     let (_dir, root) = write_deck(
-        "xform",
-        &transform,
-        1_000_001, // resolves against the transformed node
+        "xform", &transform, 1_000_001, // resolves against the transformed node
         1,         // raw id no longer exists globally → dangles
     );
     assert_eq!(dangling_node_ids(&root), vec![1]);
@@ -97,20 +99,36 @@ fn navigation_resolves_ids_in_the_global_namespace() {
     let deck = parse_deck(&root).unwrap();
 
     // Sites are keyed by the global id: the part is found at 501, not its raw 1.
-    assert!(deck.get(EntityKind::Part, 501).is_some(), "part at offset id");
-    assert!(deck.get(EntityKind::Part, 1).is_none(), "raw id must not resolve");
+    assert!(
+        deck.get(EntityKind::Part, 501).is_some(),
+        "part at offset id"
+    );
+    assert!(
+        deck.get(EntityKind::Part, 1).is_none(),
+        "raw id must not resolve"
+    );
 
     // Following the part's material reference shifts the local mid (1) by IDMOFF.
     let part = deck.part(501).unwrap();
-    let material = part.material().expect("material resolves across the transform");
+    let material = part
+        .material()
+        .expect("material resolves across the transform");
     assert_eq!(material.id(), Some(301));
 
     // Introspection: the effective offsets applied to this entity's file.
-    let t = part.transform().expect("part sits under an *INCLUDE_TRANSFORM");
+    let t = part
+        .transform()
+        .expect("part sits under an *INCLUDE_TRANSFORM");
     assert_eq!((t.idpoff, t.idmoff), (500, 300));
     assert_eq!(t.idnoff, 0);
     // The root file itself carries no transform.
-    assert!(deck.keywords("INCLUDE_TRANSFORM").next().unwrap().transform().is_none());
+    assert!(
+        deck.keywords("INCLUDE_TRANSFORM")
+            .next()
+            .unwrap()
+            .transform()
+            .is_none()
+    );
 }
 
 #[test]

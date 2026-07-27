@@ -44,7 +44,10 @@ fn make_deck(label: &str, n_files: usize, total: usize) -> PathBuf {
         writeln!(w, "*END").unwrap();
         w.flush().unwrap();
         for f in 0..n_files {
-            let mut w = BufWriter::with_capacity(1 << 20, File::create(dir.join(format!("mesh_{f}.k"))).unwrap());
+            let mut w = BufWriter::with_capacity(
+                1 << 20,
+                File::create(dir.join(format!("mesh_{f}.k"))).unwrap(),
+            );
             write_nodes(&mut w, f * per, per);
             w.flush().unwrap();
         }
@@ -59,11 +62,19 @@ fn main() {
     // columns + input start hitting swap and the numbers stop reflecting the
     // algorithm.
     let sizes = [
-        2_000_000usize, 10_000_000, 30_000_000, 70_000_000, 100_000_000, 140_000_000,
+        2_000_000usize,
+        10_000_000,
+        30_000_000,
+        70_000_000,
+        100_000_000,
+        140_000_000,
     ];
     let configs: [(&str, usize); 2] = [("monolithic", 1), ("flat", 256)];
 
-    eprintln!("marshalling sweep, {} threads", rayon::current_num_threads());
+    eprintln!(
+        "marshalling sweep, {} threads",
+        rayon::current_num_threads()
+    );
     let mut csv = String::from("shape,files,nodes,marshal_s\n");
     for (label, nf) in configs {
         for total in sizes {
@@ -84,7 +95,11 @@ fn main() {
                     std::hint::black_box(&table);
                 }
             }
-            eprintln!("{:>6.0} ms  →  {:>4.0} M nodes/s", best * 1e3, total as f64 / best / 1e6);
+            eprintln!(
+                "{:>6.0} ms  →  {:>4.0} M nodes/s",
+                best * 1e3,
+                total as f64 / best / 1e6
+            );
             csv.push_str(&format!("{label},{nf},{total},{best:.6}\n"));
             let _ = fs::remove_dir_all(root.parent().unwrap()); // bound peak disk
         }

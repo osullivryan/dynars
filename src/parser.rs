@@ -179,7 +179,11 @@ struct RawInclude {
 /// are relative to the including file. The one place this rule lives, so the
 /// self-resolution below and the include walker's child propagation can never
 /// disagree on it.
-pub(crate) fn own_search_dir(kind: &IncludeKind, raw_path: &str, parent_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn own_search_dir(
+    kind: &IncludeKind,
+    raw_path: &str,
+    parent_dir: &Path,
+) -> Option<PathBuf> {
     match kind {
         IncludeKind::IncludePath => Some(PathBuf::from(raw_path)),
         IncludeKind::IncludePathRelative => Some(parent_dir.join(raw_path)),
@@ -545,7 +549,11 @@ fn read_include_filename(data: &[u8], start: usize) -> Option<String> {
     while pos < data.len() {
         let end = find_line_end(data, pos);
         let line = get_line(data, pos, end);
-        pos = if end < data.len() { end + 1 } else { data.len() };
+        pos = if end < data.len() {
+            end + 1
+        } else {
+            data.len()
+        };
 
         // Skip comment lines until the filename actually begins.
         if !started && !line.is_empty() && line[0] == b'$' {

@@ -35,10 +35,7 @@ fn missing_includes(root: &std::path::Path) -> usize {
 #[test]
 fn path_relative_resolves_same_file_include() {
     // Directive first, then the include that depends on it.
-    let root = write_deck(
-        "before",
-        "*INCLUDE_PATH_RELATIVE\nsub\n*INCLUDE\ninner.k\n",
-    );
+    let root = write_deck("before", "*INCLUDE_PATH_RELATIVE\nsub\n*INCLUDE\ninner.k\n");
     let deck = parse_deck(&root).unwrap();
     assert_eq!(deck.files.len(), 2, "inner.k should resolve via sub/");
     assert_eq!(missing_includes(&root), 0, "no include should be missing");
@@ -48,11 +45,12 @@ fn path_relative_resolves_same_file_include() {
 fn path_relative_applies_regardless_of_order() {
     // Include appears *before* the path directive — still resolves, because the
     // directive is applied file-wide, not only to what follows it.
-    let root = write_deck(
-        "after",
-        "*INCLUDE\ninner.k\n*INCLUDE_PATH_RELATIVE\nsub\n",
+    let root = write_deck("after", "*INCLUDE\ninner.k\n*INCLUDE_PATH_RELATIVE\nsub\n");
+    assert_eq!(
+        missing_includes(&root),
+        0,
+        "path directive must apply file-wide"
     );
-    assert_eq!(missing_includes(&root), 0, "path directive must apply file-wide");
 }
 
 #[test]
@@ -67,14 +65,20 @@ fn unresolvable_include_is_still_flagged() {
 
 #[test]
 fn include_tree_resolves_same_file_path_relative() {
-    let root = write_deck("tree_before", "*INCLUDE_PATH_RELATIVE\nsub\n*INCLUDE\ninner.k\n");
+    let root = write_deck(
+        "tree_before",
+        "*INCLUDE_PATH_RELATIVE\nsub\n*INCLUDE\ninner.k\n",
+    );
     let tree = build_include_tree(&root).unwrap();
     assert_eq!(tree.total_files(), 2, "tree should reach inner.k via sub/");
 }
 
 #[test]
 fn include_tree_path_relative_order_independent() {
-    let root = write_deck("tree_after", "*INCLUDE\ninner.k\n*INCLUDE_PATH_RELATIVE\nsub\n");
+    let root = write_deck(
+        "tree_after",
+        "*INCLUDE\ninner.k\n*INCLUDE_PATH_RELATIVE\nsub\n",
+    );
     let tree = build_include_tree(&root).unwrap();
     assert_eq!(tree.total_files(), 2, "path directive must apply file-wide");
 }

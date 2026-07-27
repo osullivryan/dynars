@@ -119,9 +119,7 @@ pub(crate) fn read_transform_offsets(file: &ParsedFile, block: &Block) -> Transf
     let fmt = block.format;
     let read = |card_idx: usize, field_idx: usize| -> i64 {
         match (kw.cards.get(card_idx), lines.get(card_idx)) {
-            (Some(card), Some(line)) => {
-                card_field_i64(line, card, field_idx, fmt).unwrap_or(0)
-            }
+            (Some(card), Some(line)) => card_field_i64(line, card, field_idx, fmt).unwrap_or(0),
             _ => 0,
         }
     };
@@ -348,7 +346,13 @@ impl Deck {
             .par_iter()
             .zip(transforms.par_iter())
             .flat_map_iter(|(f, transform)| {
-                check_refs(f, defs, &self.user_schemas, connectivity, transform.as_ref())
+                check_refs(
+                    f,
+                    defs,
+                    &self.user_schemas,
+                    connectivity,
+                    transform.as_ref(),
+                )
             })
             .collect()
     }
@@ -394,8 +398,8 @@ fn compute_file_transforms(deck: &Deck) -> Vec<Option<TransformOffsets>> {
         ) {
             continue;
         }
-        let canon = std::fs::canonicalize(&dir.resolved_path)
-            .unwrap_or_else(|_| dir.resolved_path.clone());
+        let canon =
+            std::fs::canonicalize(&dir.resolved_path).unwrap_or_else(|_| dir.resolved_path.clone());
         edge.entry(canon).or_insert((*parent_fi, dir.offsets));
     }
 
@@ -489,7 +493,9 @@ fn is_dangling(defs: &Defs, r: &Ref, id: i64, transform: Option<&TransformOffset
         },
         Some(transform) => match r {
             Ref::None => false,
-            Ref::To(k) => defs.get(k).is_some_and(|s| !probe(s, transform.apply(id, *k))),
+            Ref::To(k) => defs
+                .get(k)
+                .is_some_and(|s| !probe(s, transform.apply(id, *k))),
             Ref::AnyOf(ks) => {
                 let tracked: Vec<(&IdSet, i64)> = ks
                     .iter()
@@ -1220,7 +1226,10 @@ impl<'d> Keyword<'d> {
         let id = first_ref_to(self.deck, self.file, self.block, kind)?;
         // The ref is written in this file's local ids; resolve it in the deck's
         // global namespace before the lookup.
-        let id = self.deck.transform_of(self.file).map_or(id, |t| t.apply(id, kind));
+        let id = self
+            .deck
+            .transform_of(self.file)
+            .map_or(id, |t| t.apply(id, kind));
         self.deck.get(kind, id)
     }
     pub fn material(&self) -> Option<Keyword<'d>> {

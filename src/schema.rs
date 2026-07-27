@@ -580,7 +580,11 @@ fn parse_parallel(files: &[ParsedFile], schema: &Schema) -> Table {
     // Numeric single-card keywords (`*NODE`, `*ELEMENT_*`) — the bulk ones — take
     // the fast two-pass path. A repeating card with a string field falls back to
     // the general per-chunk-partials path.
-    if schema.cards[0].fields.iter().any(|f| f.ty == FieldType::Str) {
+    if schema.cards[0]
+        .fields
+        .iter()
+        .any(|f| f.ty == FieldType::Str)
+    {
         parse_parallel_partials(files, schema)
     } else {
         parse_parallel_numeric(files, schema)
@@ -668,7 +672,12 @@ fn parse_parallel_numeric(files: &[ParsedFile], schema: &Schema) -> Table {
     // agree exactly with the line iteration in pass 2, or offsets would drift.
     let counts: Vec<usize> = chunks
         .par_iter()
-        .map(|(bytes, _)| bytes.split(|&b| b == b'\n').filter(|l| !is_skippable(l)).count())
+        .map(|(bytes, _)| {
+            bytes
+                .split(|&b| b == b'\n')
+                .filter(|l| !is_skippable(l))
+                .count()
+        })
         .collect();
     let mut offsets = Vec::with_capacity(chunks.len());
     let mut total_rows = 0usize;
@@ -689,13 +698,19 @@ fn parse_parallel_numeric(files: &[ParsedFile], schema: &Schema) -> Table {
                 FieldType::Int => {
                     let mut data = Vec::<i64>::with_capacity(len);
                     unsafe { data.set_len(len) };
-                    Column::Int { data, ncols: f.count }
+                    Column::Int {
+                        data,
+                        ncols: f.count,
+                    }
                 }
                 // Str excluded by the caller.
                 _ => {
                     let mut data = Vec::<f64>::with_capacity(len);
                     unsafe { data.set_len(len) };
-                    Column::Float { data, ncols: f.count }
+                    Column::Float {
+                        data,
+                        ncols: f.count,
+                    }
                 }
             }
         })
@@ -734,7 +749,11 @@ fn parse_parallel_numeric(files: &[ParsedFile], schema: &Schema) -> Table {
                 } else {
                     let mut o = 0;
                     for (fi, f) in card.fields.iter().enumerate() {
-                        let fw = if *format == CardFormat::Long { f.width * 2 } else { f.width };
+                        let fw = if *format == CardFormat::Long {
+                            f.width * 2
+                        } else {
+                            f.width
+                        };
                         let base = row * counts_of(fi);
                         for j in 0..f.count {
                             let slice = if o >= line.len() {

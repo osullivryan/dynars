@@ -30,23 +30,36 @@ fn parses_full_include_tree_with_filename_continuation() {
         .collect();
     for expected in [
         "mainboltaexpl.k",
-        "includes.k",           // written across two lines: `inclu +` / `des.k`
+        "includes.k", // written across two lines: `inclu +` / `des.k`
         "bolted_connection_a.k",
         "control_explicit.k",
         "prescribed_motion.k",
-        "material_props.k",     // written across three lines: `mat +` / `eri +` / `al_props.k`
+        "material_props.k", // written across three lines: `mat +` / `eri +` / `al_props.k`
     ] {
-        assert!(names.iter().any(|n| n == expected), "missing {expected}: {names:?}");
+        assert!(
+            names.iter().any(|n| n == expected),
+            "missing {expected}: {names:?}"
+        );
     }
 
     // Guards the continuation fix: a filename must never survive as a literal
     // split with a trailing `+`.
-    let raws: Vec<&str> = deck.includes.iter().map(|(_, i)| i.raw_path.as_str()).collect();
+    let raws: Vec<&str> = deck
+        .includes
+        .iter()
+        .map(|(_, i)| i.raw_path.as_str())
+        .collect();
     for raw in &raws {
         assert!(!raw.contains('+'), "include filename not joined: {raw:?}");
     }
-    assert!(raws.contains(&"includes.k"), "continuation join lost: {raws:?}");
-    assert!(raws.contains(&"material_props.k"), "continuation join lost: {raws:?}");
+    assert!(
+        raws.contains(&"includes.k"),
+        "continuation join lost: {raws:?}"
+    );
+    assert!(
+        raws.contains(&"material_props.k"),
+        "continuation join lost: {raws:?}"
+    );
 }
 
 /// The deck deliberately `*INCLUDE`s a file that isn't on disk. It must be the
@@ -64,6 +77,13 @@ fn validation_flags_only_the_intentionally_missing_include() {
         .filter(|f| f.severity == Severity::Error)
         .map(|f| f.message.as_str())
         .collect();
-    assert_eq!(missing.len(), 1, "only missing_geometry.k should be missing: {missing:?}");
-    assert!(missing[0].contains("missing_geometry.k"), "unexpected: {missing:?}");
+    assert_eq!(
+        missing.len(),
+        1,
+        "only missing_geometry.k should be missing: {missing:?}"
+    );
+    assert!(
+        missing[0].contains("missing_geometry.k"),
+        "unexpected: {missing:?}"
+    );
 }
