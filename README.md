@@ -206,6 +206,37 @@ impl Check for DensityPositive {
 let _ = deck.validate([Rule::custom(DensityPositive)]);
 ```
 
+### Result post-processing
+
+Channels read from a binout/d3plot come back as numpy arrays, so they chain
+straight into signal processing and occupant injury criteria — implemented in the
+Rust core (and so available to the C/Fortran bindings too), verified bit-exact
+against SciPy.
+
+```python
+import numpy as np
+import dynars
+
+b = dynars.parse_binout("binout*")
+dt = 1e-4  # s
+
+# SAE J211 CFC filtering (zero-phase) — the phaseless Butterworth crash analysts need
+ax = dynars.cfc(b.read(["nodout", "d000001", "x_acceleration"]), 1000.0, dt)  # CFC1000
+# general zero-phase Butterworth, plus integrate / differentiate
+vel = dynars.integrate(ax, dt)                      # accel -> velocity
+low = dynars.butterworth(ax, 4, 300.0, 1/dt, "low")
+
+# occupant injury criteria (acceleration in g)
+a_res = dynars.resultant(ax_g, ay_g, az_g)          # sqrt(x^2+y^2+z^2)
+hic36 = dynars.hic36(a_res, dt)                     # Head Injury Criterion (also hic15, hic)
+a3ms  = dynars.clip(a_res, dt)                      # 3 ms clip (window defaults to 3 ms)
+csi   = dynars.severity_index(a_res, dt)           # Gadd severity index
+```
+
+Filtering (`cfc`, `filtfilt`, `butterworth`) is behind the `signal` feature —
+folded into the Python build; CFC + injury criteria are pure and always available.
+Generic array math (FFT, resampling, custom filters) is left to numpy/SciPy.
+
 ### Extending: keywords dynars doesn't ship
 
 Decks carry vendor, rare, or newer-than-our-snapshot keywords. Describe one once

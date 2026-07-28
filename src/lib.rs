@@ -102,6 +102,25 @@ pub mod _dynars {
     #[pymodule_export]
     use crate::python::parse_deck;
 
+    // Occupant injury criteria (always available).
+    #[pymodule_export]
+    use crate::python::resultant;
+
+    #[pymodule_export]
+    use crate::python::hic;
+
+    #[pymodule_export]
+    use crate::python::hic15;
+
+    #[pymodule_export]
+    use crate::python::hic36;
+
+    #[pymodule_export]
+    use crate::python::clip;
+
+    #[pymodule_export]
+    use crate::python::severity_index;
+
     // Signal post-processing (feature `signal`, folded into `python`).
     #[cfg(feature = "signal")]
     #[pymodule_export]

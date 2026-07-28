@@ -354,6 +354,24 @@ def integrate(values: npt.NDArray[np.float64], dt: float) -> npt.NDArray[np.floa
 def differentiate(values: npt.NDArray[np.float64], dt: float) -> npt.NDArray[np.float64]:
     """Central-difference derivative (e.g. velocity -> acceleration), same length as `values`."""
 
+def resultant(x: npt.NDArray[np.float64], y: npt.NDArray[np.float64], z: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Elementwise resultant magnitude sqrt(x^2+y^2+z^2) of three channels."""
+
+def hic(a: npt.NDArray[np.float64], dt: float, window: float = 0.036) -> float:
+    """Head Injury Criterion over a `window`-second interval. `a` is resultant head acceleration in g, sampled every `dt` s."""
+
+def hic15(a: npt.NDArray[np.float64], dt: float) -> float:
+    """HIC over a 15 ms window."""
+
+def hic36(a: npt.NDArray[np.float64], dt: float) -> float:
+    """HIC over a 36 ms window."""
+
+def clip(a: npt.NDArray[np.float64], dt: float, window: float = 0.003) -> float:
+    """The '3 ms clip': highest acceleration (g) sustained for `window` seconds (default 3 ms)."""
+
+def severity_index(a: npt.NDArray[np.float64], dt: float) -> float:
+    """Gadd Severity Index (CSI on a chest resultant): integral of a^2.5 dt over the pulse."""
+
 def parse_include_tree(path: str) -> IncludeNode:
     """
     Parse an LS-DYNA keyword file and return the include tree.

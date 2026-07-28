@@ -6,6 +6,7 @@
 
 mod deck;
 mod include_tree;
+mod injury;
 mod keyword;
 mod results;
 #[cfg(feature = "signal")]
@@ -14,6 +15,7 @@ mod validate;
 
 pub use deck::{PyDeck, PyEntity, parse_deck};
 pub use include_tree::{PyIncludeNode, parse_include_tree};
+pub use injury::{clip, hic, hic15, hic36, resultant, severity_index};
 pub use keyword::{PyKeywordFile, parse_keyword_file};
 pub use results::{
     PyBinout, PyBinoutEditor, PyD3plot, PyD3plotEditor, PyD3plotWriter, PyIntforWriter,

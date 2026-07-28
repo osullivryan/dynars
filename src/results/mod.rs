@@ -10,6 +10,9 @@ mod binout;
 pub mod d3plot;
 mod diskfile;
 mod edit;
+/// Occupant injury criteria (HIC, 3 ms clip, severity index, resultant) built on
+/// filtered acceleration channels. Always available (pure, no external deps).
+pub mod injury;
 mod lsda;
 /// Numerical post-processing of result time-histories (CFC/J211 filtering,
 /// Butterworth, integrate, differentiate). CFC + integrate/differentiate are
