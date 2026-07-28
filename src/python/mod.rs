@@ -8,6 +8,8 @@ mod deck;
 mod include_tree;
 mod keyword;
 mod results;
+#[cfg(feature = "signal")]
+mod signal;
 mod validate;
 
 pub use deck::{PyDeck, PyEntity, parse_deck};
@@ -17,4 +19,6 @@ pub use results::{
     PyBinout, PyBinoutEditor, PyD3plot, PyD3plotEditor, PyD3plotWriter, PyIntforWriter,
     open_d3plot, parse_binout,
 };
+#[cfg(feature = "signal")]
+pub use signal::{butterworth, cfc, differentiate, filtfilt, integrate};
 pub use validate::{PyFinding, PyPredicate, PyReport, PyRule};

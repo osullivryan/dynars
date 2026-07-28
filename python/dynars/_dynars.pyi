@@ -339,6 +339,21 @@ def parse_binout(pattern: str) -> Binout:
 def open_d3plot(path: str) -> D3plot:
     """Open an LS-DYNA d3plot for reading."""
 
+def cfc(values: npt.NDArray[np.float64], cfc: float, dt: float) -> npt.NDArray[np.float64]:
+    """Zero-phase SAE J211 CFC low-pass filter. `cfc` is the class in Hz (60/180/600/1000 or any value); `dt` is the sample interval in seconds."""
+
+def filtfilt(b: Sequence[float], a: Sequence[float], values: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Zero-phase forward-backward filtering of a (b, a) filter (analogue of scipy.signal.filtfilt)."""
+
+def butterworth(values: npt.NDArray[np.float64], order: int, cutoff: float, fs: float, btype: str = "low") -> npt.NDArray[np.float64]:
+    """Zero-phase Butterworth filter: `order`-pole, corner `cutoff` Hz at sample rate `fs` Hz, `btype` = 'low' or 'high'."""
+
+def integrate(values: npt.NDArray[np.float64], dt: float) -> npt.NDArray[np.float64]:
+    """Cumulative trapezoidal integral (e.g. acceleration -> velocity), same length as `values`, starting at 0."""
+
+def differentiate(values: npt.NDArray[np.float64], dt: float) -> npt.NDArray[np.float64]:
+    """Central-difference derivative (e.g. velocity -> acceleration), same length as `values`."""
+
 def parse_include_tree(path: str) -> IncludeNode:
     """
     Parse an LS-DYNA keyword file and return the include tree.

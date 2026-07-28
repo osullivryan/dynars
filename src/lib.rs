@@ -101,4 +101,25 @@ pub mod _dynars {
 
     #[pymodule_export]
     use crate::python::parse_deck;
+
+    // Signal post-processing (feature `signal`, folded into `python`).
+    #[cfg(feature = "signal")]
+    #[pymodule_export]
+    use crate::python::cfc;
+
+    #[cfg(feature = "signal")]
+    #[pymodule_export]
+    use crate::python::filtfilt;
+
+    #[cfg(feature = "signal")]
+    #[pymodule_export]
+    use crate::python::butterworth;
+
+    #[cfg(feature = "signal")]
+    #[pymodule_export]
+    use crate::python::integrate;
+
+    #[cfg(feature = "signal")]
+    #[pymodule_export]
+    use crate::python::differentiate;
 }

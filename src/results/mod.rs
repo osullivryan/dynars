@@ -11,6 +11,10 @@ pub mod d3plot;
 mod diskfile;
 mod edit;
 mod lsda;
+/// Numerical post-processing of result time-histories (CFC/J211 filtering,
+/// Butterworth, integrate, differentiate). CFC + integrate/differentiate are
+/// always available; the general Butterworth design needs the `signal` feature.
+pub mod signal;
 mod symbol;
 
 pub use binout::Binout;
