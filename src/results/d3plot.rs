@@ -463,6 +463,29 @@ impl D3plot {
         )
     }
 
+    /// Deformed node coordinates for **every** state in one pass: a flat
+    /// `num_states × NUMNP × 3` row-major buffer (state outermost, then node,
+    /// then x/y/z). One allocation, one call — pulls the whole coordinate history
+    /// without the per-state call and allocation overhead of repeatedly invoking
+    /// [`node_coordinates`](Self::node_coordinates) (the difference is stark
+    /// across a language boundary, where each state would be its own round-trip).
+    pub fn node_coordinates_all(&self) -> Result<Vec<f64>, D3plotError> {
+        let per = self.ctrl.numnp * SPATIAL_DIM;
+        let mut out = vec![0.0f64; self.states.len() * per];
+        let ws = self.ctrl.wordsize;
+        let iu = self.ctrl.iu_offset_in_state();
+        for (s, loc) in self.states.iter().enumerate() {
+            let off = loc.offset + iu;
+            read_floats_into(
+                &self.files[loc.file],
+                off,
+                &mut out[s * per..(s + 1) * per],
+                ws,
+            )?;
+        }
+        Ok(out)
+    }
+
     /// Per-node displacement magnitude at `state`: |current − initial|.
     pub fn displacement_magnitudes(&self, state: usize) -> Result<Vec<f64>, D3plotError> {
         let cur = self.node_coordinates(state)?;
@@ -989,6 +1012,29 @@ fn read_float_at(bytes: &[u8], off: u64, wordsize: u64) -> f64 {
     }
 }
 
+/// Read `out.len()` floats starting at `byte_offset` into `out`, as f64. Lets
+/// callers fill a slice of a larger buffer with no intermediate allocation.
+fn read_floats_into(
+    bytes: &[u8],
+    byte_offset: u64,
+    out: &mut [f64],
+    wordsize: u64,
+) -> Result<(), D3plotError> {
+    let start = byte_offset as usize;
+    let need = out.len() * wordsize as usize;
+    let slice = bytes.get(start..start + need).ok_or_else(|| {
+        D3plotError::Unsupported("d3plot truncated: float block out of range".into())
+    })?;
+    for (dst, chunk) in out.iter_mut().zip(slice.chunks_exact(wordsize as usize)) {
+        *dst = if wordsize == 4 {
+            f32::from_le_bytes(chunk.try_into().unwrap()) as f64
+        } else {
+            f64::from_le_bytes(chunk.try_into().unwrap())
+        };
+    }
+    Ok(())
+}
+
 /// Read `n` floats starting at `byte_offset` from an in-memory buffer, as f64.
 fn read_floats_at(
     bytes: &[u8],
@@ -996,19 +1042,8 @@ fn read_floats_at(
     n: usize,
     wordsize: u64,
 ) -> Result<Vec<f64>, D3plotError> {
-    let start = byte_offset as usize;
-    let need = n * wordsize as usize;
-    let slice = bytes.get(start..start + need).ok_or_else(|| {
-        D3plotError::Unsupported("d3plot truncated: float block out of range".into())
-    })?;
-    let mut out = Vec::with_capacity(n);
-    for chunk in slice.chunks_exact(wordsize as usize) {
-        out.push(if wordsize == 4 {
-            f32::from_le_bytes(chunk.try_into().unwrap()) as f64
-        } else {
-            f64::from_le_bytes(chunk.try_into().unwrap())
-        });
-    }
+    let mut out = vec![0.0f64; n];
+    read_floats_into(bytes, byte_offset, &mut out, wordsize)?;
     Ok(out)
 }
 
@@ -1719,6 +1754,14 @@ mod tests {
 
         // max displacement at the final state
         assert!((d.max_displacement_final().unwrap() - 1.0).abs() < 1e-6);
+
+        // bulk all-states read == per-state reads concatenated
+        let bulk = d.node_coordinates_all().unwrap();
+        let per: Vec<f64> = (0..d.num_states())
+            .flat_map(|s| d.node_coordinates(s).unwrap())
+            .collect();
+        assert_eq!(bulk, per);
+        assert_eq!(bulk.len(), d.num_states() * d.num_nodes() * 3);
 
         // generic extractor: displacement block == per-state node coordinates
         let all = d.resolve_states(None).unwrap();

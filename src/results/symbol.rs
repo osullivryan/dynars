@@ -1,11 +1,10 @@
 use super::LsdaError;
 use super::diskfile::Diskfile;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
 
-/// An immutable, lock-free binout tree, frozen from the `Arc<Mutex<Symbol>>`
-/// tree once parsing is done. Reads (including concurrent ones) traverse it
-/// without any locking.
+/// An immutable, lock-free binout tree, built straight from the symbol table by
+/// [`build_read_tree`](super::lsda::build_read_tree). Reads (including concurrent
+/// ones) traverse it without any locking.
 pub enum SymNode {
     Dir(BTreeMap<Vec<u8>, SymNode>),
     Leaf(SymMeta),
@@ -18,26 +17,6 @@ pub struct SymMeta {
     pub length: u64,
     pub file_index: usize,
     pub name_len: usize,
-}
-
-/// Recursively freeze the mutable symbol tree into a lock-free [`SymNode`].
-pub fn freeze(sym: &Arc<Mutex<Symbol>>) -> SymNode {
-    let s = sym.lock().unwrap();
-    if s.type_ == 0 {
-        let mut m = BTreeMap::new();
-        for (name, child) in &s.children {
-            m.insert(name.clone(), freeze(child));
-        }
-        SymNode::Dir(m)
-    } else {
-        SymNode::Leaf(SymMeta {
-            type_: s.type_,
-            offset: s.offset,
-            length: s.length,
-            file_index: s.file_index.unwrap_or(0),
-            name_len: s.name.len(),
-        })
-    }
 }
 
 impl SymNode {
@@ -73,36 +52,6 @@ impl SymNode {
                 read_typed(buf, meta.type_, count, file.is_little_endian)
             }
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct Symbol {
-    pub name: Vec<u8>,
-    pub type_: u8,
-    pub offset: u64,
-    pub length: u64,
-    pub file_index: Option<usize>,
-    pub children: HashMap<Vec<u8>, Arc<Mutex<Symbol>>>,
-    pub parent: Option<Arc<Mutex<Symbol>>>,
-}
-
-impl Symbol {
-    pub fn new(name: Vec<u8>) -> Self {
-        Self {
-            name,
-            type_: 0,
-            offset: 0,
-            length: 0,
-            file_index: None,
-            children: HashMap::new(),
-            parent: None,
-        }
-    }
-
-    pub fn add_child(&mut self, name: Vec<u8>, child: Arc<Mutex<Symbol>>) {
-        self.children.insert(name, child);
-        self.length = self.children.len() as u64;
     }
 }
 

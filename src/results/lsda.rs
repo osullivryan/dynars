@@ -1,220 +1,244 @@
 use super::LsdaError;
 use super::diskfile::Diskfile;
-use super::symbol::Symbol;
-use std::collections::HashSet;
+use super::symbol::{SymMeta, SymNode};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::SeekFrom;
-use std::sync::{Arc, Mutex};
 
 const BEGINSYMBOLTABLE: u8 = 5;
 
-pub struct Lsda {
-    pub files: Vec<Diskfile>,
-    pub root: Arc<Mutex<Symbol>>,
-    pub cwd: Arc<Mutex<Symbol>>,
-    #[allow(dead_code)]
-    pub mode: String,
-}
-
-impl Lsda {
-    pub fn new(files: Vec<String>, mode: &str) -> Result<Self, LsdaError> {
-        let mut disk_files = Vec::new();
-
-        if mode.starts_with('r') {
-            let mut names: HashSet<String> = HashSet::new();
-            for file in &files {
-                names.insert(file.clone());
-                for i in 1..1000 {
-                    let cont = format!("{}%{:03}", file, i);
-                    if std::path::Path::new(&cont).exists() {
-                        names.insert(cont);
-                    } else {
-                        break;
-                    }
-                }
-            }
-            let mut name_list: Vec<String> = names.into_iter().collect();
-            name_list.sort();
-            for f in &name_list {
-                disk_files.push(Diskfile::new(f, mode)?);
-            }
-        } else {
-            if files.len() > 1 {
-                return Err(LsdaError::InvalidPath("only one file in write mode".into()));
-            }
-            disk_files.push(Diskfile::new(&files[0], mode)?);
-        }
-
-        let root = Arc::new(Mutex::new(Symbol::new(b"/".to_vec())));
-        let cwd = Arc::clone(&root);
-
-        let mut lsda = Self {
-            files: disk_files,
-            root: Arc::clone(&root),
-            cwd,
-            mode: mode.to_string(),
-        };
-
-        if mode.starts_with('r') {
-            for i in 0..lsda.files.len() {
-                lsda.read_symbol_table(i)?;
-            }
-        }
-
-        Ok(lsda)
-    }
-
-    fn cd_internal(&mut self, path: &str, create: bool) -> Result<(), LsdaError> {
-        let path = if path.ends_with('/') && path.len() > 1 {
-            &path[..path.len() - 1]
-        } else {
-            path
-        };
-        if path == "/" {
-            self.cwd = Arc::clone(&self.root);
-            return Ok(());
-        }
-
-        let (abs, parts_str) = match path.strip_prefix('/') {
-            Some(rest) => {
-                self.cwd = Arc::clone(&self.root);
-                (true, rest.to_string())
-            }
-            None => (false, path.to_string()),
-        };
-        let _ = abs;
-
-        for part in parts_str.split('/').filter(|s| !s.is_empty()) {
-            if part == ".." {
-                let parent = { self.cwd.lock().unwrap().parent.clone() };
-                if let Some(p) = parent {
-                    self.cwd = p;
-                }
-                continue;
-            }
-            let has_child = {
-                self.cwd
-                    .lock()
-                    .unwrap()
-                    .children
-                    .contains_key(part.as_bytes())
-            };
-            if has_child {
-                let child = {
-                    self.cwd
-                        .lock()
-                        .unwrap()
-                        .children
-                        .get(part.as_bytes())
-                        .map(Arc::clone)
-                };
-                if let Some(c) = child {
-                    let is_dir = c.lock().unwrap().type_ == 0;
-                    if is_dir {
-                        self.cwd = c;
-                    } else {
-                        break;
-                    }
-                }
-            } else if create {
-                let new_sym = Arc::new(Mutex::new(Symbol::new(part.as_bytes().to_vec())));
-                new_sym.lock().unwrap().parent = Some(Arc::clone(&self.cwd));
-                self.cwd
-                    .lock()
-                    .unwrap()
-                    .add_child(part.as_bytes().to_vec(), Arc::clone(&new_sym));
-                self.cwd = new_sym;
+/// Open a binout file family for reading: the globbed base file(s) plus their
+/// `name%NNN` continuation files, memory-mapped and sorted so a file's index is
+/// stable (it's what leaf metadata refers back to).
+pub(crate) fn open_read_family(base_files: &[String]) -> Result<Vec<Diskfile>, LsdaError> {
+    let mut names: HashSet<String> = HashSet::new();
+    for file in base_files {
+        names.insert(file.clone());
+        for i in 1..1000 {
+            let cont = format!("{}%{:03}", file, i);
+            if std::path::Path::new(&cont).exists() {
+                names.insert(cont);
             } else {
                 break;
             }
         }
-        Ok(())
     }
+    let mut name_list: Vec<String> = names.into_iter().collect();
+    name_list.sort();
+    name_list.iter().map(|f| Diskfile::new(f, "r")).collect()
+}
 
-    fn read_symbol_table(&mut self, fi: usize) -> Result<(), LsdaError> {
-        let command_size = self.files[fi].command_size;
-        let length_size = self.files[fi].length_size;
-        self.files[fi].at_eof = false;
+/// One node while the symbol tree is being built: a flat index arena, so
+/// navigation is plain integer indexing — no `Arc`, no `Mutex`, no per-node
+/// locking. Directories have `type_ == 0` and populated `children`; leaves carry
+/// their dataset's location. Converted to the immutable [`SymNode`] in one pass
+/// at the end ([`build_symnode`]), which replaces the old build-then-freeze that
+/// materialised the tree twice.
+///
+/// Children are a `HashMap` for O(1) lookup while parsing (branch directories can
+/// hold hundreds of per-state children); [`build_symnode`] sorts them once into
+/// the `BTreeMap` reads want.
+struct RNode {
+    type_: u8,
+    offset: u64,
+    length: u64,
+    file_index: usize,
+    name_len: usize,
+    parent: usize,
+    children: HashMap<Vec<u8>, usize>,
+}
 
-        // The file starts with a fixed "write-offset" record at position 8 (right after the
-        // 8-byte file header). Its layout is:
-        //   [total_length (length_size)][command=7 (command_size)][pointer (offset_size)]
-        // The outer loop reads the POINTER data with read_offset(), so we must position
-        // the file at the start of the pointer field, skipping the length+command header.
-        let ptr_start = 8u64 + length_size as u64 + command_size as u64;
-        self.files[fi].seek(SeekFrom::Start(ptr_start))?;
+impl RNode {
+    fn dir(parent: usize) -> Self {
+        RNode {
+            type_: 0,
+            offset: 0,
+            length: 0,
+            file_index: 0,
+            name_len: 0,
+            parent,
+            children: HashMap::new(),
+        }
+    }
+}
 
-        loop {
-            self.files[fi].last_offset = self.files[fi].tell()?;
-            let offset = self.files[fi].read_offset()?;
-            if offset == 0 {
-                return Ok(());
-            }
-            self.files[fi].seek(SeekFrom::Start(offset))?;
-            let (_, cmd) = self.files[fi].read_command()?;
-            if cmd != BEGINSYMBOLTABLE {
-                return Ok(());
-            }
+/// Parse the LSDA symbol table of `files` straight into a lock-free [`SymNode`].
+///
+/// The symbol table is a chain of records: command 2 sets the current directory
+/// (a path, created on demand), command 4 declares a leaf dataset in it. Later
+/// records — and later files in the family — override earlier metadata for the
+/// same path, so channels written across continuation files resolve to their
+/// latest location.
+pub(crate) fn build_read_tree(files: &mut [Diskfile]) -> Result<SymNode, LsdaError> {
+    let mut arena: Vec<RNode> = vec![RNode::dir(0)]; // root at 0, its own parent
+    let mut cwd = 0usize;
+    for fi in 0..files.len() {
+        read_symbol_table(&mut arena, &mut cwd, files, fi)?;
+    }
+    Ok(build_symnode(&arena, 0))
+}
 
-            loop {
-                let (clen, cmd) = self.files[fi].read_command()?;
-                let data_len = clen
-                    .checked_sub(command_size as u64 + length_size as u64)
-                    .ok_or_else(|| {
-                        LsdaError::Conversion(format!(
-                            "corrupt binout symbol table: record length {clen} is smaller \
-                         than its {}-byte header",
-                            command_size as u64 + length_size as u64
-                        ))
-                    })?;
-                match cmd {
-                    2 => {
-                        let path_bytes = self.files[fi].read_bytes(data_len as usize)?;
-                        let path = String::from_utf8_lossy(&path_bytes).to_string();
-                        self.cd_internal(&path, true)?;
-                    }
-                    4 => {
-                        self.read_entry(fi, data_len as usize)?;
-                    }
-                    _ => break,
+/// Navigate to `path` (absolute or relative to `cwd`), creating directory nodes
+/// that don't exist yet — the read-mode symbol table always declares its dirs.
+fn cd(arena: &mut Vec<RNode>, cwd: &mut usize, path: &str) {
+    let path = if path.ends_with('/') && path.len() > 1 {
+        &path[..path.len() - 1]
+    } else {
+        path
+    };
+    if path == "/" {
+        *cwd = 0;
+        return;
+    }
+    let rest = match path.strip_prefix('/') {
+        Some(rest) => {
+            *cwd = 0;
+            rest
+        }
+        None => path,
+    };
+    for part in rest.split('/').filter(|s| !s.is_empty()) {
+        if part == ".." {
+            *cwd = arena[*cwd].parent;
+            continue;
+        }
+        let key = part.as_bytes();
+        match arena[*cwd].children.get(key).copied() {
+            Some(ci) => {
+                if arena[ci].type_ == 0 {
+                    *cwd = ci; // descend into the directory
+                } else {
+                    break; // a leaf shadows the path — stop, matching the old walker
                 }
+            }
+            None => {
+                let idx = arena.len();
+                arena.push(RNode::dir(*cwd));
+                arena[*cwd].children.insert(key.to_vec(), idx);
+                *cwd = idx;
             }
         }
     }
+}
 
-    fn read_entry(&mut self, fi: usize, reclen: usize) -> Result<(), LsdaError> {
-        let data = self.files[fi].read_bytes(reclen)?;
-        let f = &self.files[fi];
-        let RawEntry {
-            name,
-            type_,
-            offset,
-            length,
-        } = parse_entry(
-            &data,
-            f.comp1,
-            f.type_size,
-            f.offset_size,
-            f.length_size,
-            f.is_little_endian,
-        )?;
+/// Declare (or update) a leaf dataset named `name` in directory `cwd`.
+fn add_entry(arena: &mut Vec<RNode>, cwd: usize, entry: RawEntry, fi: usize) {
+    let RawEntry {
+        name,
+        type_,
+        offset,
+        length,
+    } = entry;
+    let name_len = name.len();
+    match arena[cwd].children.get(&name).copied() {
+        Some(idx) => {
+            let n = &mut arena[idx];
+            n.type_ = type_;
+            n.offset = offset;
+            n.length = length;
+            n.file_index = fi;
+            n.name_len = name_len;
+        }
+        None => {
+            let idx = arena.len();
+            arena.push(RNode {
+                type_,
+                offset,
+                length,
+                file_index: fi,
+                name_len,
+                parent: cwd,
+                children: HashMap::new(),
+            });
+            arena[cwd].children.insert(name, idx);
+        }
+    }
+}
 
-        let sym = {
-            let mut cwd = self.cwd.lock().unwrap();
-            if let Some(existing) = cwd.children.get(&name) {
-                Arc::clone(existing)
-            } else {
-                let s = Arc::new(Mutex::new(Symbol::new(name.clone())));
-                s.lock().unwrap().parent = Some(Arc::clone(&self.cwd));
-                cwd.add_child(name.clone(), Arc::clone(&s));
-                s
+fn read_symbol_table(
+    arena: &mut Vec<RNode>,
+    cwd: &mut usize,
+    files: &mut [Diskfile],
+    fi: usize,
+) -> Result<(), LsdaError> {
+    let command_size = files[fi].command_size;
+    let length_size = files[fi].length_size;
+    files[fi].at_eof = false;
+
+    // The file starts with a fixed "write-offset" record at position 8 (right
+    // after the 8-byte header): [length][command=7][pointer]. We read the
+    // POINTER with read_offset(), so position past the length+command header.
+    let ptr_start = 8u64 + length_size as u64 + command_size as u64;
+    files[fi].seek(SeekFrom::Start(ptr_start))?;
+
+    loop {
+        files[fi].last_offset = files[fi].tell()?;
+        let offset = files[fi].read_offset()?;
+        if offset == 0 {
+            return Ok(());
+        }
+        files[fi].seek(SeekFrom::Start(offset))?;
+        let (_, cmd) = files[fi].read_command()?;
+        if cmd != BEGINSYMBOLTABLE {
+            return Ok(());
+        }
+
+        loop {
+            let (clen, cmd) = files[fi].read_command()?;
+            let data_len = clen
+                .checked_sub(command_size as u64 + length_size as u64)
+                .ok_or_else(|| {
+                    LsdaError::Conversion(format!(
+                        "corrupt binout symbol table: record length {clen} is smaller \
+                         than its {}-byte header",
+                        command_size as u64 + length_size as u64
+                    ))
+                })?;
+            match cmd {
+                2 => {
+                    let path_bytes = files[fi].read_slice(data_len as usize)?;
+                    let path = String::from_utf8_lossy(path_bytes);
+                    cd(arena, cwd, &path);
+                }
+                4 => {
+                    // Copy the small fixed sizes out first so the record read can
+                    // borrow the mapping (zero-copy) without an overlapping borrow.
+                    let f = &files[fi];
+                    let (comp1, type_size, offset_size, length_size, le) = (
+                        f.comp1,
+                        f.type_size,
+                        f.offset_size,
+                        f.length_size,
+                        f.is_little_endian,
+                    );
+                    let data = files[fi].read_slice(data_len as usize)?;
+                    let entry = parse_entry(data, comp1, type_size, offset_size, length_size, le)?;
+                    add_entry(arena, *cwd, entry, fi);
+                }
+                _ => break,
             }
-        };
-        let mut s = sym.lock().unwrap();
-        s.type_ = type_;
-        s.offset = offset;
-        s.length = length;
-        s.file_index = Some(fi);
-        Ok(())
+        }
+    }
+}
+
+/// Convert the finished arena into the immutable, lock-free [`SymNode`] reads
+/// traverse. `children` is already a `BTreeMap`, so directory listings come out
+/// sorted with no extra work.
+fn build_symnode(arena: &[RNode], idx: usize) -> SymNode {
+    let n = &arena[idx];
+    if n.type_ == 0 {
+        let mut m = BTreeMap::new();
+        for (name, &ci) in &n.children {
+            m.insert(name.clone(), build_symnode(arena, ci));
+        }
+        SymNode::Dir(m)
+    } else {
+        SymNode::Leaf(SymMeta {
+            type_: n.type_,
+            offset: n.offset,
+            length: n.length,
+            file_index: n.file_index,
+            name_len: n.name_len,
+        })
     }
 }
 

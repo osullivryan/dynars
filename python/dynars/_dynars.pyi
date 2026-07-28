@@ -160,6 +160,8 @@ class D3plot:
         """Simulation time of each state, as a float64 array."""
     def node_coordinates(self, /, state: int) -> npt.NDArray[np.float64]:
         """Deformed node coordinates at `state` (0-based) as an (NUMNP, NDIM) array."""
+    def node_coordinates_all(self, /) -> npt.NDArray[np.float64]:
+        """Deformed node coordinates for every state as a (num_states, NUMNP, 3) array — one call instead of a Python loop over node_coordinates."""
     def displacement_magnitudes(self, /, state: int) -> npt.NDArray[np.float64]:
         """Per-node displacement magnitude at `state` as a (NUMNP,) array."""
     def max_displacement_final(self, /) -> float:

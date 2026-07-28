@@ -2,8 +2,8 @@ use rayon::prelude::*;
 
 use super::LsdaError;
 use super::diskfile::Diskfile;
-use super::lsda::Lsda;
-use super::symbol::{ReadResult, SymNode, freeze};
+use super::lsda::{build_read_tree, open_read_family};
+use super::symbol::{ReadResult, SymNode};
 
 /// LS-DYNA binary output (binout) file reader.
 ///
@@ -36,9 +36,11 @@ impl Binout {
             return Err(LsdaError::FileNotFound);
         }
         filelist.sort();
-        let lsda = Lsda::new(filelist.clone(), "r")?;
-        let tree = freeze(&lsda.root);
-        let Lsda { files, .. } = lsda;
+        // Read-mode open: memory-map the family, then parse the symbol table
+        // straight into the lock-free tree — no intermediate mutable/locked tree,
+        // no second freeze pass.
+        let mut files = open_read_family(&filelist)?;
+        let tree = build_read_tree(&mut files)?;
         Ok(Self {
             filelist,
             files,

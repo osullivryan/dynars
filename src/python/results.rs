@@ -237,6 +237,20 @@ impl PyD3plot {
         Ok(a.into_pyarray(py).into_any())
     }
 
+    /// Deformed node coordinates for every state as a `(num_states, NUMNP, 3)`
+    /// array — one call, one allocation, instead of a Python loop over
+    /// `node_coordinates`.
+    fn node_coordinates_all<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::PyAny>> {
+        let v = py
+            .detach(|| self.inner.node_coordinates_all())
+            .map_err(d3_err)?;
+        let ns = self.inner.num_states();
+        let nn = self.inner.num_nodes();
+        let a = numpy::ndarray::Array3::from_shape_vec((ns, nn, 3), v)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(a.into_pyarray(py).into_any())
+    }
+
     /// Per-node displacement magnitude at `state` as a `(NUMNP,)` array.
     fn displacement_magnitudes<'py>(
         &self,

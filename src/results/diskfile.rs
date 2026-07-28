@@ -81,12 +81,17 @@ impl Diskfile {
         self.read_value(self.offset_size)
     }
 
-    pub fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>, LsdaError> {
-        let end = self.pos.checked_add(len).filter(|e| *e <= self.map.len());
-        let end = end.ok_or_else(|| LsdaError::Conversion("read past end of LSDA file".into()))?;
-        let out = self.map[self.pos..end].to_vec();
+    /// Read `len` bytes as a borrowed slice into the mapping — no copy. Used by
+    /// the symbol-table walk, which parses each record in place and only
+    /// allocates the (small) names it keeps.
+    pub fn read_slice(&mut self, len: usize) -> Result<&[u8], LsdaError> {
+        let start = self.pos;
+        let end = start
+            .checked_add(len)
+            .filter(|e| *e <= self.map.len())
+            .ok_or_else(|| LsdaError::Conversion("read past end of LSDA file".into()))?;
         self.pos = end;
-        Ok(out)
+        Ok(&self.map[start..end])
     }
 
     pub fn tell(&mut self) -> Result<u64, LsdaError> {
