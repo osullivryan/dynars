@@ -731,6 +731,12 @@ class StateBlock:
     def __ne__(self, /, other: object) -> bool: ...
     def __repr__(self, /) -> str: ...
 
+def bric(wx: Incomplete, wy: Incomplete, wz: Incomplete, crit_x: float, crit_y: float, crit_z: float) -> float:
+    """
+    Brain Injury Criterion from the three head angular-velocity channels (rad/s)
+    and their critical values.
+    """
+
 def butterworth(values: Incomplete, order: int, cutoff: float, fs: float, btype: str = "low") -> Any:
     """
     Zero-phase Butterworth filter: `order`-pole, corner `cutoff` Hz at sample
@@ -783,6 +789,17 @@ def integrate(values: Incomplete, dt: float) -> Any:
     as `values`, starting at 0.
     """
 
+def nic(a_t1: Incomplete, a_head: Incomplete, dt: float) -> float:
+    """
+    Rear-impact Neck Injury Criterion NIC (max) from T1 and head accel (m/s²).
+    """
+
+def nij(fx: Incomplete, fz: Incomplete, my: Incomplete, distance: float, fzc_te: float, fzc_co: float, myc_fl: float, myc_ex: float) -> float:
+    """
+    Neck Injury Criterion Nij (max) — see the Rust docs for the signed-critical
+    convention (compression/extension criticals are negative).
+    """
+
 def open_d3plot(path: str) -> D3plot:
     """
     Open an LS-DYNA d3plot for reading (mirrors [`PyD3plot::new`]).
@@ -820,4 +837,20 @@ def resultant(x: Incomplete, y: Incomplete, z: Incomplete) -> Any:
 def severity_index(a: Incomplete, dt: float) -> float:
     """
     Gadd Severity Index (CSI on a chest resultant): ∫ a^2.5 dt over the pulse.
+    """
+
+def tibia_index(mx: Incomplete, my: Incomplete, fz: Incomplete, critical_bending_moment: float, critical_compression_force: float) -> float:
+    """
+    Tibia Index (max) from bending moments (N·m) and axial force (N).
+    """
+
+def ubric(wx: Incomplete, wy: Incomplete, wz: Incomplete, ax: Incomplete, ay: Incomplete, az: Incomplete, crit_wx: float, crit_wy: float, crit_wz: float, crit_ax: float, crit_ay: float, crit_az: float) -> float:
+    """
+    Universal Brain Injury Criterion (uBRIC) from angular velocity + acceleration
+    channels and their critical values.
+    """
+
+def vc(y: Incomplete, dt: float, scaling_factor: float, deformation_constant: float) -> float:
+    """
+    Viscous Criterion (VC)max from a chest deflection channel `y` (m).
     """

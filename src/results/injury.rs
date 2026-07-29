@@ -1,13 +1,26 @@
-//! Occupant injury criteria (Tier 1: single-channel, no dummy-specific tables).
+//! Occupant injury criteria.
 //!
-//! All operate on plain `&[f64]` and assume acceleration in **g** (divide a
-//! m/s² channel by 9.81 first) sampled uniformly at interval `dt` seconds — so
-//! they chain straight off a [`cfc`](super::signal::cfc)-filtered resultant.
+//! **Tier 1** — head/chest acceleration criteria. All operate on plain `&[f64]`
+//! and assume acceleration in **g** (divide a m/s² channel by 9.81 first) sampled
+//! uniformly at interval `dt` seconds — so they chain straight off a
+//! [`cfc`](super::signal::cfc)-filtered resultant.
 //!
 //! - [`resultant`] — √(x²+y²+z²) of three channels.
 //! - [`hic`] / [`hic15`] / [`hic36`] — Head Injury Criterion.
 //! - [`clip`] — the "3 ms clip": highest level sustained for a window (default 3 ms).
 //! - [`severity_index`] — Gadd Severity Index (a.k.a. CSI on the chest resultant).
+//!
+//! **Tier 2** — force / moment / kinematic criteria (still single-object, no
+//! hard-coded tables — dummy-specific critical values are passed in). These take
+//! **SI** inputs: force in N, moment in N·m, distance in m, angular velocity in
+//! rad/s, angular acceleration in rad/s², linear acceleration (NIC) in m/s². Each
+//! returns the scalar criterion — the maximum over the pulse.
+//!
+//! - [`bric`] / [`ubric`] — Brain Injury Criterion (head angular velocity/accel).
+//! - [`vc`] — Viscous Criterion on chest deflection.
+//! - [`nij`] — neck injury (tension/compression × flexion/extension).
+//! - [`nic`] — rear-impact Neck Injury Criterion.
+//! - [`tibia_index`] — lower-leg Tibia Index.
 //!
 //! Cross-checked against the Dynasaur reference implementation
 //! (VSI-TUGraz/Dynasaur `calc/standard_functions.py`); [`hic`] maximizes over
@@ -127,9 +140,205 @@ pub fn severity_index(a: &[f64], dt: f64) -> f64 {
     integrate(&f, dt).pop().unwrap_or(0.0)
 }
 
+// ── Tier 2: force / moment / kinematic criteria (SI units) ───────────────────
+
+/// Peak absolute value of a channel.
+fn peak_abs(v: &[f64]) -> f64 {
+    v.iter().fold(0.0_f64, |m, &x| m.max(x.abs()))
+}
+
+/// Brain Injury Criterion — `‖(max|ωx|/ωxc, max|ωy|/ωyc, max|ωz|/ωzc)‖` from the
+/// three head angular-velocity channels (rad/s) and their critical values
+/// (Takhounts et al.; Dynasaur `BrIC`). For the Hybrid III 50th the criticals are
+/// about `ωxc=66.25`, `ωyc=56.45`, `ωzc=42.87` rad/s.
+pub fn bric(wx: &[f64], wy: &[f64], wz: &[f64], crit_x: f64, crit_y: f64, crit_z: f64) -> f64 {
+    let rx = peak_abs(wx) / crit_x;
+    let ry = peak_abs(wy) / crit_y;
+    let rz = peak_abs(wz) / crit_z;
+    (rx * rx + ry * ry + rz * rz).sqrt()
+}
+
+/// Universal Brain Injury Criterion (uBRIC) — combines the peak angular velocity
+/// and acceleration ratios per axis (Dynasaur `uBRIC`):
+/// `√(Σ [wᵢ + (aᵢ−wᵢ)·e^(−aᵢ/wᵢ)]²)`, `wᵢ = max|ωᵢ|/ωᵢc`, `aᵢ = max|αᵢ|/αᵢc`.
+#[allow(clippy::too_many_arguments)]
+pub fn ubric(
+    wx: &[f64],
+    wy: &[f64],
+    wz: &[f64],
+    ax: &[f64],
+    ay: &[f64],
+    az: &[f64],
+    crit_wx: f64,
+    crit_wy: f64,
+    crit_wz: f64,
+    crit_ax: f64,
+    crit_ay: f64,
+    crit_az: f64,
+) -> f64 {
+    // Per-axis blend of the velocity ratio `w` and acceleration ratio `a`.
+    let term = |w: f64, a: f64| if w == 0.0 { a } else { w + (a - w) * (-a / w).exp() };
+    let tx = term(peak_abs(wx) / crit_wx, peak_abs(ax) / crit_ax);
+    let ty = term(peak_abs(wy) / crit_wy, peak_abs(ay) / crit_ay);
+    let tz = term(peak_abs(wz) / crit_wz, peak_abs(az) / crit_az);
+    (tx * tx + ty * ty + tz * tz).sqrt()
+}
+
+/// Viscous Criterion `(VC)ₘₐₓ` — `max[ scaling·(y/deformation_constant)·ẏ ]`,
+/// where `ẏ` is a 5-point central derivative of the chest deflection `y`
+/// (Dynasaur `vc`; Lau & Viano). `y` in m, `dt` in s. `deformation_constant` is
+/// the chest depth (≈0.229 m for the Hybrid III 50th), `scaling_factor` ≈ 1.
+/// Evaluated over the interior, where the criterion peak lies.
+pub fn vc(y: &[f64], dt: f64, scaling_factor: f64, deformation_constant: f64) -> f64 {
+    let n = y.len();
+    if n < 5 || dt <= 0.0 || deformation_constant == 0.0 {
+        return 0.0;
+    }
+    let mut best = f64::NEG_INFINITY;
+    for i in 2..n - 2 {
+        let dv = (8.0 * (y[i + 1] - y[i - 1]) - (y[i + 2] - y[i - 2])) / (12.0 * dt);
+        best = best.max(scaling_factor * (y[i] / deformation_constant) * dv);
+    }
+    best
+}
+
+/// Neck Injury Criterion `Nij_max` — the largest of the four neck loading modes
+/// (axial tension/compression × flexion/extension) over the pulse (Dynasaur
+/// `nij`; FMVSS 208). `fx` shear and `fz` axial neck force (N), `my` moment (N·m),
+/// `distance` the occipital-condyle offset (m). Critical values: `fzc_te`/`fzc_co`
+/// axial tension/compression, `myc_fl`/`myc_ex` flexion/extension moments. The
+/// moment is transferred to the occipital condyle as `moc = my − distance·fx`.
+///
+/// Following Dynasaur/FMVSS 208, the compression and extension criticals are
+/// **signed to their loading direction** (i.e. passed negative), e.g. Hybrid III
+/// 50th: `fzc_te=6806, fzc_co=−6160, myc_fl=310, myc_ex=−135`.
+#[allow(clippy::too_many_arguments)]
+pub fn nij(
+    fx: &[f64],
+    fz: &[f64],
+    my: &[f64],
+    distance: f64,
+    fzc_te: f64,
+    fzc_co: f64,
+    myc_fl: f64,
+    myc_ex: f64,
+) -> f64 {
+    let n = fx.len().min(fz.len()).min(my.len());
+    let mut best = 0.0_f64;
+    for i in 0..n {
+        let moc = my[i] - distance * fx[i];
+        let fzc = if fz[i] <= 0.0 { fzc_co } else { fzc_te };
+        let myc = if moc > 0.0 { myc_fl } else { myc_ex };
+        best = best.max(fz[i] / fzc + moc / myc);
+    }
+    best
+}
+
+/// Rear-impact Neck Injury Criterion `NIC_max` — `max[ 0.2·a_rel + v_rel² ]` where
+/// `a_rel = a_T1 − a_head` (m/s²) and `v_rel = ∫a_rel dt` (Dynasaur `NIC`; Boström
+/// et al.). `dt` in s.
+pub fn nic(a_t1: &[f64], a_head: &[f64], dt: f64) -> f64 {
+    let n = a_t1.len().min(a_head.len());
+    if n == 0 || dt <= 0.0 {
+        return 0.0;
+    }
+    let a_rel: Vec<f64> = (0..n).map(|i| a_t1[i] - a_head[i]).collect();
+    let v_rel = integrate(&a_rel, dt); // cumulative trapezoid, starts at 0
+    (0..n)
+        .map(|i| 0.2 * a_rel[i] + v_rel[i] * v_rel[i])
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// Tibia Index `TI_max` — `max[ |√(Mx²+My²)/M_c| + |Fz/F_c| ]` over the pulse
+/// (Dynasaur `tibia_index`; FMVSS 208). `mx`,`my` bending moments (N·m), `fz`
+/// axial force (N); `critical_bending_moment` (N·m), `critical_compression_force`
+/// (N).
+pub fn tibia_index(
+    mx: &[f64],
+    my: &[f64],
+    fz: &[f64],
+    critical_bending_moment: f64,
+    critical_compression_force: f64,
+) -> f64 {
+    let n = mx.len().min(my.len()).min(fz.len());
+    (0..n)
+        .map(|i| {
+            let mr = (mx[i] * mx[i] + my[i] * my[i]).sqrt();
+            (mr / critical_bending_moment).abs() + (fz[i] / critical_compression_force).abs()
+        })
+        .fold(0.0_f64, f64::max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Tier 2 criteria ──────────────────────────────────────────────────────
+
+    #[test]
+    fn bric_is_the_normalized_peak_velocity_norm() {
+        // Peaks equal to the critical values → each ratio 1 → norm √3.
+        let b = bric(&[0.0, 66.25], &[-56.45, 0.0], &[42.87, 1.0], 66.25, 56.45, 42.87);
+        assert!((b - 3.0_f64.sqrt()).abs() < 1e-12, "{b}");
+        // One axis at half its critical → 0.5.
+        assert!((bric(&[33.125], &[0.0], &[0.0], 66.25, 56.45, 42.87) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ubric_reduces_to_bric_when_accel_ratio_equals_velocity_ratio() {
+        // aᵢ = wᵢ ⟹ the blend term is exactly wᵢ, so uBRIC == BrIC.
+        let w = [10.0, 20.0, 30.0];
+        let u = ubric(&w, &[0.0], &[0.0], &w, &[0.0], &[0.0], 40.0, 1.0, 1.0, 40.0, 1.0, 1.0);
+        assert!((u - 0.75).abs() < 1e-12, "{u}"); // 30/40 = 0.75 on x, 0 elsewhere
+    }
+
+    #[test]
+    fn vc_of_a_linear_deflection_is_analytic() {
+        // y = A·t → the 5-point derivative is exactly A; VC = scaling·(A·t/dc)·A,
+        // maximized at the last interior sample.
+        let dt = 1e-3;
+        let n = 200;
+        let slope = 2.0;
+        let y: Vec<f64> = (0..n).map(|i| slope * i as f64 * dt).collect();
+        let dc = 0.229;
+        let got = vc(&y, dt, 1.0, dc);
+        let i = n - 3;
+        let expect = (slope * i as f64 * dt / dc) * slope;
+        assert!((got - expect).abs() < 1e-9, "{got} vs {expect}");
+    }
+
+    #[test]
+    fn nij_selects_the_active_loading_mode() {
+        // Signed criticals (compression/extension negative), per FMVSS/Dynasaur.
+        let (fzc_te, fzc_co, myc_fl, myc_ex) = (6806.0, -6160.0, 310.0, -135.0);
+        // Tension-extension: fz=+Fzc_te, moc=−135 → 1 + (−135)/(−135) = 2.
+        let n = nij(&[0.0], &[6806.0], &[-135.0], 0.0, fzc_te, fzc_co, myc_fl, myc_ex);
+        assert!((n - 2.0).abs() < 1e-9, "{n}");
+        // Occipital-condyle transfer shifts the moment: moc = my − distance·fx = −1.
+        let n2 = nij(&[100.0], &[6806.0], &[0.0], 0.01, fzc_te, fzc_co, myc_fl, myc_ex);
+        assert!((n2 - (1.0 + 1.0 / 135.0)).abs() < 1e-9, "{n2}"); // extension
+        // Compression-flexion: fz=−6160, moc=+310 → (−6160)/(−6160) + 310/310 = 2.
+        let n3 = nij(&[0.0], &[-6160.0], &[310.0], 0.0, fzc_te, fzc_co, myc_fl, myc_ex);
+        assert!((n3 - 2.0).abs() < 1e-9, "{n3}");
+    }
+
+    #[test]
+    fn nic_of_constant_relative_accel_is_analytic() {
+        // a_rel = c constant → v_rel = c·t; NIC = 0.2c + (c·t)², max at final t.
+        let dt = 1e-3;
+        let n = 100;
+        let c = 5.0;
+        let got = nic(&vec![c; n], &vec![0.0; n], dt);
+        let t_final = (n - 1) as f64 * dt;
+        assert!((got - (0.2 * c + (c * t_final).powi(2))).abs() < 1e-9, "{got}");
+    }
+
+    #[test]
+    fn tibia_index_combines_bending_and_axial() {
+        // Mx=3, My=4 → Mr=5; Fz=−2; crit 10 / 8 → 0.5 + 0.25.
+        let ti = tibia_index(&[3.0], &[4.0], &[-2.0], 10.0, 8.0);
+        assert!((ti - 0.75).abs() < 1e-12, "{ti}");
+    }
 
     #[test]
     fn hic_matches_a_powf_reference() {

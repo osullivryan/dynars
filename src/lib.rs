@@ -121,6 +121,25 @@ pub mod _dynars {
     #[pymodule_export]
     use crate::python::severity_index;
 
+    // Tier 2 injury criteria (neck, brain, chest, tibia).
+    #[pymodule_export]
+    use crate::python::bric;
+
+    #[pymodule_export]
+    use crate::python::ubric;
+
+    #[pymodule_export]
+    use crate::python::vc;
+
+    #[pymodule_export]
+    use crate::python::nij;
+
+    #[pymodule_export]
+    use crate::python::nic;
+
+    #[pymodule_export]
+    use crate::python::tibia_index;
+
     // Signal post-processing (feature `signal`, folded into `python`).
     #[cfg(feature = "signal")]
     #[pymodule_export]
