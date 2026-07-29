@@ -38,18 +38,38 @@ pub fn hic(a: &[f64], dt: f64, window: f64) -> f64 {
     // Cumulative ∫a dt, so the mean over (i,j) is (vel[j] − vel[i]) / (t_j − t_i).
     let vel = integrate(a, dt);
     let w = ((window / dt).round() as usize).clamp(1, n - 1);
-    let mut hic = 0.0f64;
+    // HIC = max (t_j−t_i)·avg^2.5, and (that)² = Δv⁵/((j−i)³·dt³). Since √ is
+    // monotone the argmax is unchanged, so the hot loop maximizes the pow-free
+    // score Δv⁵/(j−i)³ (pure multiplies — no sqrt/powf) and we take ONE √ at the
+    // end. SIMD runs four window ends `j` at once (`vel[j..j+4]` is contiguous).
+    let inv_cube: Vec<f64> = (0..=w)
+        .map(|d| if d == 0 { 0.0 } else { 1.0 / (d as f64).powi(3) })
+        .collect();
+    let mut best4 = f64x4::splat(0.0);
+    let mut best = 0.0f64;
     for i in 0..n - 1 {
+        let (vi, vi4) = (vel[i], f64x4::splat(vel[i]));
         let jmax = (i + w).min(n - 1);
-        for j in i + 1..=jmax {
-            let tdiff = (j - i) as f64 * dt;
-            let avg = (vel[j] - vel[i]) / tdiff;
-            if avg > 0.0 {
-                hic = hic.max(tdiff * avg.powf(2.5));
-            }
+        let mut j = i + 1;
+        while j + 3 <= jmax {
+            let dv = f64x4::from([vel[j], vel[j + 1], vel[j + 2], vel[j + 3]]) - vi4;
+            let d = j - i;
+            let ic = f64x4::from([inv_cube[d], inv_cube[d + 1], inv_cube[d + 2], inv_cube[d + 3]]);
+            best4 = best4.max(dv * dv * dv * dv * dv * ic); // Δv⁵/(j−i)³ (neg for Δv<0 → dropped)
+            j += 4;
+        }
+        while j <= jmax {
+            let dv = vel[j] - vi;
+            best = best.max(dv * dv * dv * dv * dv * inv_cube[j - i]);
+            j += 1;
         }
     }
-    hic
+    let m = best4.to_array().iter().cloned().fold(best, f64::max);
+    if m > 0.0 {
+        (m / (dt * dt * dt)).sqrt() // the single deferred √
+    } else {
+        0.0
+    }
 }
 
 /// HIC15 — [`hic`] over a 15 ms window.
@@ -113,41 +133,68 @@ pub fn hic_batch(data: &[f64], n_steps: usize, n_channels: usize, dt: f64, windo
             vel[cur + j] = vel[prev + j] + 0.5 * (data[cur + j] + data[prev + j]) * dt;
         }
     }
-    let mut hic = vec![0.0f64; nc];
+    // Same pow-free `Δv⁵/(j−i)³` score as [`hic`], SIMD across channels — the
+    // single deferred `√` happens once per channel at the end.
+    let inv_cube: Vec<f64> = (0..=w)
+        .map(|d| if d == 0 { 0.0 } else { 1.0 / (d as f64).powi(3) })
+        .collect();
+    let mut best = vec![0.0f64; nc];
     let simd = nc - nc % 4;
-    let zero = f64x4::splat(0.0);
     for i in 0..nt - 1 {
         let jmax = (i + w).min(nt - 1);
         let vi = i * nc;
         for jj in i + 1..=jmax {
-            let tdiff = (jj - i) as f64 * dt;
-            let inv = 1.0 / tdiff;
-            let (td, invv) = (f64x4::splat(tdiff), f64x4::splat(inv));
+            let ic = f64x4::splat(inv_cube[jj - i]);
+            let ics = inv_cube[jj - i];
             let vj = jj * nc;
             let mut c = 0;
             while c < simd {
                 let a = f64x4::from([vel[vj + c], vel[vj + c + 1], vel[vj + c + 2], vel[vj + c + 3]]);
                 let b = f64x4::from([vel[vi + c], vel[vi + c + 1], vel[vi + c + 2], vel[vi + c + 3]]);
-                let avgp = ((a - b) * invv).max(zero); // negative means → 0 (dropped)
-                let cand = td * avgp * avgp * avgp.sqrt(); // avgp^2.5
-                let cur = f64x4::from([hic[c], hic[c + 1], hic[c + 2], hic[c + 3]]);
-                hic[c..c + 4].copy_from_slice(&cur.max(cand).to_array());
+                let dv = a - b;
+                let score = dv * dv * dv * dv * dv * ic; // Δv⁵/(j−i)³
+                let cur = f64x4::from([best[c], best[c + 1], best[c + 2], best[c + 3]]);
+                best[c..c + 4].copy_from_slice(&cur.max(score).to_array());
                 c += 4;
             }
             for j in simd..nc {
-                let avg = (vel[vj + j] - vel[vi + j]) * inv;
-                if avg > 0.0 {
-                    hic[j] = hic[j].max(tdiff * avg * avg * avg.sqrt());
-                }
+                let dv = vel[vj + j] - vel[vi + j];
+                best[j] = best[j].max(dv * dv * dv * dv * dv * ics);
             }
         }
     }
-    hic
+    let inv_dt3 = 1.0 / (dt * dt * dt);
+    best.iter()
+        .map(|&m| if m > 0.0 { (m * inv_dt3).sqrt() } else { 0.0 })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hic_matches_a_powf_reference() {
+        // The fast a²·√a form must equal the textbook `powf(2.5)` definition.
+        let (dt, n) = (1.0e-4, 400usize);
+        let a: Vec<f64> = (0..n)
+            .map(|i| (30.0 * (2.0 * std::f64::consts::PI * 80.0 * i as f64 * dt).sin()).abs() + 5.0)
+            .collect();
+        let vel = integrate(&a, dt);
+        let w = ((0.036 / dt).round() as usize).clamp(1, n - 1);
+        let mut refv = 0.0f64;
+        for i in 0..n - 1 {
+            for j in i + 1..=(i + w).min(n - 1) {
+                let td = (j - i) as f64 * dt;
+                let avg = (vel[j] - vel[i]) / td;
+                if avg > 0.0 {
+                    refv = refv.max(td * avg.powf(2.5));
+                }
+            }
+        }
+        let got = hic36(&a, dt);
+        assert!((got - refv).abs() <= 1e-9 * refv.max(1.0), "{got} vs {refv}");
+    }
 
     #[test]
     fn hic_batch_matches_scalar_hic() {

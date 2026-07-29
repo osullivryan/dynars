@@ -24,6 +24,34 @@ pub struct Binout {
     tree: SymNode,
 }
 
+/// A per-state variable aggregated across every time-state directory, as a dense
+/// `n_steps × n_channels` row-major matrix plus the per-state `time`. Produced by
+/// [`Binout::read_states`] — the clean equivalent of stitching `d000001`, `d000002`,
+/// … together by hand.
+#[derive(Debug, Clone)]
+pub struct StateMatrix {
+    /// One time value per state (length `n_steps`).
+    pub time: Vec<f64>,
+    /// Row-major `n_steps × n_channels`: state `i`, channel `j` lives at `i*n_channels + j`.
+    pub values: Vec<f64>,
+    pub n_steps: usize,
+    pub n_channels: usize,
+}
+
+impl StateMatrix {
+    /// All channels at one state (a row of the matrix).
+    pub fn row(&self, step: usize) -> &[f64] {
+        &self.values[step * self.n_channels..(step + 1) * self.n_channels]
+    }
+
+    /// One channel's time history across all states (a column; strided copy).
+    pub fn column(&self, channel: usize) -> Vec<f64> {
+        (0..self.n_steps)
+            .map(|i| self.values[i * self.n_channels + channel])
+            .collect()
+    }
+}
+
 impl Binout {
     pub fn new(glob_pattern: &str) -> Result<Self, LsdaError> {
         let matches =
@@ -83,6 +111,64 @@ impl Binout {
             time,
             values,
             channel,
+        })
+    }
+
+    /// Aggregate a per-state variable across every time-state directory
+    /// (`d000001`, `d000002`, …) into a dense [`StateMatrix`] — the clean, fast
+    /// equivalent of stitching the state dirs together by hand.
+    /// `read_states("nodout", "x_acceleration")` returns an `n_steps × n_nodes`
+    /// matrix plus `time`; take `.column(i)` for one node's history. State reads
+    /// run concurrently and lock-free ([`read_many`](Self::read_many)).
+    pub fn read_states(&self, branch: &str, var: &str) -> Result<StateMatrix, LsdaError> {
+        let mut states: Vec<String> = self
+            .read(&[branch])?
+            .keys()
+            .into_iter()
+            .filter(|k| {
+                k.len() > 1 && k.starts_with('d') && k[1..].bytes().all(|b| b.is_ascii_digit())
+            })
+            .collect();
+        states.sort();
+        if states.is_empty() {
+            return Err(LsdaError::SymbolNotFound(format!(
+                "no state directories under {branch}"
+            )));
+        }
+        let n_steps = states.len();
+        let var_paths: Vec<Vec<&str>> =
+            states.iter().map(|s| vec![branch, s.as_str(), var]).collect();
+        let time_paths: Vec<Vec<&str>> = states
+            .iter()
+            .map(|s| vec![branch, s.as_str(), "time"])
+            .collect();
+        let var_res = self.read_many(&var_paths);
+        let time_res = self.read_many(&time_paths);
+
+        let mut values: Vec<f64> = Vec::new();
+        let mut n_channels = 0;
+        for (i, r) in var_res.into_iter().enumerate() {
+            let row = r?.to_f64_vec();
+            if i == 0 {
+                n_channels = row.len();
+                values.reserve(n_steps * n_channels);
+            }
+            values.extend_from_slice(&row);
+        }
+        let time: Vec<f64> = time_res
+            .into_iter()
+            .map(|r| {
+                r.ok()
+                    .map(|x| x.to_f64_vec())
+                    .and_then(|v| v.first().copied())
+                    .unwrap_or(0.0)
+            })
+            .collect();
+        Ok(StateMatrix {
+            time,
+            values,
+            n_steps,
+            n_channels,
         })
     }
 
@@ -181,5 +267,32 @@ mod tests {
                 assert!(!vals.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn read_states_aggregates_a_nodout_variable() {
+        if !std::path::Path::new(TEST_BINOUT).exists() {
+            return;
+        }
+        let b = Binout::new(TEST_BINOUT).expect("open binout");
+        if !b.read(&[]).unwrap().keys().contains(&"nodout".to_string()) {
+            return;
+        }
+        let m = b.read_states("nodout", "x_acceleration").expect("read_states");
+        assert!(m.n_steps > 0 && m.n_channels > 0);
+        assert_eq!(m.values.len(), m.n_steps * m.n_channels);
+        assert_eq!(m.time.len(), m.n_steps);
+        // Row 0 must equal a direct read of the earliest state dir.
+        let first = b
+            .read(&["nodout"])
+            .unwrap()
+            .keys()
+            .into_iter()
+            .filter(|k| k.starts_with('d') && k[1..].bytes().all(|c| c.is_ascii_digit()))
+            .min()
+            .unwrap();
+        let direct = b.read_f64(&["nodout", &first, "x_acceleration"]).unwrap();
+        assert_eq!(m.row(0), direct.as_slice());
+        assert_eq!(m.column(0).len(), m.n_steps);
     }
 }
