@@ -92,13 +92,27 @@ pub fn clip(a: &[f64], dt: f64, window: f64) -> f64 {
         return 0.0;
     }
     let w = ((window / dt).round() as usize).max(1);
-    let win_min = |s: &[f64]| s.iter().copied().fold(f64::INFINITY, f64::min);
     if w >= n {
-        return win_min(a);
+        return a.iter().copied().fold(f64::INFINITY, f64::min);
     }
+    // Sliding-window minimum via an ascending monotonic deque: each index is
+    // pushed and popped at most once, so the whole scan is O(n) — independent of
+    // the window width `w` (the naive form is O(n·w)). The clip is the maximum
+    // over windows of each window's minimum.
+    use std::collections::VecDeque;
+    let mut dq: VecDeque<usize> = VecDeque::new();
     let mut best = f64::NEG_INFINITY;
-    for i in 0..=n - w {
-        best = best.max(win_min(&a[i..i + w]));
+    for i in 0..n {
+        while dq.back().is_some_and(|&b| a[b] >= a[i]) {
+            dq.pop_back();
+        }
+        dq.push_back(i);
+        if dq.front().is_some_and(|&f| f + w <= i) {
+            dq.pop_front(); // fell out of the window ending at i
+        }
+        if i + 1 >= w {
+            best = best.max(a[*dq.front().unwrap()]); // front = min of the full window
+        }
     }
     best
 }
@@ -197,6 +211,42 @@ mod tests {
     }
 
     #[test]
+    fn hic_cross_validated_reference_pulses() {
+        use std::f64::consts::PI;
+        // Values pinned from a cross-check (2026-07-28) against an analytic ground
+        // truth and Dynasaur's actual HIC code (pint stripped). dynars matches the
+        // analytic constant case exactly and is bit-identical to Dynasaur when the
+        // HIC-maximizing window is interior (the haversine below: Dynasaur agreed to
+        // 2.8e-15). The small diffs Dynasaur shows on boundary-optimum pulses are a
+        // one-sample off-by-one in Dynasaur (its window tops out at 35.9ms, not 36ms).
+
+        // Half-sine 80 g / 80 ms @ 0.1 ms.
+        let dt = 1.0e-4;
+        let a: Vec<f64> = (0..801)
+            .map(|i| {
+                let t = i as f64 * dt;
+                if t <= 0.08 { 80.0 * (PI * t / 0.08).sin() } else { 0.0 }
+            })
+            .collect();
+        assert!((hic36(&a, dt) - 1667.462731).abs() < 1e-4, "half-sine {}", hic36(&a, dt));
+
+        // Haversine 100 g / 30 ms @ 0.05 ms — bit-identical to Dynasaur.
+        let dt = 5.0e-5;
+        let a: Vec<f64> = (0..1401)
+            .map(|i| {
+                let t = i as f64 * dt;
+                if t <= 0.03 { 50.0 * (1.0 - (2.0 * PI * t / 0.03).cos()) } else { 0.0 }
+            })
+            .collect();
+        assert!((hic36(&a, dt) - 908.805760).abs() < 1e-4, "haversine {}", hic36(&a, dt));
+
+        // Constant 50 g → analytic HIC36 = 0.036·50^2.5, exactly.
+        let dt = 1.0e-4;
+        let a = vec![50.0f64; 500];
+        assert!((hic36(&a, dt) - 0.036 * 50.0f64.powf(2.5)).abs() < 1e-6);
+    }
+
+    #[test]
     fn hic_batch_matches_scalar_hic() {
         // 7 channels (not a multiple of 4 → exercises the SIMD tail), each a
         // positive half-sine of a different amplitude.
@@ -260,6 +310,27 @@ mod tests {
             "{}",
             clip(&a, dt, 0.003)
         );
+    }
+
+    #[test]
+    fn clip_deque_matches_naive_reference() {
+        // The O(n) monotonic-deque clip must equal the naive O(n·w) sliding min,
+        // for several window sizes, on a bumpy signal.
+        let dt = 1.0e-4;
+        let a: Vec<f64> = (0..300)
+            .map(|i| ((i * 7 % 13) as f64 - 5.0) + (i as f64 * 0.1).sin())
+            .collect();
+        for &win in &[0.0003_f64, 0.001, 0.003, 0.01, 0.05] {
+            let w = ((win / dt).round() as usize).max(1);
+            let naive = if w >= a.len() {
+                a.iter().copied().fold(f64::INFINITY, f64::min)
+            } else {
+                (0..=a.len() - w)
+                    .map(|i| a[i..i + w].iter().copied().fold(f64::INFINITY, f64::min))
+                    .fold(f64::NEG_INFINITY, f64::max)
+            };
+            assert!((clip(&a, dt, win) - naive).abs() < 1e-12, "win={win}");
+        }
     }
 
     #[test]
