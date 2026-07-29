@@ -15,6 +15,7 @@
 //! `≥` Dynasaur's fixed-width-window value.
 
 use super::signal::integrate;
+use wide::f64x4;
 
 /// Elementwise resultant magnitude `√(x²+y²+z²)` of three channels (truncated to
 /// the shortest).
@@ -92,9 +93,85 @@ pub fn severity_index(a: &[f64], dt: f64) -> f64 {
     integrate(&f, dt).pop().unwrap_or(0.0)
 }
 
+/// HIC for many channels at once, **SIMD-vectorized across channels** (`wide`
+/// f64 lanes). `data` is row-major `n_steps × n_channels` acceleration in g;
+/// returns one HIC per channel over the given `window` (seconds). The hot loop
+/// exploits `a^2.5 = a²·√a` so it is multiplies + `sqrt` (both vectorize), not a
+/// scalar `powf`. Numerically equal to per-channel [`hic`] to ~1e-12, and
+/// composes with rayon (split the channel range across threads).
+pub fn hic_batch(data: &[f64], n_steps: usize, n_channels: usize, dt: f64, window: f64) -> Vec<f64> {
+    let (nt, nc) = (n_steps, n_channels);
+    if nt < 2 || nc == 0 || dt <= 0.0 {
+        return vec![0.0; nc];
+    }
+    let w = ((window / dt).round() as usize).clamp(1, nt - 1);
+    // Cumulative-trapezoid velocity, same row-major layout.
+    let mut vel = vec![0.0f64; nt * nc];
+    for i in 1..nt {
+        let (prev, cur) = ((i - 1) * nc, i * nc);
+        for j in 0..nc {
+            vel[cur + j] = vel[prev + j] + 0.5 * (data[cur + j] + data[prev + j]) * dt;
+        }
+    }
+    let mut hic = vec![0.0f64; nc];
+    let simd = nc - nc % 4;
+    let zero = f64x4::splat(0.0);
+    for i in 0..nt - 1 {
+        let jmax = (i + w).min(nt - 1);
+        let vi = i * nc;
+        for jj in i + 1..=jmax {
+            let tdiff = (jj - i) as f64 * dt;
+            let inv = 1.0 / tdiff;
+            let (td, invv) = (f64x4::splat(tdiff), f64x4::splat(inv));
+            let vj = jj * nc;
+            let mut c = 0;
+            while c < simd {
+                let a = f64x4::from([vel[vj + c], vel[vj + c + 1], vel[vj + c + 2], vel[vj + c + 3]]);
+                let b = f64x4::from([vel[vi + c], vel[vi + c + 1], vel[vi + c + 2], vel[vi + c + 3]]);
+                let avgp = ((a - b) * invv).max(zero); // negative means → 0 (dropped)
+                let cand = td * avgp * avgp * avgp.sqrt(); // avgp^2.5
+                let cur = f64x4::from([hic[c], hic[c + 1], hic[c + 2], hic[c + 3]]);
+                hic[c..c + 4].copy_from_slice(&cur.max(cand).to_array());
+                c += 4;
+            }
+            for j in simd..nc {
+                let avg = (vel[vj + j] - vel[vi + j]) * inv;
+                if avg > 0.0 {
+                    hic[j] = hic[j].max(tdiff * avg * avg * avg.sqrt());
+                }
+            }
+        }
+    }
+    hic
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hic_batch_matches_scalar_hic() {
+        // 7 channels (not a multiple of 4 → exercises the SIMD tail), each a
+        // positive half-sine of a different amplitude.
+        let (nt, nc, dt) = (200usize, 7usize, 1.0e-4);
+        let mut data = vec![0.0f64; nt * nc];
+        for i in 0..nt {
+            for j in 0..nc {
+                let phase = std::f64::consts::PI * i as f64 / (nt as f64 - 1.0);
+                data[i * nc + j] = (10.0 + j as f64) * phase.sin().max(0.0);
+            }
+        }
+        let batch = hic_batch(&data, nt, nc, dt, 0.036);
+        for j in 0..nc {
+            let col: Vec<f64> = (0..nt).map(|i| data[i * nc + j]).collect();
+            let scalar = hic36(&col, dt);
+            assert!(
+                (batch[j] - scalar).abs() <= 1e-9 * scalar.max(1.0),
+                "chan {j}: batch {} vs scalar {scalar}",
+                batch[j]
+            );
+        }
+    }
 
     #[test]
     fn resultant_is_the_vector_norm() {
