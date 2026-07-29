@@ -186,6 +186,51 @@ impl PyBinout {
         py.detach(|| self.inner.channels(&segs)).map_err(lsda_err)
     }
 
+    /// Aggregate a per-state variable across all state dirs into a dense matrix:
+    /// `{"time": float64[T], "values": float64[T, C], "ids": int64[C],
+    /// "n_steps": int, "n_channels": int}`. One node's history by ID:
+    /// `values[:, np.nonzero(ids == node_id)[0][0]]`.
+    #[pyo3(signature = (branch, var))]
+    fn read_states<'py>(
+        &self,
+        py: Python<'py>,
+        branch: String,
+        var: String,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let m = py
+            .detach(|| self.inner.read_states(&branch, &var))
+            .map_err(lsda_err)?;
+        let (nt, nc) = (m.n_steps, m.n_channels);
+        let values = numpy::ndarray::Array2::from_shape_vec((nt, nc), m.values)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let d = PyDict::new(py);
+        d.set_item("time", m.time.into_pyarray(py))?;
+        d.set_item("values", values.into_pyarray(py))?;
+        d.set_item("ids", m.ids.into_pyarray(py))?;
+        d.set_item("n_steps", nt)?;
+        d.set_item("n_channels", nc)?;
+        Ok(d)
+    }
+
+    /// LS-DYNA entity IDs for a state branch (e.g. `nodout` node IDs), as int64.
+    #[pyo3(signature = (branch))]
+    fn ids<'py>(&self, py: Python<'py>, branch: String) -> PyResult<Bound<'py, pyo3::PyAny>> {
+        let v = py.detach(|| self.inner.ids(&branch)).map_err(lsda_err)?;
+        Ok(v.into_pyarray(py).into_any())
+    }
+
+    /// Per-entity legend/name strings for a state branch (trimmed).
+    #[pyo3(signature = (branch))]
+    fn legend(&self, branch: String) -> PyResult<Vec<String>> {
+        self.inner.legend(&branch).map_err(lsda_err)
+    }
+
+    /// Dataset title for a state branch.
+    #[pyo3(signature = (branch))]
+    fn title(&self, branch: String) -> PyResult<String> {
+        self.inner.title(&branch).map_err(lsda_err)
+    }
+
     fn __repr__(&self) -> String {
         format!("Binout({} file(s))", self.inner.filelist.len())
     }
