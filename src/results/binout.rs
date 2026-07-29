@@ -34,6 +34,10 @@ pub struct StateMatrix {
     pub time: Vec<f64>,
     /// Row-major `n_steps × n_channels`: state `i`, channel `j` lives at `i*n_channels + j`.
     pub values: Vec<f64>,
+    /// LS-DYNA entity ID for each column (length `n_channels`), from
+    /// `<branch>/metadata/ids` — e.g. the node ID of each `nodout` column. Empty
+    /// if the branch has no id metadata.
+    pub ids: Vec<i64>,
     pub n_steps: usize,
     pub n_channels: usize,
 }
@@ -49,6 +53,17 @@ impl StateMatrix {
         (0..self.n_steps)
             .map(|i| self.values[i * self.n_channels + channel])
             .collect()
+    }
+
+    /// Column index of a given LS-DYNA entity ID (e.g. a node ID), if present.
+    pub fn index_of(&self, id: i64) -> Option<usize> {
+        self.ids.iter().position(|&x| x == id)
+    }
+
+    /// One entity's time history looked up by its LS-DYNA ID (e.g. node 8151's
+    /// head acceleration), rather than by column index.
+    pub fn column_by_id(&self, id: i64) -> Option<Vec<f64>> {
+        self.index_of(id).map(|j| self.column(j))
     }
 }
 
@@ -164,12 +179,63 @@ impl Binout {
                     .unwrap_or(0.0)
             })
             .collect();
+        let ids: Vec<i64> = self
+            .read(&[branch, "metadata", "ids"])
+            .map(|r| r.to_f64_vec().iter().map(|&x| x as i64).collect())
+            .unwrap_or_default();
         Ok(StateMatrix {
             time,
             values,
+            ids,
             n_steps,
             n_channels,
         })
+    }
+
+    /// LS-DYNA entity IDs for a state branch (e.g. the node IDs of `nodout`), from
+    /// `<branch>/metadata/ids`.
+    pub fn ids(&self, branch: &str) -> Result<Vec<i64>, LsdaError> {
+        Ok(self
+            .read(&[branch, "metadata", "ids"])?
+            .to_f64_vec()
+            .iter()
+            .map(|&x| x as i64)
+            .collect())
+    }
+
+    /// Per-entity legend/name strings from `<branch>/metadata/legend` (a packed
+    /// fixed-width char block, one name per entity), trimmed. Unnamed entities
+    /// come back as empty strings.
+    pub fn legend(&self, branch: &str) -> Result<Vec<String>, LsdaError> {
+        let n = self
+            .read(&[branch, "metadata", "ids"])
+            .map(|r| r.to_f64_vec().len())
+            .unwrap_or(0);
+        let bytes: Vec<u8> = self
+            .read(&[branch, "metadata", "legend"])?
+            .to_f64_vec()
+            .iter()
+            .map(|&x| x as u8)
+            .collect();
+        if n == 0 || bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let width = bytes.len() / n;
+        Ok(bytes
+            .chunks(width.max(1))
+            .map(|c| String::from_utf8_lossy(c).trim().to_string())
+            .collect())
+    }
+
+    /// The dataset title from `<branch>/metadata/title`, trimmed.
+    pub fn title(&self, branch: &str) -> Result<String, LsdaError> {
+        let bytes: Vec<u8> = self
+            .read(&[branch, "metadata", "title"])?
+            .to_f64_vec()
+            .iter()
+            .map(|&x| x as u8)
+            .collect();
+        Ok(String::from_utf8_lossy(&bytes).trim().to_string())
     }
 
     /// List variable names (channels) at a directory path in the binout hierarchy.
@@ -294,5 +360,14 @@ mod tests {
         let direct = b.read_f64(&["nodout", &first, "x_acceleration"]).unwrap();
         assert_eq!(m.row(0), direct.as_slice());
         assert_eq!(m.column(0).len(), m.n_steps);
+        // IDs align with columns; lookup-by-id resolves to the same column.
+        assert_eq!(m.ids.len(), m.n_channels);
+        if let Some(&id0) = m.ids.first() {
+            assert_eq!(m.index_of(id0), Some(0));
+            assert_eq!(m.column_by_id(id0), Some(m.column(0)));
+        }
+        // legend / title accessors work.
+        assert_eq!(b.legend("nodout").unwrap().len(), m.n_channels);
+        assert!(!b.title("nodout").unwrap().is_empty());
     }
 }
