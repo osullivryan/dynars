@@ -28,7 +28,6 @@
 //! `≥` Dynasaur's fixed-width-window value.
 
 use super::signal::integrate;
-use wide::f64x4;
 
 /// Elementwise resultant magnitude `√(x²+y²+z²)` of three channels (truncated to
 /// the shortest).
@@ -53,33 +52,28 @@ pub fn hic(a: &[f64], dt: f64, window: f64) -> f64 {
     let w = ((window / dt).round() as usize).clamp(1, n - 1);
     // HIC = max (t_j−t_i)·avg^2.5, and (that)² = Δv⁵/((j−i)³·dt³). Since √ is
     // monotone the argmax is unchanged, so the hot loop maximizes the pow-free
-    // score Δv⁵/(j−i)³ (pure multiplies — no sqrt/powf) and we take ONE √ at the
-    // end. SIMD runs four window ends `j` at once (`vel[j..j+4]` is contiguous).
+    // score Δv⁵/(j−i)³ (pure multiplies — no sqrt/powf) and we take ONE √ at the end.
     let inv_cube: Vec<f64> = (0..=w)
         .map(|d| if d == 0 { 0.0 } else { 1.0 / (d as f64).powi(3) })
         .collect();
-    let mut best4 = f64x4::splat(0.0);
+    // Tight scalar inner loop over the window ends: contiguous `vel[j]` and
+    // `inv_cube[j−i]` loads, plain multiplies, and a max-reduction — a shape LLVM
+    // autovectorizes well (a hand-rolled gathered f64x4 was *slower* here). `Δv<0`
+    // yields a negative score, ignored by the max.
     let mut best = 0.0f64;
     for i in 0..n - 1 {
-        let (vi, vi4) = (vel[i], f64x4::splat(vel[i]));
+        let vi = vel[i];
         let jmax = (i + w).min(n - 1);
-        let mut j = i + 1;
-        while j + 3 <= jmax {
-            let dv = f64x4::from([vel[j], vel[j + 1], vel[j + 2], vel[j + 3]]) - vi4;
-            let d = j - i;
-            let ic = f64x4::from([inv_cube[d], inv_cube[d + 1], inv_cube[d + 2], inv_cube[d + 3]]);
-            best4 = best4.max(dv * dv * dv * dv * dv * ic); // Δv⁵/(j−i)³ (neg for Δv<0 → dropped)
-            j += 4;
-        }
-        while j <= jmax {
+        let mut local = 0.0f64;
+        for j in i + 1..=jmax {
             let dv = vel[j] - vi;
-            best = best.max(dv * dv * dv * dv * dv * inv_cube[j - i]);
-            j += 1;
+            let dv2 = dv * dv;
+            local = local.max(dv2 * dv2 * dv * inv_cube[j - i]); // Δv⁵/(j−i)³
         }
+        best = best.max(local);
     }
-    let m = best4.to_array().iter().cloned().fold(best, f64::max);
-    if m > 0.0 {
-        (m / (dt * dt * dt)).sqrt() // the single deferred √
+    if best > 0.0 {
+        (best / (dt * dt * dt)).sqrt() // the single deferred √
     } else {
         0.0
     }
