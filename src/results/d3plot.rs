@@ -816,6 +816,12 @@ impl D3plot {
     /// [`von_mises_stress`](super::element::von_mises_stress) /
     /// [`effective_plastic_strain`](super::element::effective_plastic_strain)
     /// assume the base "6 stress + plastic strain" element layout.
+    ///
+    /// ⚠ Materializes the whole block as `f64` (`n_states·n_elem·nv·8` bytes) — fine
+    /// for small/medium models, but for tens of millions of elements use the
+    /// streaming [`part_max_history`](Self::part_max_history) /
+    /// [`part_failure_fraction_history`](Self::part_failure_fraction_history)
+    /// instead, which reduce straight off the memory map.
     pub fn element_block_f64(&self, block: StateBlock) -> Option<(Vec<f64>, [usize; 3], Vec<i64>)> {
         let states: Vec<usize> = (0..self.states.len()).collect();
         let (arr, dims) = self.block_data(block, &states)?;
@@ -826,6 +832,108 @@ impl D3plot {
         };
         Some((arr.to_f64(), dims, part_ids))
     }
+
+    /// Column indices of `part`'s elements for a `Solid`/`Shell` block.
+    fn part_element_indices(&self, block: StateBlock, part: i64) -> Option<Vec<usize>> {
+        let parts = match block {
+            StateBlock::Solid => self.solid_connectivity().1,
+            StateBlock::Shell => self.shell_connectivity().1,
+            _ => return None,
+        };
+        Some((0..parts.len()).filter(|&e| parts[e] == part).collect())
+    }
+
+    /// **Streaming** max of `quantity` over `part`'s elements of `block`, per state
+    /// — read directly from the memory map (f32 or f64), **without materializing**
+    /// the block, and parallelized across states. Scales to tens of millions of
+    /// elements (memory = OS page cache + `O(n_states)`). `quantity` receives one
+    /// element's `nv` result words (f32 promoted to f64); use
+    /// [`element::von_mises_stress`](super::element::von_mises_stress) etc.
+    pub fn part_max_history(
+        &self,
+        block: StateBlock,
+        part: i64,
+        quantity: impl Fn(&[f64]) -> f64 + Sync,
+    ) -> Option<Vec<f64>> {
+        let (off_words, _count, vars) = self.ctrl.block_spec(block)?;
+        let idx = self.part_element_indices(block, part)?;
+        let (ws, byte_off) = (self.ctrl.wordsize as usize, off_words * self.ctrl.wordsize as usize);
+        Some(
+            (0..self.states.len())
+                .into_par_iter()
+                .map(|s| {
+                    let bytes: &[u8] = &self.files[self.states[s].file];
+                    let base = self.states[s].offset as usize + byte_off;
+                    let mut buf = vec![0.0f64; vars];
+                    idx.iter().fold(0.0_f64, |m, &e| {
+                        if read_element(bytes, base, e, vars, ws, &mut buf) {
+                            m.max(quantity(&buf))
+                        } else {
+                            m
+                        }
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// **Streaming** fraction (0–1) of `part`'s elements whose `quantity` exceeds
+    /// `threshold`, per state — same memory-map streaming + state parallelism as
+    /// [`part_max_history`](Self::part_max_history).
+    pub fn part_failure_fraction_history(
+        &self,
+        block: StateBlock,
+        part: i64,
+        threshold: f64,
+        quantity: impl Fn(&[f64]) -> f64 + Sync,
+    ) -> Option<Vec<f64>> {
+        let (off_words, _count, vars) = self.ctrl.block_spec(block)?;
+        let idx = self.part_element_indices(block, part)?;
+        if idx.is_empty() {
+            return Some(vec![0.0; self.states.len()]);
+        }
+        let inv = 1.0 / idx.len() as f64;
+        let (ws, byte_off) = (self.ctrl.wordsize as usize, off_words * self.ctrl.wordsize as usize);
+        Some(
+            (0..self.states.len())
+                .into_par_iter()
+                .map(|s| {
+                    let bytes: &[u8] = &self.files[self.states[s].file];
+                    let base = self.states[s].offset as usize + byte_off;
+                    let mut buf = vec![0.0f64; vars];
+                    idx.iter()
+                        .filter(|&&e| {
+                            read_element(bytes, base, e, vars, ws, &mut buf)
+                                && quantity(&buf) > threshold
+                        })
+                        .count() as f64
+                        * inv
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Read element `e`'s `vars` result words at byte `base` (state block start) into
+/// `buf` as f64 (promoting f32). `false` if the read runs past the map.
+#[inline]
+fn read_element(bytes: &[u8], base: usize, e: usize, vars: usize, ws: usize, buf: &mut [f64]) -> bool {
+    let eb = base + e * vars * ws;
+    if eb + vars * ws > bytes.len() {
+        return false;
+    }
+    if ws == 4 {
+        for (k, b) in buf.iter_mut().enumerate().take(vars) {
+            let o = eb + k * 4;
+            *b = f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()) as f64;
+        }
+    } else {
+        for (k, b) in buf.iter_mut().enumerate().take(vars) {
+            let o = eb + k * 8;
+            *b = f64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
+        }
+    }
+    true
 }
 
 /// A result block in the d3plot's native floating-point precision.
@@ -1991,6 +2099,15 @@ mod tests {
             &data, dims[0], dims[1], dims[2], &parts, 1, 0.2, element::effective_plastic_strain,
         );
         assert_eq!(ff, vec![0.0, 1.0]);
+
+        // Streaming reductions (read off the mmap, no materialization) must agree
+        // exactly with the materialized element:: reductions above.
+        let vm_s = d.part_max_history(StateBlock::Solid, 1, element::von_mises_stress).unwrap();
+        assert_eq!(vm_s, vm);
+        let ff_s = d
+            .part_failure_fraction_history(StateBlock::Solid, 1, 0.2, element::effective_plastic_strain)
+            .unwrap();
+        assert_eq!(ff_s, ff);
         let _ = std::fs::remove_file(&p);
     }
 
