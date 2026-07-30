@@ -209,10 +209,10 @@ impl Control {
         words as u64 * self.wordsize
     }
 
-    /// Thermal / mass-scaling variables per node (the IT block), decoded from
-    /// the `it` header word: `it % 10` temperature variants, `+1` for mass
-    /// scaling when `it >= 10`. Common cases (0/1/10) are exact; exotic thermal
-    /// layouts may differ.
+    /// Thermal / mass-scaling words per node (the IT block). See
+    /// [`therm_vars_for_it`]. Note: IDTDT-gated node data (temperature gradient,
+    /// residual forces/moments) is NOT modelled here yet — a file using it would
+    /// shift the element blocks.
     fn node_therm_vars(&self) -> usize {
         therm_vars_for_it(self.it)
     }
