@@ -10,6 +10,9 @@ mod binout;
 pub mod d3plot;
 mod diskfile;
 mod edit;
+/// Element-level derived quantities (von Mises, principal stress/strain, pressure,
+/// triaxiality) on the d3plot per-element result blocks. Pure, no external deps.
+pub mod element;
 /// Occupant injury criteria (HIC, 3 ms clip, severity index, resultant) built on
 /// filtered acceleration channels. Always available (pure, no external deps).
 pub mod injury;
