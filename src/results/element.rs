@@ -4,10 +4,14 @@
 //! 6 stress components `σxx,σyy,σzz,σxy,σyz,σzx` followed by effective plastic
 //! strain, then history variables).
 //!
-//! **Layer 1 (this file, so far)** — pointwise tensor invariants from the six
-//! stress (or strain) components: [`von_mises`], [`principal`], [`mean_stress`] /
-//! [`pressure`], [`max_shear`], [`triaxiality`]. Everything is a plain function of
-//! `f64`s so it composes with the reader's columnar blocks and is unit-agnostic.
+//! **Layer 1** — pointwise tensor invariants from the six stress (or strain)
+//! components: [`von_mises`], [`principal`], [`mean_stress`] / [`pressure`],
+//! [`max_shear`], [`triaxiality`]. Plain `f64` functions, unit-agnostic.
+//!
+//! **Layer 2** — per-part reductions over a whole element block: max
+//! ([`part_max_history`]), percentile ([`part_percentile_history`]), and failure
+//! fraction ([`part_failure_fraction_history`]) *time histories* of a per-element
+//! `quantity` (ready-made: [`von_mises_stress`], [`effective_plastic_strain`]).
 
 /// Von Mises equivalent stress `√(½[(σxx−σyy)²+(σyy−σzz)²+(σzz−σxx)²] +
 /// 3(σxy²+σyz²+σzx²)])` — the standard yield/failure scalar of the stress tensor.
@@ -72,9 +76,154 @@ pub fn triaxiality(sxx: f64, syy: f64, szz: f64, sxy: f64, syz: f64, szx: f64) -
     }
 }
 
+// ── Layer 2: per-part reductions over a packed element block ─────────────────
+//
+// These take the d3plot block flattened row-major as `n_states × n_elem × nv`
+// (from `D3plot::block_data`), the per-element `part_ids` (from the connectivity),
+// the target `part`, and a `quantity` closure mapping one element's `nv`-word
+// slice for a state to a scalar. Ready-made extractors below.
+
+/// Effective plastic strain of an element (word 6, after the 6 stresses).
+pub fn effective_plastic_strain(elem: &[f64]) -> f64 {
+    elem.get(6).copied().unwrap_or(0.0)
+}
+
+/// Von Mises stress of an element from its first 6 words (`σxx…σzx`).
+pub fn von_mises_stress(elem: &[f64]) -> f64 {
+    if elem.len() < 6 {
+        return 0.0;
+    }
+    von_mises(elem[0], elem[1], elem[2], elem[3], elem[4], elem[5])
+}
+
+/// Iterator over `(state, element_slice)` for the elements of one part.
+fn part_elems<'a>(
+    data: &'a [f64],
+    n_elem: usize,
+    nv: usize,
+    part_ids: &'a [i64],
+    part: i64,
+) -> impl Fn(usize) -> Vec<&'a [f64]> + 'a {
+    let idx: Vec<usize> = (0..n_elem).filter(|&e| part_ids.get(e) == Some(&part)).collect();
+    move |state: usize| {
+        let base = state * n_elem * nv;
+        idx.iter()
+            .map(|&e| &data[base + e * nv..base + e * nv + nv])
+            .collect()
+    }
+}
+
+/// Max of `quantity` over a part's elements, per state (length `n_states`).
+pub fn part_max_history(
+    data: &[f64],
+    n_states: usize,
+    n_elem: usize,
+    nv: usize,
+    part_ids: &[i64],
+    part: i64,
+    quantity: impl Fn(&[f64]) -> f64,
+) -> Vec<f64> {
+    let elems = part_elems(data, n_elem, nv, part_ids, part);
+    (0..n_states)
+        .map(|s| elems(s).iter().map(|e| quantity(e)).fold(0.0_f64, f64::max))
+        .collect()
+}
+
+/// The `pct`-th percentile (0–100, linear interpolation) of `quantity` over a
+/// part's elements, per state — robust to single-element outliers.
+#[allow(clippy::too_many_arguments)]
+pub fn part_percentile_history(
+    data: &[f64],
+    n_states: usize,
+    n_elem: usize,
+    nv: usize,
+    part_ids: &[i64],
+    part: i64,
+    pct: f64,
+    quantity: impl Fn(&[f64]) -> f64,
+) -> Vec<f64> {
+    let elems = part_elems(data, n_elem, nv, part_ids, part);
+    (0..n_states)
+        .map(|s| {
+            let mut v: Vec<f64> = elems(s).iter().map(|e| quantity(e)).collect();
+            percentile(&mut v, pct)
+        })
+        .collect()
+}
+
+/// Fraction (0–1) of a part's elements whose `quantity` exceeds `threshold`, per
+/// state — e.g. an effective-plastic-strain failure indicator for the part.
+#[allow(clippy::too_many_arguments)]
+pub fn part_failure_fraction_history(
+    data: &[f64],
+    n_states: usize,
+    n_elem: usize,
+    nv: usize,
+    part_ids: &[i64],
+    part: i64,
+    threshold: f64,
+    quantity: impl Fn(&[f64]) -> f64,
+) -> Vec<f64> {
+    let elems = part_elems(data, n_elem, nv, part_ids, part);
+    (0..n_states)
+        .map(|s| {
+            let e = elems(s);
+            if e.is_empty() {
+                0.0
+            } else {
+                e.iter().filter(|s| quantity(s) > threshold).count() as f64 / e.len() as f64
+            }
+        })
+        .collect()
+}
+
+/// Linear-interpolation percentile (`pct` in 0–100) of `v`; sorts in place.
+fn percentile(v: &mut [f64], pct: f64) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    if v.len() == 1 {
+        return v[0];
+    }
+    let rank = (pct / 100.0).clamp(0.0, 1.0) * (v.len() as f64 - 1.0);
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    let frac = rank - lo as f64;
+    v[lo] * (1.0 - frac) + v[hi] * frac
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn part_reductions_over_a_synthetic_block() {
+        // nv=7 (6 stress + eff plastic strain), 4 elements, parts [10,10,20,10], 2 states.
+        let (nv, n_elem, n_states) = (7usize, 4usize, 2usize);
+        let part_ids = [10i64, 10, 20, 10];
+        let eps = [[0.1, 0.3, 0.9, 0.2], [0.4, 0.5, 0.1, 0.05]]; // [state][elem], word 6
+        let mut data = vec![0.0f64; n_states * n_elem * nv];
+        for s in 0..n_states {
+            for e in 0..n_elem {
+                data[s * n_elem * nv + e * nv + 6] = eps[s][e];
+            }
+        }
+        // part 10 = elements 0,1,3
+        let mx = part_max_history(&data, n_states, n_elem, nv, &part_ids, 10, effective_plastic_strain);
+        assert_eq!(mx, vec![0.3, 0.5]);
+        let ff = part_failure_fraction_history(
+            &data, n_states, n_elem, nv, &part_ids, 10, 0.25, effective_plastic_strain,
+        );
+        assert!((ff[0] - 1.0 / 3.0).abs() < 1e-12 && (ff[1] - 2.0 / 3.0).abs() < 1e-12);
+        let p50 = part_percentile_history(
+            &data, n_states, n_elem, nv, &part_ids, 10, 50.0, effective_plastic_strain,
+        );
+        assert!((p50[0] - 0.2).abs() < 1e-12 && (p50[1] - 0.4).abs() < 1e-12);
+        // extractors
+        assert!((von_mises_stress(&[120.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]) - 120.0).abs() < 1e-9);
+        assert_eq!(effective_plastic_strain(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.42]), 0.42);
+    }
 
     #[test]
     fn von_mises_known_states() {
