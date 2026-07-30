@@ -808,12 +808,53 @@ impl D3plot {
         };
         Some((out, dims))
     }
+
+    /// The per-element result `block` across **all** states as `f64`, with dims
+    /// `[n_states, n_elem, nv]` and the per-element part index — ready for the
+    /// [`element`](super::element) per-part reductions. Supports `Solid`/`Shell`
+    /// (which carry connectivity); the ready-made extractors
+    /// [`von_mises_stress`](super::element::von_mises_stress) /
+    /// [`effective_plastic_strain`](super::element::effective_plastic_strain)
+    /// assume the base "6 stress + plastic strain" element layout.
+    pub fn element_block_f64(&self, block: StateBlock) -> Option<(Vec<f64>, [usize; 3], Vec<i64>)> {
+        let states: Vec<usize> = (0..self.states.len()).collect();
+        let (arr, dims) = self.block_data(block, &states)?;
+        let part_ids = match block {
+            StateBlock::Solid => self.solid_connectivity().1,
+            StateBlock::Shell => self.shell_connectivity().1,
+            _ => return None,
+        };
+        Some((arr.to_f64(), dims, part_ids))
+    }
 }
 
 /// A result block in the d3plot's native floating-point precision.
 pub enum BlockArray {
     F32(Vec<f32>),
     F64(Vec<f64>),
+}
+
+impl BlockArray {
+    /// Values as `f64` (casts an `f32` block, clones an `f64` one).
+    pub fn to_f64(&self) -> Vec<f64> {
+        match self {
+            BlockArray::F32(v) => v.iter().map(|&x| x as f64).collect(),
+            BlockArray::F64(v) => v.clone(),
+        }
+    }
+
+    /// Number of scalar values in the block.
+    pub fn len(&self) -> usize {
+        match self {
+            BlockArray::F32(v) => v.len(),
+            BlockArray::F64(v) => v.len(),
+        }
+    }
+
+    /// Whether the block is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Edits an existing d3plot family in place: overwrite node coordinates or any
@@ -1909,6 +1950,47 @@ mod tests {
         if let BlockArray::F32(v) = solid2 {
             assert!((v[9] - 9.0).abs() < 1e-6);
         }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn element_criteria_over_a_solid_part() {
+        use crate::results::element;
+        // 1 solid (part index 1), nv=7 (6 stress + eff plastic strain), 2 states.
+        let nodes: Vec<f64> = (0..8 * 3).map(|i| i as f64).collect();
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_solid([1, 2, 3, 4, 5, 6, 7, 8], 1);
+        w.set_part_ids(vec![7]);
+        w.set_solid_results(
+            7,
+            vec![
+                100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, // state 0: uniaxial 100, eps 0.1
+                0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.3, // state 1: pure shear 50, eps 0.3
+            ],
+        );
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let (data, dims, parts) = d.element_block_f64(StateBlock::Solid).unwrap();
+        assert_eq!(dims, [2, 1, 7]);
+        assert_eq!(parts, vec![1]); // connectivity part index
+        let vm =
+            element::part_max_history(&data, dims[0], dims[1], dims[2], &parts, 1, element::von_mises_stress);
+        assert!((vm[0] - 100.0).abs() < 1e-2 && (vm[1] - 3.0f64.sqrt() * 50.0).abs() < 1e-2, "{vm:?}");
+        let eps = element::part_max_history(
+            &data, dims[0], dims[1], dims[2], &parts, 1, element::effective_plastic_strain,
+        );
+        assert!((eps[0] - 0.1).abs() < 1e-4 && (eps[1] - 0.3).abs() < 1e-4, "{eps:?}");
+        // failure fraction at eps > 0.2: none in state 0, all in state 1
+        let ff = element::part_failure_fraction_history(
+            &data, dims[0], dims[1], dims[2], &parts, 1, 0.2, element::effective_plastic_strain,
+        );
+        assert_eq!(ff, vec![0.0, 1.0]);
         let _ = std::fs::remove_file(&p);
     }
 
