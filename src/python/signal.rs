@@ -88,3 +88,30 @@ pub fn differentiate<'py>(
     let y = signal::differentiate(values.as_slice()?, dt);
     Ok(y.into_pyarray(py).into_any())
 }
+
+/// Decimate by an integer factor (keep every Nth sample); new dt = dt·factor.
+/// Lossless after a CFC/low-pass; use before an O(n·w) criterion (HIC) on very
+/// fine dt to cut cost by ~1/factor².
+#[pyfunction]
+#[pyo3(name = "decimate", signature = (values, factor))]
+pub fn decimate<'py>(
+    py: Python<'py>,
+    values: PyReadonlyArray1<'py, f64>,
+    factor: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    let y = signal::decimate(values.as_slice()?, factor);
+    Ok(y.into_pyarray(py).into_any())
+}
+
+/// Linear resample from `dt_in` to `dt_out` (up- or down-sample).
+#[pyfunction]
+#[pyo3(name = "resample_linear", signature = (values, dt_in, dt_out))]
+pub fn resample_linear<'py>(
+    py: Python<'py>,
+    values: PyReadonlyArray1<'py, f64>,
+    dt_in: f64,
+    dt_out: f64,
+) -> PyResult<Bound<'py, PyAny>> {
+    let y = signal::resample_linear(values.as_slice()?, dt_in, dt_out);
+    Ok(y.into_pyarray(py).into_any())
+}

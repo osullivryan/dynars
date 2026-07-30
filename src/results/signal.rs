@@ -15,6 +15,10 @@
 //!   conditions).
 //! - [`integrate`] / [`differentiate`] — cumulative trapezoid and central
 //!   difference, for the acceleration → velocity → displacement chain.
+//! - [`decimate`] / [`resample_linear`] — integer downsample (keep every Nth) and
+//!   linear resample to a new `dt`. Decimating a CFC-filtered (band-limited)
+//!   signal before an O(n·w) criterion like HIC cuts the cost by ~1/factor² with
+//!   no loss.
 
 use std::f64::consts::{PI, SQRT_2};
 
@@ -232,9 +236,74 @@ pub fn differentiate(x: &[f64], dt: f64) -> Vec<f64> {
     out
 }
 
+/// Decimate by an integer `factor`: keep every `factor`-th sample, so the new
+/// sample interval is `dt·factor`. O(n) and lossless **only when the signal is
+/// already band-limited** — e.g. after [`cfc`], where a much-finer-than-Nyquist
+/// series can be thinned with no aliasing. This is the cheap way to make an
+/// O(n·w) criterion (HIC) tractable on very fine `dt` (cost falls as ~1/factor²).
+/// Un-filtered data should be low-passed first.
+pub fn decimate(x: &[f64], factor: usize) -> Vec<f64> {
+    if factor <= 1 {
+        return x.to_vec();
+    }
+    x.iter().step_by(factor).copied().collect()
+}
+
+/// Resample a uniformly-sampled series from `dt_in` to `dt_out` by linear
+/// interpolation (up- or down-sampling). Exact for piecewise-linear inputs; for
+/// downsampling of un-band-limited data, low-pass first to avoid aliasing. The
+/// output spans the same duration, length `⌊(n−1)·dt_in/dt_out⌋ + 1`.
+pub fn resample_linear(x: &[f64], dt_in: f64, dt_out: f64) -> Vec<f64> {
+    let n = x.len();
+    if n == 0 || dt_in <= 0.0 || dt_out <= 0.0 {
+        return Vec::new();
+    }
+    if n == 1 {
+        return vec![x[0]];
+    }
+    let n_out = ((n - 1) as f64 * dt_in / dt_out).floor() as usize + 1;
+    (0..n_out)
+        .map(|k| {
+            let pos = k as f64 * dt_out / dt_in;
+            let i = pos.floor() as usize;
+            if i >= n - 1 {
+                x[n - 1]
+            } else {
+                let frac = pos - i as f64;
+                x[i] * (1.0 - frac) + x[i + 1] * frac
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimate_keeps_every_nth() {
+        let x: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        assert_eq!(decimate(&x, 1), x);
+        assert_eq!(decimate(&x, 2), vec![0.0, 2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(decimate(&x, 3), vec![0.0, 3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn resample_linear_is_exact_for_a_ramp() {
+        // Linear interpolation reproduces a linear signal at any output dt.
+        let dt_in = 1.0e-3;
+        let n = 100;
+        let f = |t: f64| 2.0 + 3.0 * t;
+        let x: Vec<f64> = (0..n).map(|i| f(i as f64 * dt_in)).collect();
+        for &dt_out in &[2.5e-3, 4.0e-4, dt_in] {
+            let y = resample_linear(&x, dt_in, dt_out);
+            for (k, &v) in y.iter().enumerate() {
+                assert!((v - f(k as f64 * dt_out)).abs() < 1e-9, "dt_out={dt_out} k={k}");
+            }
+            // output never runs past the input's time span
+            assert!((y.len() as f64 - 1.0) * dt_out <= (n - 1) as f64 * dt_in + 1e-12);
+        }
+    }
 
     #[test]
     fn filtfilt_has_unit_dc_gain_and_no_phase_lag() {

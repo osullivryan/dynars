@@ -755,6 +755,13 @@ def clip(a: Incomplete, dt: float, window: float = 0.003) -> float:
     (default 3 ms).
     """
 
+def decimate(values: Incomplete, factor: int) -> Any:
+    """
+    Decimate by an integer factor (keep every Nth sample); new dt = dt·factor.
+    Lossless after a CFC/low-pass; use before an O(n·w) criterion (HIC) on very
+    fine dt to cut cost by ~1/factor².
+    """
+
 def differentiate(values: Incomplete, dt: float) -> Any:
     """
     Central-difference derivative (e.g. velocity → acceleration). Same length as
@@ -827,6 +834,11 @@ def parse_keyword_file(path: str) -> KeywordFile:
     Parse an LS-DYNA keyword file into an editable [`PyKeywordFile`].
     
     Releases the GIL during the file read and block split.
+    """
+
+def resample_linear(values: Incomplete, dt_in: float, dt_out: float) -> Any:
+    """
+    Linear resample from `dt_in` to `dt_out` (up- or down-sample).
     """
 
 def resultant(x: Incomplete, y: Incomplete, z: Incomplete) -> Any:

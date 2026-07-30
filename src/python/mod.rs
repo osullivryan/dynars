@@ -24,5 +24,5 @@ pub use results::{
     open_d3plot, parse_binout,
 };
 #[cfg(feature = "signal")]
-pub use signal::{butterworth, cfc, differentiate, filtfilt, integrate};
+pub use signal::{butterworth, cfc, decimate, differentiate, filtfilt, integrate, resample_linear};
 pub use validate::{PyFinding, PyPredicate, PyReport, PyRule};

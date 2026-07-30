@@ -160,4 +160,12 @@ pub mod _dynars {
     #[cfg(feature = "signal")]
     #[pymodule_export]
     use crate::python::differentiate;
+
+    #[cfg(feature = "signal")]
+    #[pymodule_export]
+    use crate::python::decimate;
+
+    #[cfg(feature = "signal")]
+    #[pymodule_export]
+    use crate::python::resample_linear;
 }
