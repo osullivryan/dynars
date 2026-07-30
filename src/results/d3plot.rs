@@ -57,6 +57,8 @@ mod word {
     pub const NV3DT: usize = 42;
     pub const IOSHL1: usize = 43;
     pub const IOSHL2: usize = 44;
+    pub const IOSHL3: usize = 45;
+    pub const IOSHL4: usize = 46;
     pub const NMMAT: usize = 51;
     pub const EXTRA: usize = 57;
 }
@@ -121,6 +123,11 @@ pub struct Control {
     pub nv2d: usize,
     pub narbs: usize,
     pub maxint: i64, // shell integration layers; sign encodes element/node deletion (mdlopt)
+    pub neips: usize, // extra history vars per shell integration point
+    pub ioshl1: i64,  // 1000 ⇒ shell/tshell stress (6) written per layer
+    pub ioshl2: i64,  // 1000 ⇒ shell/tshell effective plastic strain (1) written per layer
+    pub ioshl3: i64,  // 1000 ⇒ shell force resultants (8) written at element level
+    pub ioshl4: i64,  // 1000 ⇒ shell "extra" (thickness, energy: 4) at element level
     pub nmmat: usize, // total number of materials/parts
     pub extra: usize, // extra header words beyond the base 64 (word 57)
     // Interface-force (intfor) fields. `filetype == 4` marks an intfor file, in
@@ -155,6 +162,30 @@ impl Control {
         }
     }
 
+    /// Number of shell/thick-shell through-thickness integration points (layers),
+    /// decoding the mdlopt sign packed into `maxint`.
+    pub fn n_shell_layers(&self) -> usize {
+        let m = self.maxint;
+        let n = if m >= 0 {
+            m
+        } else if -m >= MDLOPT_ELEMENT_DELETION {
+            -m - MDLOPT_ELEMENT_DELETION
+        } else {
+            -m
+        };
+        n.max(0) as usize
+    }
+
+    /// A shell layer carries the 6 stress components (`ioshl1 == 1000`).
+    pub fn has_shell_stress(&self) -> bool {
+        self.ioshl1 == IOSHL_PRESENT as i64
+    }
+
+    /// A shell layer carries effective plastic strain (`ioshl2 == 1000`).
+    pub fn has_shell_pstrain(&self) -> bool {
+        self.ioshl2 == IOSHL_PRESENT as i64
+    }
+
     /// Byte offset of the first state database: the sum of all geometry sections.
     /// States begin immediately after the exact geometry (LS-DYNA does not pad it
     /// to a block boundary). Node coordinates are always 3-D; the NDIM header
@@ -183,9 +214,7 @@ impl Control {
     /// scaling when `it >= 10`. Common cases (0/1/10) are exact; exotic thermal
     /// layouts may differ.
     fn node_therm_vars(&self) -> usize {
-        let temp = self.it.rem_euclid(IT_ENCODING_BASE).max(0) as usize;
-        let mass = if self.it >= IT_ENCODING_BASE { 1 } else { 0 };
-        temp + mass
+        therm_vars_for_it(self.it)
     }
 
     /// Total words of node data per state: (IU + IV + IA) × 3 + thermal, × NUMNP.
@@ -1007,6 +1036,26 @@ impl D3plot {
         let mut buf = vec![0.0f64; vars];
         read_element(&self.files[loc.file], base, elem, vars, ws, &mut buf).then_some(buf)
     }
+
+    /// Through-thickness layer layout of the shell result block, for reading a
+    /// shell record (from [`element_result`](Self::element_result) or the
+    /// reductions) with [`element::shell_von_mises`](super::element::shell_von_mises)
+    /// / [`shell_plastic_strain`](super::element::shell_plastic_strain) /
+    /// [`ShellLayout::resultants`](super::element::ShellLayout::resultants). Feed a
+    /// closure to any reduction, e.g. `|rec| element::shell_von_mises(rec,
+    /// &layout, LayerSelect::Max)`.
+    pub fn shell_layout(&self) -> super::element::ShellLayout {
+        let c = &self.ctrl;
+        let (has_stress, has_pstrain) = (c.has_shell_stress(), c.has_shell_pstrain());
+        super::element::ShellLayout {
+            n_layers: c.n_shell_layers(),
+            stride: 6 * has_stress as usize + has_pstrain as usize + c.neips,
+            has_stress,
+            has_pstrain,
+            has_forces: c.ioshl3 == IOSHL_PRESENT as i64,
+            has_extra: c.ioshl4 == IOSHL_PRESENT as i64,
+        }
+    }
 }
 
 /// Read element `e`'s `vars` result words at byte `base` (state block start) into
@@ -1312,6 +1361,21 @@ fn read_ints_at(bytes: &[u8], byte_offset: usize, n: usize, wordsize: usize) -> 
 /// precision flag, so we read NDIM as 32-bit; a value in [`NDIM_RANGE`] means single precision,
 /// otherwise 64-bit. NDIM is a flag word (4..9 encode rigid-body/rigid-road/mattyp); node
 /// coordinates are always 3-D regardless.
+/// Node thermal words per node from the IT header flag (LS-DYNA / lasso).
+/// Ones digit: 1 = nodal temperature (1); 2 = temperature (1) + heat flux (3);
+/// 3 = temperature layers (3) + heat flux (3). Tens digit == 1 adds nodal mass
+/// scaling (1).
+fn therm_vars_for_it(it: i64) -> usize {
+    let temp_flux = match it.rem_euclid(IT_ENCODING_BASE) {
+        1 => 1,
+        2 => 1 + 3,
+        3 => 3 + 3,
+        _ => 0,
+    };
+    let mass = usize::from(it.div_euclid(IT_ENCODING_BASE).rem_euclid(IT_ENCODING_BASE) == 1);
+    temp_flux + mass
+}
+
 fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
     let read_i = |off: usize, ws: u64| -> Option<i64> {
         match ws {
@@ -1356,6 +1420,11 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         // is the per-segment value count.
         nv2d: geti(word::NV2D)?.unsigned_abs() as usize,
         maxint: geti(word::MAXINT)?,
+        neips: geti(word::NEIPS)?.max(0) as usize,
+        ioshl1: geti(word::IOSHL1)?,
+        ioshl2: geti(word::IOSHL2)?,
+        ioshl3: geti(word::IOSHL3)?,
+        ioshl4: geti(word::IOSHL4)?,
         narbs: geti(word::NARBS)?.max(0) as usize,
         nelth: geti(word::NELTH)?.max(0) as usize,
         nv3dt: geti(word::NV3DT)?.max(0) as usize,
@@ -1933,6 +2002,16 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn it_flag_decodes_node_thermal_words() {
+        assert_eq!(therm_vars_for_it(0), 0); // none
+        assert_eq!(therm_vars_for_it(1), 1); // temperature
+        assert_eq!(therm_vars_for_it(2), 4); // temperature + heat flux
+        assert_eq!(therm_vars_for_it(3), 6); // temperature layers (3) + heat flux (3)
+        assert_eq!(therm_vars_for_it(11), 2); // temperature + mass scaling
+        assert_eq!(therm_vars_for_it(13), 7); // temp layers + flux + mass scaling
+    }
 
     fn tmp() -> std::path::PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
