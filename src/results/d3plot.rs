@@ -1486,6 +1486,7 @@ pub struct D3plotWriter {
     // n_states*count*vars, row-major). Written raw after node data each state.
     solid_results: Option<(usize, Vec<f32>)>,
     shell_results: Option<(usize, Vec<f32>)>,
+    shell_layers: usize, // shell through-thickness integration points (MAXINT)
 }
 
 struct StateData {
@@ -1517,6 +1518,7 @@ impl D3plotWriter {
             part_ids: None,
             solid_results: None,
             shell_results: None,
+            shell_layers: 1,
         })
     }
 
@@ -1557,6 +1559,14 @@ impl D3plotWriter {
     /// `n_states * n_shells * vars`. Sets NV2D.
     pub fn set_shell_results(&mut self, vars: usize, data: Vec<f64>) {
         self.shell_results = Some((vars, data.into_iter().map(|x| x as f32).collect()));
+    }
+
+    /// Number of through-thickness integration points (layers) packed into each
+    /// shell result record (sets MAXINT). `set_shell_results`' `vars` must equal
+    /// `n_layers * per_layer`, where `per_layer` = 6 stress + 1 plastic strain +
+    /// history; the record is laid out layer-by-layer. Default 1.
+    pub fn set_shell_layers(&mut self, n_layers: usize) {
+        self.shell_layers = n_layers.max(1);
     }
 
     /// Add a quad/tri shell (4 one-based node ids; repeat the last for a tri).
@@ -1661,17 +1671,21 @@ impl D3plotWriter {
         set(&mut words, word::NEL4, nel4 as i32);
         set(&mut words, word::NUMMAT4, nmmat);
         set(&mut words, word::NV2D, nv2d as i32);
-        set(&mut words, word::MAXINT, 1); // 1 integration point/layer
+        // Shells pack MAXINT through-thickness layers; each layer holds the same
+        // per-layer vars. NEIPH/NEIPS are the *per-layer* history counts.
+        let shell_layers = self.shell_layers.max(1);
+        let shell_per_layer = if nv2d > 0 { nv2d / shell_layers } else { 0 };
+        set(&mut words, word::MAXINT, shell_layers as i32);
         set(&mut words, word::NARBS, narbs as i32);
         set(&mut words, word::NMMAT, nmmat);
 
         // Result-field flags so LS-PrePost/lasso *name* the raw element vars.
-        // One layer, solver order: 6 stress, 1 plastic strain, then history.
+        // Per layer, solver order: 6 stress, 1 plastic strain, then history.
         // ioshl1/ioshl2 are shared by solids and shells (lasso derives
         // has_solid_stress from ioshl1), so set them from whichever is present.
         if nv3d > 0 || nv2d > 0 {
-            let has_stress = nv3d >= ELEM_STRESS_VARS || nv2d >= ELEM_STRESS_VARS;
-            let has_pstrain = nv3d >= ELEM_BASE_VARS || nv2d >= ELEM_BASE_VARS;
+            let has_stress = nv3d >= ELEM_STRESS_VARS || shell_per_layer >= ELEM_STRESS_VARS;
+            let has_pstrain = nv3d >= ELEM_BASE_VARS || shell_per_layer >= ELEM_BASE_VARS;
             let base = ELEM_STRESS_VARS * has_stress as usize + has_pstrain as usize;
             set(
                 &mut words,
@@ -1687,7 +1701,7 @@ impl D3plotWriter {
                 set(&mut words, word::NEIPH, nv3d.saturating_sub(base) as i32); // solid history
             }
             if nv2d > 0 {
-                set(&mut words, word::NEIPS, nv2d.saturating_sub(base) as i32); // shell history
+                set(&mut words, word::NEIPS, shell_per_layer.saturating_sub(base) as i32); // per-layer shell history
             }
         }
 
@@ -2306,6 +2320,53 @@ mod tests {
         assert!((element::von_mises_stress(&e) - 3.0f64.sqrt() * 50.0).abs() < 1e-2);
         assert!(d.element_result(StateBlock::Solid, 2, 0).is_none()); // state out of range
         assert!(d.element_result(StateBlock::Solid, 0, 1).is_none()); // elem out of range
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn shell_multilayer_round_trip() {
+        use crate::results::element::{self, LayerSelect};
+        // 2 shells, part 1, 3 layers, per-layer = 6 stress + 1 pstrain (neips 0),
+        // so nv2d = 21. 1 state. Each layer uniaxial so von Mises == |sxx|.
+        let nodes: Vec<f64> = (0..4 * 3).map(|i| i as f64).collect();
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_shell([1, 2, 3, 4], 1);
+        w.add_shell([1, 2, 3, 4], 1);
+        w.set_part_ids(vec![5]);
+        w.set_shell_layers(3);
+        let uni = |sxx: f64, eps: f64| [sxx, 0.0, 0.0, 0.0, 0.0, 0.0, eps];
+        // shell 0 layers: bottom 100/top 300 ; shell 1: bottom 400/top 200
+        let mut data = Vec::new();
+        for lay in [(100.0, 0.01), (200.0, 0.02), (300.0, 0.03)] {
+            data.extend_from_slice(&uni(lay.0, lay.1)); // shell 0, layers b/m/t
+        }
+        for lay in [(400.0, 0.04), (150.0, 0.015), (200.0, 0.02)] {
+            data.extend_from_slice(&uni(lay.0, lay.1)); // shell 1
+        }
+        w.set_shell_results(21, data);
+        let disp: Vec<f64> = nodes.iter().map(|&c| c + 1.0).collect();
+        w.add_state(0.0, disp, None, None).unwrap();
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let ly = d.shell_layout();
+        assert_eq!((ly.n_layers, ly.stride, ly.has_stress, ly.has_pstrain), (3, 7, true, true));
+
+        let s0 = d.element_result(StateBlock::Shell, 0, 0).unwrap();
+        assert!((element::shell_von_mises(&s0, &ly, LayerSelect::Bottom) - 100.0).abs() < 1e-2);
+        assert!((element::shell_von_mises(&s0, &ly, LayerSelect::Mid) - 200.0).abs() < 1e-2);
+        assert!((element::shell_von_mises(&s0, &ly, LayerSelect::Top) - 300.0).abs() < 1e-2);
+        assert!((element::shell_von_mises(&s0, &ly, LayerSelect::Max) - 300.0).abs() < 1e-2);
+        assert!((element::shell_plastic_strain(&s0, &ly, LayerSelect::Max) - 0.03).abs() < 1e-4);
+
+        // Streaming reduction over the part with a shell-aware closure (worst layer).
+        let vm_max = d
+            .part_max_history(StateBlock::Shell, 1, |rec| {
+                element::shell_von_mises(rec, &ly, LayerSelect::Max)
+            })
+            .unwrap();
+        assert!((vm_max[0] - 400.0).abs() < 1e-2, "{vm_max:?}"); // shell 1 bottom = 400 wins
         let _ = std::fs::remove_file(&p);
     }
 
