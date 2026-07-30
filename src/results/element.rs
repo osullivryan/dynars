@@ -13,6 +13,8 @@
 //! fraction ([`part_failure_fraction_history`]) *time histories* of a per-element
 //! `quantity` (ready-made: [`von_mises_stress`], [`effective_plastic_strain`]).
 
+use rayon::prelude::*;
+
 /// Von Mises equivalent stress `√(½[(σxx−σyy)²+(σyy−σzz)²+(σzz−σxx)²] +
 /// 3(σxy²+σyz²+σzx²)])` — the standard yield/failure scalar of the stress tensor.
 pub fn von_mises(sxx: f64, syy: f64, szz: f64, sxy: f64, syz: f64, szx: f64) -> f64 {
@@ -96,24 +98,20 @@ pub fn von_mises_stress(elem: &[f64]) -> f64 {
     von_mises(elem[0], elem[1], elem[2], elem[3], elem[4], elem[5])
 }
 
-/// Iterator over `(state, element_slice)` for the elements of one part.
-fn part_elems<'a>(
-    data: &'a [f64],
-    n_elem: usize,
-    nv: usize,
-    part_ids: &'a [i64],
-    part: i64,
-) -> impl Fn(usize) -> Vec<&'a [f64]> + 'a {
-    let idx: Vec<usize> = (0..n_elem).filter(|&e| part_ids.get(e) == Some(&part)).collect();
-    move |state: usize| {
-        let base = state * n_elem * nv;
-        idx.iter()
-            .map(|&e| &data[base + e * nv..base + e * nv + nv])
-            .collect()
-    }
+/// Column indices of the elements belonging to `part`.
+fn part_indices(n_elem: usize, part_ids: &[i64], part: i64) -> Vec<usize> {
+    (0..n_elem).filter(|&e| part_ids.get(e) == Some(&part)).collect()
+}
+
+/// `nv`-word slice of element `e` at state `s`.
+#[inline]
+fn elem(data: &[f64], n_elem: usize, nv: usize, s: usize, e: usize) -> &[f64] {
+    let base = s * n_elem * nv + e * nv;
+    &data[base..base + nv]
 }
 
 /// Max of `quantity` over a part's elements, per state (length `n_states`).
+/// Parallelized across states (independent); no per-state allocation.
 pub fn part_max_history(
     data: &[f64],
     n_states: usize,
@@ -121,11 +119,15 @@ pub fn part_max_history(
     nv: usize,
     part_ids: &[i64],
     part: i64,
-    quantity: impl Fn(&[f64]) -> f64,
+    quantity: impl Fn(&[f64]) -> f64 + Sync,
 ) -> Vec<f64> {
-    let elems = part_elems(data, n_elem, nv, part_ids, part);
+    let idx = part_indices(n_elem, part_ids, part);
     (0..n_states)
-        .map(|s| elems(s).iter().map(|e| quantity(e)).fold(0.0_f64, f64::max))
+        .into_par_iter()
+        .map(|s| {
+            idx.iter()
+                .fold(0.0_f64, |m, &e| m.max(quantity(elem(data, n_elem, nv, s, e))))
+        })
         .collect()
 }
 
@@ -140,12 +142,14 @@ pub fn part_percentile_history(
     part_ids: &[i64],
     part: i64,
     pct: f64,
-    quantity: impl Fn(&[f64]) -> f64,
+    quantity: impl Fn(&[f64]) -> f64 + Sync,
 ) -> Vec<f64> {
-    let elems = part_elems(data, n_elem, nv, part_ids, part);
+    let idx = part_indices(n_elem, part_ids, part);
     (0..n_states)
+        .into_par_iter()
         .map(|s| {
-            let mut v: Vec<f64> = elems(s).iter().map(|e| quantity(e)).collect();
+            let mut v: Vec<f64> =
+                idx.iter().map(|&e| quantity(elem(data, n_elem, nv, s, e))).collect();
             percentile(&mut v, pct)
         })
         .collect()
@@ -162,17 +166,20 @@ pub fn part_failure_fraction_history(
     part_ids: &[i64],
     part: i64,
     threshold: f64,
-    quantity: impl Fn(&[f64]) -> f64,
+    quantity: impl Fn(&[f64]) -> f64 + Sync,
 ) -> Vec<f64> {
-    let elems = part_elems(data, n_elem, nv, part_ids, part);
+    let idx = part_indices(n_elem, part_ids, part);
+    if idx.is_empty() {
+        return vec![0.0; n_states];
+    }
+    let inv = 1.0 / idx.len() as f64;
     (0..n_states)
+        .into_par_iter()
         .map(|s| {
-            let e = elems(s);
-            if e.is_empty() {
-                0.0
-            } else {
-                e.iter().filter(|s| quantity(s) > threshold).count() as f64 / e.len() as f64
-            }
+            idx.iter()
+                .filter(|&&e| quantity(elem(data, n_elem, nv, s, e)) > threshold)
+                .count() as f64
+                * inv
         })
         .collect()
 }
