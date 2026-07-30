@@ -132,6 +132,7 @@ pub struct Control {
     pub ioshl4: i64,  // 1000 ⇒ shell "extra" (thickness, energy: 4) at element level
     pub idtdt: i64,   // digit flags: temp-gradient / residual forces+moments / strain tensors
     pub nt3d: usize,  // solid thermal vars per solid (a thermal block before the solid results)
+    pub n_rigid_shells: usize, // shells in rigid bodies: they write NO state data (NUMRBE)
     pub nmmat: usize, // total number of materials/parts
     pub extra: usize, // extra header words beyond the base 64 (word 57)
     // Interface-force (intfor) fields. `filetype == 4` marks an intfor file, in
@@ -243,11 +244,17 @@ impl Control {
     }
 
     /// Element result words per state, summed over all element blocks.
+    /// Shells that actually write state data: rigid-body shells (NUMRBE) are
+    /// omitted from the shell result block.
+    fn n_shells_with_data(&self) -> usize {
+        self.nel4.saturating_sub(self.n_rigid_shells)
+    }
+
     fn element_words(&self) -> usize {
         self.nel8 * self.nv3d
             + self.nelth * self.nv3dt
             + self.nel2 * self.nv1d
-            + self.nel4 * self.nv2d
+            + self.n_shells_with_data() * self.nv2d
     }
 
     /// Bytes per state: time + global vars + node data + element data + deletion.
@@ -290,7 +297,11 @@ impl Control {
             StateBlock::Solid => some(true, solid, self.nel8, self.nv3d),
             StateBlock::ThickShell => some(true, tshell, self.nelth, self.nv3dt),
             StateBlock::Beam => some(true, beam, self.nel2, self.nv1d),
-            StateBlock::Shell => some(true, shell, self.nel4, self.nv2d),
+            // Rigid-body shells write no data, so the shell block is shorter. NOTE:
+            // when n_rigid_shells > 0 the data index no longer equals the connectivity
+            // index (rigid shells are skipped), so part-based shell reductions need a
+            // material-type remap — a documented gap until we parse the IRBRTYP list.
+            StateBlock::Shell => some(true, shell, self.n_shells_with_data(), self.nv2d),
         }
     }
 
@@ -1459,6 +1470,19 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         } else {
             0
         },
+        // The material-type section (present when NDIM is 5/7) leads the geometry;
+        // its first word is NUMRBE, the count of shells belonging to rigid bodies,
+        // which write no state data. Read it directly at the first geometry word.
+        n_rigid_shells: {
+            let ndim = geti(word::NDIM)?;
+            if ndim == 5 || ndim == 7 {
+                let extra = geti(word::EXTRA)?.max(0) as usize;
+                let pos = (CONTROL_WORDS + extra) * wordsize as usize;
+                read_i(pos, wordsize).unwrap_or(0).max(0) as usize
+            } else {
+                0
+            }
+        },
         narbs: geti(word::NARBS)?.max(0) as usize,
         nelth: geti(word::NELTH)?.max(0) as usize,
         nv3dt: geti(word::NV3DT)?.max(0) as usize,
@@ -2050,6 +2074,28 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn material_section_rigid_shell_count() {
+        // NDIM 5 ⇒ material-type section present; its first geometry word is NUMRBE
+        // (rigid-body shells that write no state data).
+        let mut words = vec![0i32; 66];
+        words[15] = 5; // NDIM 5 ⇒ mattyp, wordsize 4
+        words[31] = 10; // NEL4
+        words[33] = 8; // NV2D
+        words[51] = 2; // NMMAT
+        words[64] = 3; // material section first word = n_rigid_shells
+        let mut buf = Vec::new();
+        for &w in &words {
+            buf.write_i32::<LittleEndian>(w).unwrap();
+        }
+        let ctrl = read_control_bytes(&buf).unwrap();
+        assert_eq!(ctrl.n_rigid_shells, 3);
+        assert_eq!(ctrl.n_shells_with_data(), 7);
+        assert_eq!(ctrl.element_words(), 7 * 8); // only shells: (10-3)*8
+        let (_, count, vars) = ctrl.block_spec(StateBlock::Shell).unwrap();
+        assert_eq!((count, vars), (7, 8));
+    }
 
     #[test]
     fn it_flag_decodes_node_thermal_words() {
