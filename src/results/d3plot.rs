@@ -60,7 +60,9 @@ mod word {
     pub const IOSHL3: usize = 45;
     pub const IOSHL4: usize = 46;
     pub const NMMAT: usize = 51;
+    pub const IDTDT: usize = 56; // flags: node temp-gradient / residual forces / strain tensors
     pub const EXTRA: usize = 57;
+    pub const NT3D: usize = 65; // solid thermal vars per solid (first extra header word past 64: 65)
 }
 
 /// The 64-word base control block.
@@ -128,6 +130,8 @@ pub struct Control {
     pub ioshl2: i64,  // 1000 ⇒ shell/tshell effective plastic strain (1) written per layer
     pub ioshl3: i64,  // 1000 ⇒ shell force resultants (8) written at element level
     pub ioshl4: i64,  // 1000 ⇒ shell "extra" (thickness, energy: 4) at element level
+    pub idtdt: i64,   // digit flags: temp-gradient / residual forces+moments / strain tensors
+    pub nt3d: usize,  // solid thermal vars per solid (a thermal block before the solid results)
     pub nmmat: usize, // total number of materials/parts
     pub extra: usize, // extra header words beyond the base 64 (word 57)
     // Interface-force (intfor) fields. `filetype == 4` marks an intfor file, in
@@ -209,12 +213,18 @@ impl Control {
         words as u64 * self.wordsize
     }
 
-    /// Thermal / mass-scaling words per node (the IT block). See
-    /// [`therm_vars_for_it`]. Note: IDTDT-gated node data (temperature gradient,
-    /// residual forces/moments) is NOT modelled here yet — a file using it would
-    /// shift the element blocks.
+    /// Non-kinematic node words that sit between displacement and velocity in the
+    /// node stream: the IT thermal/mass-scaling block ([`therm_vars_for_it`]) plus
+    /// the IDTDT temperature-gradient / residual force+moment block
+    /// ([`idtdt_node_vars`]). Per node.
     fn node_therm_vars(&self) -> usize {
-        therm_vars_for_it(self.it)
+        therm_vars_for_it(self.it) + idtdt_node_vars(self.idtdt)
+    }
+
+    /// Solid thermal words per state (`NT3D` per solid), a block written before
+    /// the solid results.
+    fn solid_thermal_words(&self) -> usize {
+        self.nt3d * self.nel8
     }
 
     /// Total words of node data per state: (IU + IV + IA) × 3 + thermal, × NUMNP.
@@ -246,6 +256,7 @@ impl Control {
         (TIME_WORDS
             + self.nglbv
             + self.node_data_words()
+            + self.solid_thermal_words()
             + self.element_words()
             + self.deletion_words()) as u64
             * self.wordsize
@@ -263,7 +274,8 @@ impl Control {
         let disp = base;
         let vel = disp + if self.iu != 0 { n3 } else { 0 } + therm;
         let acc = vel + if self.iv != 0 { n3 } else { 0 };
-        let elem = base + self.node_data_words();
+        // Element blocks follow all node data, then the solid thermal block.
+        let elem = base + self.node_data_words() + self.solid_thermal_words();
         let solid = elem;
         let tshell = solid + self.nel8 * self.nv3d;
         let beam = tshell + self.nelth * self.nv3dt;
@@ -1376,6 +1388,20 @@ fn therm_vars_for_it(it: i64) -> usize {
     temp_flux + mass
 }
 
+/// Decimal digit `n` (0 = ones) of `x` (matches lasso's `get_digit`).
+fn digit(x: i64, n: u32) -> i64 {
+    x.div_euclid(10i64.pow(n)).rem_euclid(10)
+}
+
+/// Extra node words from the IDTDT flag: temperature gradient (digit 0 → 1) and
+/// residual forces + moments (digit 1 → 3 + 3). Per node, sits between the IT
+/// thermal block and velocity in the node stream.
+fn idtdt_node_vars(idtdt: i64) -> usize {
+    let grad = usize::from(digit(idtdt, 0) == 1);
+    let residual = if digit(idtdt, 1) == 1 { 3 + 3 } else { 0 };
+    grad + residual
+}
+
 fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
     let read_i = |off: usize, ws: u64| -> Option<i64> {
         match ws {
@@ -1425,6 +1451,14 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         ioshl2: geti(word::IOSHL2)?,
         ioshl3: geti(word::IOSHL3)?,
         ioshl4: geti(word::IOSHL4)?,
+        idtdt: geti(word::IDTDT)?,
+        // NT3D lives in the extra header words (past 64); present only when EXTRA
+        // is large enough to reach word 65.
+        nt3d: if geti(word::EXTRA)?.max(0) as usize > word::NT3D - CONTROL_WORDS {
+            geti(word::NT3D)?.max(0) as usize
+        } else {
+            0
+        },
         narbs: geti(word::NARBS)?.max(0) as usize,
         nelth: geti(word::NELTH)?.max(0) as usize,
         nv3dt: geti(word::NV3DT)?.max(0) as usize,
