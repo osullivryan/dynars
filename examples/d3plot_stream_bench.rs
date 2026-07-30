@@ -77,5 +77,17 @@ fn main() {
         30e6 * 50.0 * 7.0 * 8.0 / 1e9,
         30e6 * 50.0 * 7.0 * 4.0 / 1e9,
     );
+
+    // Full per-element history matrix for the whole part (the "every element over
+    // time" path). Bounded by part size: here n_states × n_elem × 8 B.
+    let (hist_s, mat) = bench(&|| {
+        d.part_element_history(StateBlock::Solid, 1, element::von_mises_stress).unwrap().0
+    });
+    let mat_gb = mat.len() as f64 * 8.0 / 1e9;
+    println!(
+        "\npart_element_history (every element's vM over time): {:7.1} ms   ({:6.0} M elem/s)   matrix {:.2} GB",
+        hist_s * 1e3, mreads / hist_s, mat_gb
+    );
+
     let _ = std::fs::remove_file(&p);
 }

@@ -952,6 +952,43 @@ impl D3plot {
         )
     }
 
+    /// Every element of `part`, its `quantity` over **all states**: a dense
+    /// `(n_states, n_part_elems)` row-major matrix (row `s` = every element at
+    /// state `s`; column `e` = element `e`'s history). Also returns the block-order
+    /// element indices, so column `e` ↔ `indices[e]` (feed to
+    /// [`element_result`](Self::element_result) for that element's raw record).
+    ///
+    /// Filled in one parallel streaming pass off the memory map (rayon over states,
+    /// each state writes one contiguous row — no contention, no full-block copy).
+    /// Unlike the scalar reductions this **materializes** the matrix, so memory is
+    /// `n_states · n_part_elems · 8` bytes — bounded by the *part* size, but that
+    /// can still be GB for a multi-million-element part. Returns `None` if the
+    /// block is absent.
+    pub fn part_element_history(
+        &self,
+        block: StateBlock,
+        part: i64,
+        quantity: impl Fn(&[f64]) -> f64 + Sync,
+    ) -> Option<(Vec<f64>, [usize; 2], Vec<usize>)> {
+        let (off_words, _count, vars) = self.ctrl.block_spec(block)?;
+        let idx = self.part_element_indices(block, part)?;
+        let (ns, ne) = (self.states.len(), idx.len());
+        let (ws, byte_off) = (self.ctrl.wordsize as usize, off_words * self.ctrl.wordsize as usize);
+        let mut out = vec![0.0f64; ns * ne];
+        out.par_chunks_mut(ne.max(1)).enumerate().for_each(|(s, row)| {
+            let loc = &self.states[s];
+            let bytes: &[u8] = &self.files[loc.file];
+            let base = loc.offset as usize + byte_off;
+            let mut buf = vec![0.0f64; vars];
+            for (col, &e) in idx.iter().enumerate() {
+                if read_element(bytes, base, e, vars, ws, &mut buf) {
+                    row[col] = quantity(&buf);
+                }
+            }
+        });
+        Some((out, [ns, ne], idx))
+    }
+
     /// The packed result record (all `vars` words) for a **single element** at one
     /// `state` — O(1) random access straight off the memory map: no scan, no other
     /// element or state is touched (only the page(s) holding this element fault
@@ -2172,6 +2209,17 @@ mod tests {
         assert_eq!(am.iter().map(|&(e, _)| e).collect::<Vec<_>>(), vec![0, 0]);
         assert!((am[0].1 - vm[0]).abs() < 1e-9 && (am[1].1 - vm[1]).abs() < 1e-9);
 
+        // Full per-element history matrix (n_states, n_part_elems). 1-elem part →
+        // it flattens to the per-state max, and column 0 is that element's curve.
+        let (mat, mdims, cols) =
+            d.part_element_history(StateBlock::Solid, 1, element::von_mises_stress).unwrap();
+        assert_eq!(mdims, [2, 1]);
+        assert_eq!(cols, vec![0]);
+        assert_eq!(mat, vm);
+        let (pmat, _, _) =
+            d.part_element_history(StateBlock::Solid, 1, element::effective_plastic_strain).unwrap();
+        assert!((pmat[0] - 0.1).abs() < 1e-4 && (pmat[1] - 0.3).abs() < 1e-4, "{pmat:?}");
+
         // Single-element O(1) random access: state 1, element 0 = pure shear 50.
         let e = d.element_result(StateBlock::Solid, 1, 0).unwrap();
         let expect = [0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.3]; // results are stored f32
@@ -2179,6 +2227,58 @@ mod tests {
         assert!((element::von_mises_stress(&e) - 3.0f64.sqrt() * 50.0).abs() < 1e-2);
         assert!(d.element_result(StateBlock::Solid, 2, 0).is_none()); // state out of range
         assert!(d.element_result(StateBlock::Solid, 0, 1).is_none()); // elem out of range
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn part_element_history_and_argmax_over_multiple_elements() {
+        use crate::results::element;
+        // 4 solids, parts 1,2,1,2 → part 1 = elements {0,2}. nv=7, 2 states.
+        // Each element uniaxial (sxx only) so von Mises == |sxx|.
+        let nodes: Vec<f64> = (0..8 * 3).map(|i| i as f64).collect();
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        for &pt in &[1, 2, 1, 2] {
+            w.add_solid([1, 2, 3, 4, 5, 6, 7, 8], pt);
+        }
+        w.set_part_ids(vec![10, 20]);
+        let uni = |sxx: f64| [sxx, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        // state 0: e0=100 e1=10 e2=150 e3=30 ; state 1: e0=200 e1=20 e2=50 e3=40
+        let mut data = Vec::new();
+        for &sxx in &[100.0, 10.0, 150.0, 30.0, 200.0, 20.0, 50.0, 40.0] {
+            data.extend_from_slice(&uni(sxx));
+        }
+        w.set_solid_results(7, data);
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+        let d = D3plot::open(&p).unwrap();
+
+        // Full matrix: part 1 = elements {0,2}, so columns map to those.
+        let (mat, dims, cols) =
+            d.part_element_history(StateBlock::Solid, 1, element::von_mises_stress).unwrap();
+        assert_eq!(dims, [2, 2]);
+        assert_eq!(cols, vec![0, 2]);
+        // row s = [vm(e0), vm(e2)]: [[100,150],[200,50]]
+        assert!(mat.iter().zip([100.0, 150.0, 200.0, 50.0]).all(|(a, b)| (a - b).abs() < 1e-2), "{mat:?}");
+
+        // part max is the row-wise max of the matrix.
+        let vm = d.part_max_history(StateBlock::Solid, 1, element::von_mises_stress).unwrap();
+        assert!((vm[0] - 150.0).abs() < 1e-2 && (vm[1] - 200.0).abs() < 1e-2, "{vm:?}");
+
+        // argmax picks the winning element index (block order): state0→e2, state1→e0.
+        let am = d.part_argmax_history(StateBlock::Solid, 1, element::von_mises_stress).unwrap();
+        assert_eq!(am[0].0, 2);
+        assert_eq!(am[1].0, 0);
+        assert!((am[0].1 - 150.0).abs() < 1e-2 && (am[1].1 - 200.0).abs() < 1e-2);
+
+        // A single element's history == the matching matrix column, via element_result.
+        let e2_hist: Vec<f64> = (0..d.num_states())
+            .map(|s| element::von_mises_stress(&d.element_result(StateBlock::Solid, s, 2).unwrap()))
+            .collect();
+        assert!((e2_hist[0] - 150.0).abs() < 1e-2 && (e2_hist[1] - 50.0).abs() < 1e-2, "{e2_hist:?}");
         let _ = std::fs::remove_file(&p);
     }
 
