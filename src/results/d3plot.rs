@@ -912,6 +912,25 @@ impl D3plot {
                 .collect(),
         )
     }
+
+    /// The packed result record (all `vars` words) for a **single element** at one
+    /// `state` — O(1) random access straight off the memory map: no scan, no other
+    /// element or state is touched (only the page(s) holding this element fault
+    /// in). `elem` is the element's 0-based position within the block (file
+    /// order), *not* its user element id. Returns `None` if the block is absent or
+    /// an index is out of range. Feed the result to
+    /// [`element::von_mises_stress`](super::element) etc. to derive a quantity.
+    pub fn element_result(&self, block: StateBlock, state: usize, elem: usize) -> Option<Vec<f64>> {
+        let (off_words, count, vars) = self.ctrl.block_spec(block)?;
+        if state >= self.states.len() || elem >= count {
+            return None;
+        }
+        let ws = self.ctrl.wordsize as usize;
+        let loc = &self.states[state];
+        let base = loc.offset as usize + off_words * ws;
+        let mut buf = vec![0.0f64; vars];
+        read_element(&self.files[loc.file], base, elem, vars, ws, &mut buf).then_some(buf)
+    }
 }
 
 /// Read element `e`'s `vars` result words at byte `base` (state block start) into
@@ -2108,6 +2127,14 @@ mod tests {
             .part_failure_fraction_history(StateBlock::Solid, 1, 0.2, element::effective_plastic_strain)
             .unwrap();
         assert_eq!(ff_s, ff);
+
+        // Single-element O(1) random access: state 1, element 0 = pure shear 50.
+        let e = d.element_result(StateBlock::Solid, 1, 0).unwrap();
+        let expect = [0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.3]; // results are stored f32
+        assert!(e.iter().zip(expect).all(|(a, b)| (a - b).abs() < 1e-5), "{e:?}");
+        assert!((element::von_mises_stress(&e) - 3.0f64.sqrt() * 50.0).abs() < 1e-2);
+        assert!(d.element_result(StateBlock::Solid, 2, 0).is_none()); // state out of range
+        assert!(d.element_result(StateBlock::Solid, 0, 1).is_none()); // elem out of range
         let _ = std::fs::remove_file(&p);
     }
 
