@@ -913,6 +913,45 @@ impl D3plot {
         )
     }
 
+    /// Per state, **which** of `part`'s elements maximizes `quantity`, and that
+    /// value: `(block-order element index, value)`. Same streaming/mmap +
+    /// state-parallel shape as [`part_max_history`](Self::part_max_history) —
+    /// `O(n_states)` memory, no per-element histories materialized. Locate the
+    /// critical element with this, then loop [`element_result`](Self::element_result)
+    /// over states for its full record. `None` if the block or part is empty.
+    pub fn part_argmax_history(
+        &self,
+        block: StateBlock,
+        part: i64,
+        quantity: impl Fn(&[f64]) -> f64 + Sync,
+    ) -> Option<Vec<(usize, f64)>> {
+        let (off_words, _count, vars) = self.ctrl.block_spec(block)?;
+        let idx = self.part_element_indices(block, part)?;
+        if idx.is_empty() {
+            return None;
+        }
+        let (ws, byte_off) = (self.ctrl.wordsize as usize, off_words * self.ctrl.wordsize as usize);
+        Some(
+            (0..self.states.len())
+                .into_par_iter()
+                .map(|s| {
+                    let bytes: &[u8] = &self.files[self.states[s].file];
+                    let base = self.states[s].offset as usize + byte_off;
+                    let mut buf = vec![0.0f64; vars];
+                    idx.iter().fold((idx[0], f64::NEG_INFINITY), |best, &e| {
+                        if read_element(bytes, base, e, vars, ws, &mut buf) {
+                            let v = quantity(&buf);
+                            if v > best.1 {
+                                return (e, v);
+                            }
+                        }
+                        best
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// The packed result record (all `vars` words) for a **single element** at one
     /// `state` — O(1) random access straight off the memory map: no scan, no other
     /// element or state is touched (only the page(s) holding this element fault
@@ -2127,6 +2166,11 @@ mod tests {
             .part_failure_fraction_history(StateBlock::Solid, 1, 0.2, element::effective_plastic_strain)
             .unwrap();
         assert_eq!(ff_s, ff);
+
+        // Argmax: 1-element part → element 0 wins every state, value == part max.
+        let am = d.part_argmax_history(StateBlock::Solid, 1, element::von_mises_stress).unwrap();
+        assert_eq!(am.iter().map(|&(e, _)| e).collect::<Vec<_>>(), vec![0, 0]);
+        assert!((am[0].1 - vm[0]).abs() < 1e-9 && (am[1].1 - vm[1]).abs() < 1e-9);
 
         // Single-element O(1) random access: state 1, element 0 = pure shear 50.
         let e = d.element_result(StateBlock::Solid, 1, 0).unwrap();
