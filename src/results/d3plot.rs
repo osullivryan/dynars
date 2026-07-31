@@ -52,6 +52,7 @@ mod word {
     pub const NEIPH: usize = 34;
     pub const NEIPS: usize = 35;
     pub const MAXINT: usize = 36;
+    pub const NMSPH: usize = 37; // number of SPH nodes
     pub const NARBS: usize = 39;
     pub const NELTH: usize = 40;
     pub const NV3DT: usize = 42;
@@ -59,7 +60,10 @@ mod word {
     pub const IOSHL2: usize = 44;
     pub const IOSHL3: usize = 45;
     pub const IOSHL4: usize = 46;
+    pub const IALEMAT: usize = 47; // ALE material count
     pub const NMMAT: usize = 51;
+    pub const NPEFG: usize = 54; // airbag: n_airbags = npefg % 1000
+    pub const NEL48: usize = 55; // 8-node shell count
     pub const IDTDT: usize = 56; // flags: node temp-gradient / residual forces / strain tensors
     pub const EXTRA: usize = 57;
     pub const NT3D: usize = 65; // solid thermal vars per solid (first extra header word past 64: 65)
@@ -133,6 +137,24 @@ pub struct Control {
     pub idtdt: i64,   // digit flags: temp-gradient / residual forces+moments / strain tensors
     pub nt3d: usize,  // solid thermal vars per solid (a thermal block before the solid results)
     pub n_rigid_shells: usize, // shells in rigid bodies: they write NO state data (NUMRBE)
+    pub ialemat: usize, // ALE material count (fluid material id list in geometry)
+    pub npefg: i64,   // airbag/particle flag word (n_airbags = npefg % 1000)
+    pub nel48: usize, // 8-node shell count (extra connectivity, 5 words each)
+    pub nmsph: usize, // number of SPH nodes
+    // Geometry-walk-derived (filled by `walk_geometry` at open): the exact byte
+    // offset of the node coordinate block and of the first state, plus the
+    // per-state SPH/airbag/rigid-road/rigid-body counts these state tails need.
+    pub geom_bytes: u64,
+    pub coord_off: u64,
+    pub n_sph_vars: usize,
+    pub n_airbags: usize,
+    pub n_particles: usize,
+    pub n_airbag_state_vars: usize,   // nstgeom, per airbag per state
+    pub n_particle_state_vars: usize, // nvar, per particle per state
+    pub n_geom_vars: usize,           // ngeom, per airbag (geometry only)
+    pub n_rigids: usize,
+    pub reduced_rigid: bool,
+    pub n_roads: usize,
     pub nmmat: usize, // total number of materials/parts
     pub extra: usize, // extra header words beyond the base 64 (word 57)
     // Interface-force (intfor) fields. `filetype == 4` marks an intfor file, in
@@ -201,17 +223,9 @@ impl Control {
     /// multi-file family case (the base file's leftover is smaller than one state)
     /// and for files dynars writes (which omit it).
     fn geometry_section_bytes(&self) -> u64 {
-        let mut words = CONTROL_WORDS + self.extra;
-        words += self.numnp * SPATIAL_DIM; // node coordinates
-        words += self.nel8 * SOLID_CONN; // solids
-        words += self.nelth * TSHELL_CONN; // thick shells
-        words += self.nel2 * BEAM_CONN; // beams
-        words += self.nel4 * SHELL_CONN; // shells
-        if self.mattyp() {
-            words += 2 + self.nmmat; // material-type section
-        }
-        words += self.narbs; // arbitrary node/element numbering section
-        words as u64 * self.wordsize
+        // Computed by `walk_geometry` at open (full section walk in LS-DYNA order,
+        // including material / SPH / airbag / rigid-body / rigid-road sections).
+        self.geom_bytes
     }
 
     /// Non-kinematic node words that sit between displacement and velocity in the
@@ -257,15 +271,25 @@ impl Control {
             + self.n_shells_with_data() * self.nv2d
     }
 
-    /// Bytes per state: time + global vars + node data + element data + deletion.
-    /// SPH/airbag/rigid-road terms are not modelled (v1 scope).
+    /// Bytes per state, in LS-DYNA order: time + global vars + node data + solid
+    /// thermal + element data + SPH + deletion + airbag particles + rigid road +
+    /// rigid-body motion.
     fn bytes_per_state(&self) -> u64 {
+        let sph = self.nmsph * self.n_sph_vars;
+        let airbag = self.n_airbags * self.n_airbag_state_vars
+            + self.n_particles * self.n_particle_state_vars;
+        let road = self.n_roads * 6;
+        let rigid = self.n_rigids * if self.reduced_rigid { 12 } else { 24 };
         (TIME_WORDS
             + self.nglbv
             + self.node_data_words()
             + self.solid_thermal_words()
             + self.element_words()
-            + self.deletion_words()) as u64
+            + sph
+            + self.deletion_words()
+            + airbag
+            + road
+            + rigid) as u64
             * self.wordsize
     }
 
@@ -481,10 +505,11 @@ impl D3plot {
             .collect::<Result<_, _>>()?;
         let file_slices: Vec<&[u8]> = files.iter().map(|m| &m[..]).collect();
         let (ctrl, states, times) = index_family(&file_slices)?;
-        let coord_off = (CONTROL_WORDS + ctrl.extra) as u64 * ctrl.wordsize;
+        // Node coordinates follow the material / SPH / airbag flag sections, so use
+        // the offset computed by the geometry walk (not just the header size).
         let x0 = read_floats_at(
             &files[0],
-            coord_off,
+            ctrl.coord_off,
             ctrl.numnp * SPATIAL_DIM,
             ctrl.wordsize,
         )?;
@@ -1439,7 +1464,7 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         read_i(w * wordsize as usize, wordsize).ok_or(D3plotError::BadHeader)
     };
 
-    Ok(Control {
+    let mut ctrl = Control {
         wordsize,
         ndim: geti(word::NDIM)? as usize,
         numnp: geti(word::NUMNP)? as usize,
@@ -1483,6 +1508,22 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
                 0
             }
         },
+        ialemat: geti(word::IALEMAT)?.max(0) as usize,
+        npefg: geti(word::NPEFG)?,
+        nel48: geti(word::NEL48)?.max(0) as usize,
+        nmsph: geti(word::NMSPH)?.max(0) as usize,
+        // Filled by walk_geometry below (needs the whole geometry, not just the header).
+        geom_bytes: 0,
+        coord_off: 0,
+        n_sph_vars: 0,
+        n_airbags: 0,
+        n_particles: 0,
+        n_airbag_state_vars: 0,
+        n_particle_state_vars: 0,
+        n_geom_vars: 0,
+        n_rigids: 0,
+        reduced_rigid: false,
+        n_roads: 0,
         narbs: geti(word::NARBS)?.max(0) as usize,
         nelth: geti(word::NELTH)?.max(0) as usize,
         nv3dt: geti(word::NV3DT)?.max(0) as usize,
@@ -1495,7 +1536,117 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         nshear: geti(word::NSHEAR)?.max(0) as usize,
         nforce: geti(word::NFORCE)?.max(0) as usize,
         ngapc: geti(word::NGAPC)?.max(0) as usize,
-    })
+    };
+    walk_geometry(&mut ctrl, bytes);
+    Ok(ctrl)
+}
+
+/// Read one integer word at byte offset `off` (0 past the buffer end).
+fn read_int_at(bytes: &[u8], off: usize, ws: u64) -> i64 {
+    match ws {
+        4 => bytes
+            .get(off..off + 4)
+            .map(|b| i32::from_le_bytes(b.try_into().unwrap()) as i64)
+            .unwrap_or(0),
+        _ => bytes
+            .get(off..off + 8)
+            .map(|b| i64::from_le_bytes(b.try_into().unwrap()))
+            .unwrap_or(0),
+    }
+}
+
+/// Walk the geometry section in LS-DYNA order (matching lasso's `_parse_geometry`),
+/// recording the node-coordinate offset, the total size (= first state offset), and
+/// the SPH/airbag/rigid counts the per-state tails need. Sections whose flags are
+/// off contribute nothing, so plain files reduce to header + coords + connectivity
+/// + numbering exactly as before.
+fn walk_geometry(c: &mut Control, bytes: &[u8]) {
+    let ws = c.wordsize;
+    let wsz = ws as usize;
+    let word = |p: usize| read_int_at(bytes, p, ws);
+    let mattyp = c.ndim == 5 || c.ndim == 7;
+    let has_rigid_body = c.ndim == 8 || c.ndim == 9;
+    let has_rigid_road = c.ndim == 6 || c.ndim == 9;
+    c.reduced_rigid = c.ndim == 9;
+
+    let mut pos = (CONTROL_WORDS + c.extra) * wsz; // start of geometry
+
+    // 1. material-type section: NUMRBE + NMMAT + material types.
+    if mattyp {
+        pos += (2 + c.nmmat) * wsz;
+    }
+    // 2. ALE fluid material id list.
+    pos += c.ialemat * wsz;
+    // 3. SPH element data flags (isphfg1..11): isphfg1 = flag-word count; the rest
+    //    give n_sph_vars.
+    if c.nmsph > 0 {
+        let f = |k: usize| word(pos + k * wsz);
+        let isphfg1 = f(0).max(0) as usize;
+        let n_hist = if f(0) == 10 { 0 } else { f(10).max(0) as usize };
+        c.n_sph_vars = (f(1) + f(2) + f(3) + f(4) + f(5) + f(6) + f(7) + f(8).abs() + f(9)).max(0)
+            as usize
+            + n_hist
+            + 1; // material number
+        pos += isphfg1 * wsz;
+    }
+    // 4. airbag/particle flags: ngeom, nvar(particle state), npart, nstgeom(airbag
+    //    state), [n_chambers if subver==4], then 9 words per airbag variable.
+    if c.npefg > 0 && c.npefg <= 10_000_000 {
+        c.n_airbags = (c.npefg % 1000) as usize;
+        let subver = c.npefg / 1000;
+        c.n_geom_vars = word(pos).max(0) as usize;
+        c.n_particle_state_vars = word(pos + wsz).max(0) as usize;
+        c.n_particles = word(pos + 2 * wsz).max(0) as usize;
+        c.n_airbag_state_vars = word(pos + 3 * wsz).max(0) as usize;
+        pos += 4 * wsz;
+        if subver == 4 {
+            pos += wsz; // n_chambers
+        }
+        let n_airbag_vars = c.n_geom_vars + c.n_particle_state_vars + c.n_airbag_state_vars;
+        pos += 9 * n_airbag_vars * wsz; // variable types (1) + names (8) each
+    }
+    // 5. geometry: node coordinates + element connectivity.
+    c.coord_off = pos as u64;
+    pos += c.numnp * SPATIAL_DIM * wsz;
+    pos += (c.nel8 * SOLID_CONN + c.nelth * TSHELL_CONN + c.nel2 * BEAM_CONN + c.nel4 * SHELL_CONN)
+        * wsz;
+    // 6. user id numbering section.
+    pos += c.narbs * wsz;
+    // 7. rigid body description: nrigid, then per body (mrigid, numnodr, node list,
+    //    numnoda, active node list).
+    if has_rigid_body {
+        c.n_rigids = word(pos).max(0) as usize;
+        pos += wsz;
+        for _ in 0..c.n_rigids {
+            let numnodr = word(pos + wsz).max(0) as usize;
+            pos += 2 * wsz + numnodr * wsz;
+            let numnoda = word(pos).max(0) as usize;
+            pos += wsz + numnoda * wsz;
+        }
+    }
+    // 8. SPH node and material list: 2 words per SPH node.
+    if c.nmsph > 0 {
+        pos += c.nmsph * 2 * wsz;
+    }
+    // 9. airbag particle geometry: ngeom words per airbag.
+    if c.n_airbags > 0 {
+        pos += c.n_airbags * c.n_geom_vars * wsz;
+    }
+    // 10. rigid road surface: header (nnode, nseg, nsurf, motion) + node ids + node
+    //     coords + per-surface (id, nseg, 4 words per segment).
+    if has_rigid_road {
+        let nnode = word(pos).max(0) as usize;
+        c.n_roads = word(pos + 2 * wsz).max(0) as usize;
+        pos += 4 * wsz + nnode * wsz + nnode * SPATIAL_DIM * wsz;
+        for _ in 0..c.n_roads {
+            let nseg = word(pos + wsz).max(0) as usize;
+            pos += 2 * wsz + 4 * nseg * wsz;
+        }
+    }
+    // 11. extra connectivity for 8-node shells (higher-order solids not modelled).
+    pos += 5 * c.nel48 * wsz;
+
+    c.geom_bytes = pos as u64;
 }
 
 /// Which optional nodal result arrays each state carries.
@@ -2095,6 +2246,81 @@ mod tests {
         assert_eq!(ctrl.element_words(), 7 * 8); // only shells: (10-3)*8
         let (_, count, vars) = ctrl.block_spec(StateBlock::Shell).unwrap();
         assert_eq!((count, vars), (7, 8));
+    }
+
+    // Encode a header + hand-set geometry words to a little-endian d3plot buffer.
+    fn control_from_words(words: &[i32]) -> Control {
+        let mut buf = Vec::new();
+        for &w in words {
+            buf.write_i32::<LittleEndian>(w).unwrap();
+        }
+        read_control_bytes(&buf).unwrap()
+    }
+
+    #[test]
+    fn geometry_walk_airbag_sizing() {
+        // NPEFG=2 (2 airbags, subver 0). Airbag flags at word 64: ngeom, nvar
+        // (particle state), npart, nstgeom (airbag state).
+        let mut w = vec![0i32; 72];
+        w[15] = 3; // NDIM plain
+        w[16] = 1; // NUMNP
+        w[20] = 1; // IU
+        w[54] = 2; // NPEFG
+        w[64] = 3; // ngeom
+        w[65] = 5; // nvar (particle state vars)
+        w[66] = 4; // npart (particles)
+        w[67] = 2; // nstgeom (airbag state vars)
+        let c = control_from_words(&w);
+        assert_eq!(
+            (c.n_airbags, c.n_particles, c.n_airbag_state_vars, c.n_particle_state_vars, c.n_geom_vars),
+            (2, 4, 2, 5, 3)
+        );
+        // flag section = 4 + 9*(3+5+2) = 94 words ⇒ coords start at word 64+94.
+        assert_eq!(c.coord_off, (64 + 94) * 4);
+        // airbag state tail = 2*2 + 4*5 = 24 words; + time(1) + node(iu:3) = 28.
+        assert_eq!(c.bytes_per_state(), 28 * 4);
+    }
+
+    #[test]
+    fn geometry_walk_sph_sizing() {
+        // NMSPH=2. isphfg1..11 at word 64. isphfg1=11 (flag count).
+        let mut w = vec![0i32; 80];
+        w[15] = 3; // NDIM
+        w[16] = 1; // NUMNP
+        w[20] = 1; // IU
+        w[37] = 2; // NMSPH
+        w[64] = 11; // isphfg1 = flag-word count
+        for k in 65..=71 {
+            w[k] = 1; // isphfg2..8 = 1 each (7)
+        }
+        w[72] = 6; // isphfg9 (stress-ish)
+        w[73] = 1; // isphfg10 (mass)
+        w[74] = 2; // isphfg11 (history vars)
+        let c = control_from_words(&w);
+        // n_sph_vars = 7 + |6| + 1 + 2 + 1(material) = 17.
+        assert_eq!(c.n_sph_vars, 17);
+        assert_eq!(c.coord_off, (64 + 11) * 4); // flags = isphfg1 = 11 words
+        // sph state tail = nmsph * n_sph_vars = 2*17 = 34; + time(1) + node(3) = 38.
+        assert_eq!(c.bytes_per_state(), 38 * 4);
+    }
+
+    #[test]
+    fn geometry_walk_rigid_body_sizing() {
+        // NDIM=8 ⇒ rigid-body data (not reduced). One rigid body with 0 nodes.
+        // Geometry: coords(numnp*3=3) then rigid-body description at word 67.
+        let mut w = vec![0i32; 74];
+        w[15] = 8; // NDIM ⇒ rigid body
+        w[16] = 1; // NUMNP
+        w[20] = 1; // IU
+        w[67] = 1; // nrigid = 1
+        w[68] = 0; // mrigid
+        w[69] = 0; // numnodr
+        w[70] = 0; // numnoda
+        let c = control_from_words(&w);
+        assert!(!c.reduced_rigid);
+        assert_eq!(c.n_rigids, 1);
+        // rigid-body motion tail = 1*24 = 24; + time(1) + node(3) = 28.
+        assert_eq!(c.bytes_per_state(), 28 * 4);
     }
 
     #[test]
