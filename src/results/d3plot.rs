@@ -333,6 +333,43 @@ impl Control {
     fn iu_offset_in_state(&self) -> u64 {
         (TIME_WORDS + self.nglbv) as u64 * self.wordsize
     }
+
+    /// `(word offset within a state, words per node)` of a thermal/auxiliary node
+    /// field, or `None` when absent. The node stream is displacement, temperature
+    /// (±layers), heat flux, mass scaling, temperature gradient, residual force,
+    /// residual moment, velocity, acceleration.
+    fn node_field_spec(&self, field: NodeField) -> Option<(usize, usize)> {
+        let it0 = self.it.rem_euclid(10);
+        let has_temp = (1..=3).contains(&it0);
+        let temp_words = if it0 == 3 { 3 } else { 1 };
+        let has_flux = it0 == 2 || it0 == 3;
+        let has_mass = self.it.div_euclid(10).rem_euclid(10) == 1;
+        let has_grad = digit(self.idtdt, 0) == 1;
+        let has_resid = digit(self.idtdt, 1) == 1;
+        let n = self.numnp;
+        let mut off = TIME_WORDS + self.nglbv + if self.iu != 0 { n * SPATIAL_DIM } else { 0 };
+        let mut step = |present: bool, per: usize| {
+            let at = off;
+            if present {
+                off += n * per;
+            }
+            (at, per)
+        };
+        let temp = step(has_temp, temp_words);
+        let flux = step(has_flux, 3);
+        let mass = step(has_mass, 1);
+        let grad = step(has_grad, 1);
+        let residf = step(has_resid, 3);
+        let residm = step(has_resid, 3);
+        match field {
+            NodeField::Temperature => has_temp.then_some(temp),
+            NodeField::HeatFlux => has_flux.then_some(flux),
+            NodeField::MassScaling => has_mass.then_some(mass),
+            NodeField::TemperatureGradient => has_grad.then_some(grad),
+            NodeField::ResidualForce => has_resid.then_some(residf),
+            NodeField::ResidualMoment => has_resid.then_some(residm),
+        }
+    }
 }
 
 /// A per-entity result block in a state. Node blocks are (N, 3); element blocks
@@ -356,6 +393,29 @@ pub enum StateBlock {
     ThickShell,
     Beam,
     Shell,
+}
+
+/// A per-node thermal / auxiliary state field (beyond displacement / velocity /
+/// acceleration), present per the IT and IDTDT header flags. Each maps to a
+/// strided slice of the node block. See [`D3plot::node_field`].
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(eq, eq_int, from_py_object, name = "NodeField")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeField {
+    /// Nodal temperature (1 value/node, or 3 through-thickness layers when IT%10==3).
+    Temperature,
+    /// Nodal heat flux (3/node).
+    HeatFlux,
+    /// Nodal mass scaling (1/node).
+    MassScaling,
+    /// Nodal temperature gradient (1/node).
+    TemperatureGradient,
+    /// Nodal residual force (3/node).
+    ResidualForce,
+    /// Nodal residual moment (3/node).
+    ResidualMoment,
 }
 
 /// A per-segment field in an interface-force (`intfor`) file. These partition
@@ -538,6 +598,16 @@ impl D3plot {
             self.ctrl.numnp * SPATIAL_DIM,
             ws,
         )
+    }
+
+    /// A thermal/auxiliary per-node field at `state`: `NUMNP × k` row-major, where
+    /// `k` is the per-node width (1, or 3 for vectors / temperature layers). `None`
+    /// if the field is absent (per IT/IDTDT) or the state is out of range.
+    pub fn node_field(&self, field: NodeField, state: usize) -> Option<Vec<f64>> {
+        let (off_words, per) = self.ctrl.node_field_spec(field)?;
+        let loc = self.states.get(state)?;
+        let byte = loc.offset + off_words as u64 * self.ctrl.wordsize;
+        read_floats_at(&self.files[loc.file], byte, self.ctrl.numnp * per, self.ctrl.wordsize).ok()
     }
 
     /// Deformed node coordinates for **every** state in one pass: a flat
