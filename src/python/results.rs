@@ -252,11 +252,13 @@ impl PyD3plot {
         Ok(Self { inner })
     }
 
+    /// Number of nodes (NUMNP) in the mesh.
     #[getter]
     fn num_nodes(&self) -> usize {
         self.inner.num_nodes()
     }
 
+    /// Number of output states (time steps) in the file.
     #[getter]
     fn num_states(&self) -> usize {
         self.inner.num_states()
@@ -843,11 +845,13 @@ impl PyD3plotEditor {
         Ok(Self { inner })
     }
 
+    /// Number of nodes (NUMNP) in the mesh.
     #[getter]
     fn num_nodes(&self) -> usize {
         self.inner.num_nodes()
     }
 
+    /// Number of output states (time steps) in the family.
     #[getter]
     fn num_states(&self) -> usize {
         self.inner.num_states()

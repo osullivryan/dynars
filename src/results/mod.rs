@@ -5,6 +5,20 @@
 //! - [`Binout`] walks the LSDA symbol tree and reads channels by path.
 //! - [`D3plot`] reads the control block, initial geometry, and per-state nodal
 //!   coordinates / displacements.
+//!
+//! ```no_run
+//! use dynars::results::{Binout, D3plot};
+//!
+//! // d3plot: geometry + per-state nodal data
+//! let d3 = D3plot::open("d3plot").unwrap();
+//! println!("{} nodes, {} states", d3.num_nodes(), d3.num_states());
+//! let xyz = d3.node_coordinates_all().unwrap(); // flat [x0,y0,z0, x1,y1,z1, …]
+//!
+//! // binout: walk the symbol tree and read a channel by path
+//! let b = Binout::new("binout*").unwrap();
+//! let top_level = b.read(&[]).unwrap(); // then descend, e.g. b.read(&["glstat"])
+//! # let _ = (xyz, top_level);
+//! ```
 
 mod binout;
 pub mod d3plot;

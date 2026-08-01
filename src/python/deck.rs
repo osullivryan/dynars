@@ -56,15 +56,24 @@ impl PyDeck {
         report_to_py(py.detach(move || self.deck.validate(rs)))
     }
 
+    /// The *PART with this id, or `None` if none is defined. Ids are global
+    /// (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also matches.
     fn part(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
         PyEntity::make(slf, py, EntityKind::Part, id)
     }
+    /// The *MAT with this id, or `None` if none is defined. Ids are global
+    /// (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also matches.
     fn material(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
         PyEntity::make(slf, py, EntityKind::Material, id)
     }
+    /// The *SECTION with this id, or `None` if none is defined. Ids are global
+    /// (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also matches.
     fn section(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
         PyEntity::make(slf, py, EntityKind::Section, id)
     }
+    /// The *DEFINE_CURVE with this id, or `None` if none is defined. Ids are
+    /// global (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also
+    /// matches.
     fn curve(slf: Py<Self>, py: Python<'_>, id: i64) -> Option<PyEntity> {
         PyEntity::make(slf, py, EntityKind::Curve, id)
     }
@@ -73,12 +82,15 @@ impl PyDeck {
     fn parts(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
         PyEntity::all(slf, py, EntityKind::Part)
     }
+    /// Every *MAT in the deck (enumerate, don't guess ids).
     fn materials(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
         PyEntity::all(slf, py, EntityKind::Material)
     }
+    /// Every *SECTION in the deck (enumerate, don't guess ids).
     fn sections(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
         PyEntity::all(slf, py, EntityKind::Section)
     }
+    /// Every *DEFINE_CURVE in the deck (enumerate, don't guess ids).
     fn curves(slf: Py<Self>, py: Python<'_>) -> Vec<PyEntity> {
         PyEntity::all(slf, py, EntityKind::Curve)
     }
@@ -218,10 +230,12 @@ impl PyEntity {
 
 #[pymethods]
 impl PyEntity {
+    /// The entity kind (e.g. `"Part"`, `"Material"`, `"Section"`, `"Curve"`).
     #[getter]
     fn kind(&self) -> String {
         format!("{:?}", self.kind)
     }
+    /// The full `*KEYWORD` name of the block that defines this entity.
     #[getter]
     fn keyword(&self, py: Python<'_>) -> String {
         let d = self.deck.borrow(py);
@@ -293,15 +307,24 @@ impl PyEntity {
                 .find_map(|k| PyEntity::make(deck.clone_ref(py), py, *k, logical(*k))),
         }
     }
+    /// Follow this entity's first field that references a *MAT to that
+    /// material, or `None` if there is no such field or it doesn't resolve.
     fn material(slf: PyRef<'_, Self>, py: Python<'_>) -> Option<PyEntity> {
         PyEntity::ref_to(slf, py, EntityKind::Material)
     }
+    /// Follow this entity's first field that references a *SECTION to that
+    /// section, or `None` if there is no such field or it doesn't resolve.
     fn section(slf: PyRef<'_, Self>, py: Python<'_>) -> Option<PyEntity> {
         PyEntity::ref_to(slf, py, EntityKind::Section)
     }
+    /// Follow this entity's first field that references an *EOS to that equation
+    /// of state, or `None` if there is no such field or it doesn't resolve.
     fn eos(slf: PyRef<'_, Self>, py: Python<'_>) -> Option<PyEntity> {
         PyEntity::ref_to(slf, py, EntityKind::Eos)
     }
+    /// Follow this entity's first field that references a *HOURGLASS to that
+    /// hourglass definition, or `None` if there is no such field or it doesn't
+    /// resolve.
     fn hourglass(slf: PyRef<'_, Self>, py: Python<'_>) -> Option<PyEntity> {
         PyEntity::ref_to(slf, py, EntityKind::Hourglass)
     }

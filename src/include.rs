@@ -30,7 +30,8 @@ pub struct IncludeDirective {
     pub kind: IncludeKind,
     pub raw_path: String,
     pub resolved_path: PathBuf,
-    /// Id offsets applied to the included file. [`TransformOffsets::IDENTITY`]
+    /// Id offsets applied to the included file.
+    /// [`TransformOffsets::IDENTITY`](crate::keywords::TransformOffsets::IDENTITY)
     /// for a plain `*INCLUDE`; populated from the card for `*INCLUDE_TRANSFORM`.
     pub offsets: crate::keywords::TransformOffsets,
 }

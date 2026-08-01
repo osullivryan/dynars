@@ -1,3 +1,13 @@
+//! Low-level file parsing: split a keyword file into [`Block`]s and scan it for
+//! `*INCLUDE` directives.
+//!
+//! Two paths share the same include-resolution logic. [`parse_file_blocks`]
+//! memory-maps a file and splits it into keyword blocks (the model the deck and
+//! marshalling build on), then [`extract_includes`] reads the directives off
+//! those blocks. The streaming scanner (`scan_includes`) instead walks raw bytes
+//! for `*INCLUDE` lines only — the fast path the include-tree builder uses when
+//! it needs paths but not the parsed blocks.
+
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
@@ -497,8 +507,8 @@ fn find_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// Extract include directives from a parsed file's block index.
 ///
 /// Detection differs from the streaming scanner (block-index walk vs. raw byte
-/// scan), but resolution is shared: this builds the same [`RawInclude`] list and
-/// hands it to [`resolve_directives`], so the file-wide `*INCLUDE_PATH` rule
+/// scan), but resolution is shared: this builds the same `RawInclude` list and
+/// hands it to `resolve_directives`, so the file-wide `*INCLUDE_PATH` rule
 /// lives in exactly one place. The block path additionally reads
 /// `*INCLUDE_TRANSFORM` id offsets from the card (the streaming path can't — it
 /// never builds the block model — and doesn't need to, feeding paths only).

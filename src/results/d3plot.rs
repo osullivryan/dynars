@@ -1207,7 +1207,7 @@ impl D3plot {
     /// `states` as a flat row-major `(n, count, vars)` array in the file's
     /// **native precision** (f32 single / f64 double). One code path serves node
     /// displacement/velocity/acceleration and solid/tshell/beam/shell element
-    /// results — the layout differences live entirely in [`Control::block_spec`].
+    /// results — the layout differences live entirely in `Control::block_spec`.
     /// The per-state copies run in parallel for large selections.
     ///
     /// Returns `None` if the block is not present in this d3plot.

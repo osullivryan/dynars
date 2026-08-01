@@ -1,0 +1,66 @@
+name: Docs
+
+# Build the API reference for both languages and publish to GitHub Pages:
+#   /rust    — rustdoc for the Rust crate (built with -D warnings, so broken
+#              intra-doc links fail the build)
+#   /python  — pdoc for the `dynars` Python package (from the compiled extension)
+# One-time setup: repo Settings -> Pages -> Build and deployment -> Source:
+# "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Rust API reference. -D warnings turns the doc lints (broken/private
+      # intra-doc links) into hard errors, so the reference can't silently rot.
+      - name: Build rustdoc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --features signal,ffi
+
+      # Python API reference: build+install the extension, then pdoc the package.
+      - name: Build Python docs
+        run: |
+          python -m pip install --upgrade maturin pdoc numpy
+          maturin build --release --out dist
+          python -m pip install --no-index --find-links dist dynars
+          pdoc dynars -o site/python
+
+      - name: Assemble site
+        run: |
+          mkdir -p site
+          cp -r target/doc site/rust
+          cp docs/pages-index.html site/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

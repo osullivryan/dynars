@@ -4,7 +4,7 @@
 //!
 //! This is the shared resolution core, exposed as methods on [`Deck`]: the
 //! dangling-reference check (`Deck::dangling`, behind [`Deck::validate`]) and
-//! navigation ([`Deck::part`], [`Entity::material`], …) are two queries over the
+//! navigation ([`Deck::part`], [`Keyword::material`], …) are two queries over the
 //! same cached indices. Building them is lazy — a plain parse pays for neither;
 //! validation builds the defined-id sets, navigation builds the site map, each
 //! on first use.

@@ -5,15 +5,17 @@
 //! against it from C or Fortran; the matching header is `examples/ffi/dynars.h`.
 //!
 //! Design:
-//! - **Opaque handles.** [`DynarsDeck`], [`DynarsRuleSet`], and [`DynarsReport`]
+//! - **Opaque handles.** [`DynarsDeck`](crate::ffi::DynarsDeck),
+//!   [`DynarsRuleSet`](crate::ffi::DynarsRuleSet), and
+//!   [`DynarsReport`](crate::ffi::DynarsReport)
 //!   are heap-boxed Rust values the caller owns; C sees only pointers and must
 //!   free each with the matching `*_free`. No other Rust type crosses the
 //!   boundary.
 //! - **Errors.** Fallible calls return NULL (or `-1`) and stash a message in a
-//!   thread-local retrievable via [`dynars_last_error`] — there is no `Result`
+//!   thread-local retrievable via [`dynars_last_error`](crate::ffi::dynars_last_error) — there is no `Result`
 //!   or panic across FFI.
 //! - **Strings.** Every `*const c_char` handed out is NUL-terminated and owned
-//!   by the handle it came from (findings live inside their [`DynarsReport`]);
+//!   by the handle it came from (findings live inside their [`DynarsReport`](crate::ffi::DynarsReport));
 //!   copy before freeing that handle. `dynars_last_error`'s string is valid
 //!   until the next `dynars_*` call on the same thread.
 //!

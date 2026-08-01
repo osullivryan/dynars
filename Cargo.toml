@@ -6,6 +6,11 @@ name = "dynars"
 version = "0.1.0"
 edition = "2024"
 
+# docs.rs renders the Rust API. Build the signal + ffi feature docs (skip the
+# heavy `typed-keywords` and the Python bindings, which have their own docs).
+[package.metadata.docs.rs]
+features = ["signal", "ffi"]
+
 [lib]
 name = "dynars"
 # staticlib/cdylib are for the C/Fortran FFI (build with `--features ffi`); rlib

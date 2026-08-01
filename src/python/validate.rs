@@ -85,12 +85,14 @@ pub struct PyRule {
 
 #[pymethods]
 impl PyRule {
+    /// Flag every occurrence of `keyword` — the keyword must not appear at all.
     #[staticmethod]
     fn keyword_forbidden(keyword: String) -> PyResult<Self> {
         Ok(Self {
             inner: validate::Rule::keyword_forbidden(check_keyword(&keyword)?),
         })
     }
+    /// Flag any occurrence of `keyword` whose `field` equals one of `values`.
     #[staticmethod]
     fn field_forbidden_values(
         keyword: String,
@@ -102,6 +104,8 @@ impl PyRule {
             inner: validate::Rule::field_forbidden_values(check_keyword(&keyword)?, field, vals?),
         })
     }
+    /// For every occurrence of `keyword`, if `when` holds (or is omitted), the
+    /// `require` predicate must also hold; occurrences that violate it are flagged.
     #[staticmethod]
     #[pyo3(signature = (keyword, require, when=None))]
     fn field_required(
@@ -117,6 +121,7 @@ impl PyRule {
             ),
         })
     }
+    /// Flag any `*INCLUDE` that resolves to a file not present on disk.
     #[staticmethod]
     fn include_missing() -> Self {
         Self {
@@ -206,6 +211,7 @@ pub struct PyFinding {
 
 #[pymethods]
 impl PyFinding {
+    /// The clickable `file:line` where this violation was found.
     fn location(&self) -> String {
         format!("{}:{}", self.file, self.line)
     }
@@ -226,12 +232,14 @@ pub struct PyReport {
 
 #[pymethods]
 impl PyReport {
+    /// `True` if there are no Error-severity findings (Warnings are allowed).
     fn is_clean(&self) -> bool {
         !self
             .findings
             .iter()
             .any(|f| f.severity == validate::Severity::Error)
     }
+    /// The number of findings at the given severity.
     fn count(&self, severity: validate::Severity) -> usize {
         self.findings
             .iter()

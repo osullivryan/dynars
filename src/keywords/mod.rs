@@ -3,7 +3,7 @@
 //!
 //! Each keyword's card/field layout is stored as compact `&'static` data
 //! (`data.rs`, generated) and converted on demand into a runtime
-//! [`Schema`](crate::schema::Schema). This gives thousands of LS-DYNA keywords
+//! [`Schema`]. This gives thousands of LS-DYNA keywords
 //! out of the box — no hand-written structs, no user schema required:
 //!
 //! ```
@@ -672,7 +672,7 @@ static SUPPLEMENT: &[Kw] = &[
 ];
 
 /// All generated built-in keyword definitions, sorted by name. (Does not include
-/// the hand-written [`SUPPLEMENT`]; use [`find`]/[`schema`] to resolve either.)
+/// the hand-written `SUPPLEMENT`; use [`find`]/[`schema`] to resolve either.)
 pub fn all() -> &'static [Kw] {
     data::KEYWORDS
 }

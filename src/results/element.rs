@@ -1,17 +1,24 @@
 //! Element-level derived quantities and failure criteria, built on the packed
-//! per-element result blocks the [`D3plot`](super::D3plot) reader returns
+//! per-element result blocks the [`D3plot`](crate::results::D3plot) reader returns
 //! (`block_data` → `n_states × n_elem × nv`, where the base per-element layout is
 //! 6 stress components `σxx,σyy,σzz,σxy,σyz,σzx` followed by effective plastic
 //! strain, then history variables).
 //!
 //! **Layer 1** — pointwise tensor invariants from the six stress (or strain)
-//! components: [`von_mises`], [`principal`], [`mean_stress`] / [`pressure`],
-//! [`max_shear`], [`triaxiality`]. Plain `f64` functions, unit-agnostic.
+//! components: [`von_mises`](crate::results::element::von_mises),
+//! [`principal`](crate::results::element::principal),
+//! [`mean_stress`](crate::results::element::mean_stress) /
+//! [`pressure`](crate::results::element::pressure),
+//! [`max_shear`](crate::results::element::max_shear),
+//! [`triaxiality`](crate::results::element::triaxiality). Plain `f64` functions, unit-agnostic.
 //!
 //! **Layer 2** — per-part reductions over a whole element block: max
-//! ([`part_max_history`]), percentile ([`part_percentile_history`]), and failure
-//! fraction ([`part_failure_fraction_history`]) *time histories* of a per-element
-//! `quantity` (ready-made: [`von_mises_stress`], [`effective_plastic_strain`]).
+//! ([`part_max_history`](crate::results::element::part_max_history)), percentile
+//! ([`part_percentile_history`](crate::results::element::part_percentile_history)), and failure
+//! fraction ([`part_failure_fraction_history`](crate::results::element::part_failure_fraction_history))
+//! *time histories* of a per-element `quantity` (ready-made:
+//! [`von_mises_stress`](crate::results::element::von_mises_stress),
+//! [`effective_plastic_strain`](crate::results::element::effective_plastic_strain)).
 
 use rayon::prelude::*;
 

@@ -3,12 +3,12 @@
 //! **Tier 1** — head/chest acceleration criteria. All operate on plain `&[f64]`
 //! and assume acceleration in **g** (divide a m/s² channel by 9.81 first) sampled
 //! uniformly at interval `dt` seconds — so they chain straight off a
-//! [`cfc`](super::signal::cfc)-filtered resultant.
+//! [`cfc`](crate::results::signal::cfc)-filtered resultant.
 //!
-//! - [`resultant`] — √(x²+y²+z²) of three channels.
-//! - [`hic`] / [`hic15`] / [`hic36`] — Head Injury Criterion.
-//! - [`clip`] — the "3 ms clip": highest level sustained for a window (default 3 ms).
-//! - [`severity_index`] — Gadd Severity Index (a.k.a. CSI on the chest resultant).
+//! - [`resultant`](crate::results::injury::resultant) — √(x²+y²+z²) of three channels.
+//! - [`hic`](crate::results::injury::hic) / [`hic15`](crate::results::injury::hic15) / [`hic36`](crate::results::injury::hic36) — Head Injury Criterion.
+//! - [`clip`](crate::results::injury::clip) — the "3 ms clip": highest level sustained for a window (default 3 ms).
+//! - [`severity_index`](crate::results::injury::severity_index) — Gadd Severity Index (a.k.a. CSI on the chest resultant).
 //!
 //! **Tier 2** — force / moment / kinematic criteria (still single-object, no
 //! hard-coded tables — dummy-specific critical values are passed in). These take
@@ -16,14 +16,14 @@
 //! rad/s, angular acceleration in rad/s², linear acceleration (NIC) in m/s². Each
 //! returns the scalar criterion — the maximum over the pulse.
 //!
-//! - [`bric`] / [`ubric`] — Brain Injury Criterion (head angular velocity/accel).
-//! - [`vc`] — Viscous Criterion on chest deflection.
-//! - [`nij`] — neck injury (tension/compression × flexion/extension).
-//! - [`nic`] — rear-impact Neck Injury Criterion.
-//! - [`tibia_index`] — lower-leg Tibia Index.
+//! - [`bric`](crate::results::injury::bric) / [`ubric`](crate::results::injury::ubric) — Brain Injury Criterion (head angular velocity/accel).
+//! - [`vc`](crate::results::injury::vc) — Viscous Criterion on chest deflection.
+//! - [`nij`](crate::results::injury::nij) — neck injury (tension/compression × flexion/extension).
+//! - [`nic`](crate::results::injury::nic) — rear-impact Neck Injury Criterion.
+//! - [`tibia_index`](crate::results::injury::tibia_index) — lower-leg Tibia Index.
 //!
 //! Cross-checked against the Dynasaur reference implementation
-//! (VSI-TUGraz/Dynasaur `calc/standard_functions.py`); [`hic`] maximizes over
+//! (VSI-TUGraz/Dynasaur `calc/standard_functions.py`); [`hic`](crate::results::injury::hic) maximizes over
 //! every sub-window `≤ window` (the FMVSS 208 / SAE J1727 definition), which is
 //! `≥` Dynasaur's fixed-width-window value.
 

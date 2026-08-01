@@ -1,21 +1,21 @@
 //! Numerical post-processing of result time-histories (opt-in `signal` feature).
 //!
 //! Everything operates on plain `&[f64]` slices, so it composes directly with the
-//! columnar channels the [`Binout`](super::Binout)/[`D3plot`](super::D3plot)
+//! columnar channels the [`Binout`](crate::results::Binout)/[`D3plot`](crate::results::D3plot)
 //! readers return.
 //!
-//! - [`cfc`] — SAE J211 CFC low-pass filters (CFC60/180/600/1000, or any class):
+//! - [`cfc`](crate::results::signal::cfc) — SAE J211 CFC low-pass filters (CFC60/180/600/1000, or any class):
 //!   the phaseless Butterworth filtering that gates crash injury criteria. J211
 //!   gives the coefficients in closed form, so we implement the standard verbatim.
-//! - [`butterworth`] — general zero-phase Butterworth. The pole/zero *design* is
-//!   done by `iir_filters`; we expand it to `(b, a)` ([`poly_from_roots`]) and run
-//!   it through the same [`filtfilt`].
-//! - [`filtfilt`] — zero-phase forward-backward filtering of a `(b, a)` filter,
+//! - `butterworth` — general zero-phase Butterworth. The pole/zero *design* is
+//!   done by `iir_filters`; we expand it to `(b, a)` (`poly_from_roots`) and run
+//!   it through the same [`filtfilt`](crate::results::signal::filtfilt).
+//! - [`filtfilt`](crate::results::signal::filtfilt) — zero-phase forward-backward filtering of a `(b, a)` filter,
 //!   the analogue of `scipy.signal.filtfilt` (odd padding + settled initial
 //!   conditions).
-//! - [`integrate`] / [`differentiate`] — cumulative trapezoid and central
+//! - [`integrate`](crate::results::signal::integrate) / [`differentiate`](crate::results::signal::differentiate) — cumulative trapezoid and central
 //!   difference, for the acceleration → velocity → displacement chain.
-//! - [`decimate`] / [`resample_linear`] — integer downsample (keep every Nth) and
+//! - [`decimate`](crate::results::signal::decimate) / [`resample_linear`](crate::results::signal::resample_linear) — integer downsample (keep every Nth) and
 //!   linear resample to a new `dt`. Decimating a CFC-filtered (band-limited)
 //!   signal before an O(n·w) criterion like HIC cuts the cost by ~1/factor² with
 //!   no loss.
@@ -47,7 +47,7 @@ pub fn cfc(x: &[f64], cfc: f64, dt: f64) -> Vec<f64> {
     filtfilt(&b, &a, x)
 }
 
-/// Which band a [`butterworth`] filter passes.
+/// Which band a `butterworth` filter passes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Band {
     Low,

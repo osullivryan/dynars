@@ -1,3 +1,11 @@
+//! The parsed representation of a single keyword file: a [`ParsedFile`] holds the
+//! original [`Source`] bytes and the [`Block`]s they were split into.
+//!
+//! Blocks tile the source exactly (trivia + `*KEYWORD` line + data cards), so
+//! re-emitting every block reproduces the file byte-for-byte — the lossless
+//! round-trip guarantee edits ride on. This module is the substrate the deck,
+//! marshalling, and validation layers all read from.
+
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -6,7 +14,7 @@ use memmap2::Mmap;
 
 /// Backing bytes for a [`ParsedFile`]: a memory-mapped file (the fast path from
 /// `parse_file_blocks`), an owned buffer (constructed from bytes, e.g. in tests),
-/// or a `Shared` handle to another `Source` behind an [`Arc`]. All deref to
+/// or a `Shared` handle to another `Source` behind an [`Arc`](std::sync::Arc). All deref to
 /// `&[u8]`, so the rest of the code is agnostic.
 ///
 /// `Shared` is the cross-deck reuse path ([`Workspace`](crate::batch::Workspace)):

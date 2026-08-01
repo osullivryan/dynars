@@ -348,7 +348,7 @@ impl Check for RigidContext {
 /// the check is shared.
 ///
 /// `severity` is optional: `None` keeps whatever severity the inner check
-/// assigned each finding (built-ins report `Error`); [`with_severity`] sets an
+/// assigned each finding (built-ins report `Error`); [`with_severity`](Rule::with_severity) sets an
 /// override that re-stamps them all.
 #[derive(Clone)]
 pub struct Rule {

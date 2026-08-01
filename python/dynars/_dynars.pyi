@@ -205,9 +205,15 @@ class D3plot:
         User node IDs (`N`), default `1..=N`.
         """
     @property
-    def num_nodes(self, /) -> int: ...
+    def num_nodes(self, /) -> int:
+        """
+        Number of nodes (NUMNP) in the mesh.
+        """
     @property
-    def num_states(self, /) -> int: ...
+    def num_states(self, /) -> int:
+        """
+        Number of output states (time steps) in the file.
+        """
     def part_ids(self, /) -> Any:
         """
         User part/material IDs.
@@ -252,9 +258,15 @@ class D3plotEditor:
         Load a d3plot family (base + `d3plot01`, …) for editing.
         """
     @property
-    def num_nodes(self, /) -> int: ...
+    def num_nodes(self, /) -> int:
+        """
+        Number of nodes (NUMNP) in the mesh.
+        """
     @property
-    def num_states(self, /) -> int: ...
+    def num_states(self, /) -> int:
+        """
+        Number of output states (time steps) in the family.
+        """
     def save(self, /) -> None:
         """
         Overwrite the original files in place.
@@ -331,15 +343,34 @@ class Deck:
     """
     def __new__(cls, /, path: str) -> Deck: ...
     def __repr__(self, /) -> str: ...
-    def curve(self, /, id: int) -> Entity |None: ...
-    def curves(self, /) -> list[Entity]: ...
+    def curve(self, /, id: int) -> Entity |None:
+        """
+        The *DEFINE_CURVE with this id, or `None` if none is defined. Ids are
+        global (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also
+        matches.
+        """
+    def curves(self, /) -> list[Entity]:
+        """
+        Every *DEFINE_CURVE in the deck (enumerate, don't guess ids).
+        """
     def definition_counts(self, /) -> list[tuple[str, int]]:
         """
         `(kind, count)` of defined ids, most-numerous first.
         """
-    def material(self, /, id: int) -> Entity |None: ...
-    def materials(self, /) -> list[Entity]: ...
-    def part(self, /, id: int) -> Entity |None: ...
+    def material(self, /, id: int) -> Entity |None:
+        """
+        The *MAT with this id, or `None` if none is defined. Ids are global
+        (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also matches.
+        """
+    def materials(self, /) -> list[Entity]:
+        """
+        Every *MAT in the deck (enumerate, don't guess ids).
+        """
+    def part(self, /, id: int) -> Entity |None:
+        """
+        The *PART with this id, or `None` if none is defined. Ids are global
+        (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also matches.
+        """
     def parts(self, /) -> list[Entity]:
         """
         Every part in the deck (enumerate, don't guess ids).
@@ -352,8 +383,15 @@ class Deck:
         count)` field tuples; `type` is "int" | "float" | "str". Keyed by
         canonical base — registering the same base twice replaces it.
         """
-    def section(self, /, id: int) -> Entity |None: ...
-    def sections(self, /) -> list[Entity]: ...
+    def section(self, /, id: int) -> Entity |None:
+        """
+        The *SECTION with this id, or `None` if none is defined. Ids are global
+        (post-`*INCLUDE_TRANSFORM`); the sign is ignored, so `|id|` also matches.
+        """
+    def sections(self, /) -> list[Entity]:
+        """
+        Every *SECTION in the deck (enumerate, don't guess ids).
+        """
     def table(self, /, keyword: str) -> dict:
         """
         Bulk **columnar** read of every occurrence of `keyword` across the whole
@@ -383,7 +421,11 @@ class Entity:
     reference-following. Keeps its [`PyDeck`] alive.
     """
     def __repr__(self, /) -> str: ...
-    def eos(self, /) -> Entity |None: ...
+    def eos(self, /) -> Entity |None:
+        """
+        Follow this entity's first field that references an *EOS to that equation
+        of state, or `None` if there is no such field or it doesn't resolve.
+        """
     def field(self, /, name: str) -> Any |None:
         """
         Read a field by name (case-insensitive) → int / float / str.
@@ -393,19 +435,34 @@ class Entity:
         """
         The include file this entity is defined in.
         """
-    def hourglass(self, /) -> Entity |None: ...
+    def hourglass(self, /) -> Entity |None:
+        """
+        Follow this entity's first field that references a *HOURGLASS to that
+        hourglass definition, or `None` if there is no such field or it doesn't
+        resolve.
+        """
     @property
     def id(self, /) -> int: ...
     @property
-    def keyword(self, /) -> str: ...
+    def keyword(self, /) -> str:
+        """
+        The full `*KEYWORD` name of the block that defines this entity.
+        """
     @property
-    def kind(self, /) -> str: ...
+    def kind(self, /) -> str:
+        """
+        The entity kind (e.g. `"Part"`, `"Material"`, `"Section"`, `"Curve"`).
+        """
     @property
     def line(self, /) -> int:
         """
         1-based line of the entity's `*KEYWORD` line (jump-to location).
         """
-    def material(self, /) -> Entity |None: ...
+    def material(self, /) -> Entity |None:
+        """
+        Follow this entity's first field that references a *MAT to that
+        material, or `None` if there is no such field or it doesn't resolve.
+        """
     @property
     def offsets(self, /) -> dict[str, int] |None:
         """
@@ -418,7 +475,11 @@ class Entity:
         """
         Follow the reference in field `name` to the entity it points at.
         """
-    def section(self, /) -> Entity |None: ...
+    def section(self, /) -> Entity |None:
+        """
+        Follow this entity's first field that references a *SECTION to that
+        section, or `None` if there is no such field or it doesn't resolve.
+        """
 
 @final
 class Finding:
@@ -432,7 +493,10 @@ class Finding:
     def keyword(self, /) -> str: ...
     @property
     def line(self, /) -> int: ...
-    def location(self, /) -> str: ...
+    def location(self, /) -> str:
+        """
+        The clickable `file:line` where this violation was found.
+        """
     @property
     def message(self, /) -> str: ...
     @property
@@ -630,10 +694,16 @@ class Report:
     """
     def __len__(self, /) -> int: ...
     def __repr__(self, /) -> str: ...
-    def count(self, /, severity: Severity) -> int: ...
+    def count(self, /, severity: Severity) -> int:
+        """
+        The number of findings at the given severity.
+        """
     @property
     def findings(self, /) -> list[Finding]: ...
-    def is_clean(self, /) -> bool: ...
+    def is_clean(self, /) -> bool:
+        """
+        `True` if there are no Error-severity findings (Warnings are allowed).
+        """
 
 @final
 class Rule:
@@ -652,13 +722,26 @@ class Rule:
         Apply everywhere except files whose path contains one of `patterns`.
         """
     @staticmethod
-    def field_forbidden_values(keyword: str, field: str, values: Sequence[Any]) -> Rule: ...
+    def field_forbidden_values(keyword: str, field: str, values: Sequence[Any]) -> Rule:
+        """
+        Flag any occurrence of `keyword` whose `field` equals one of `values`.
+        """
     @staticmethod
-    def field_required(keyword: str, require: Predicate, when: Predicate |None = None) -> Rule: ...
+    def field_required(keyword: str, require: Predicate, when: Predicate |None = None) -> Rule:
+        """
+        For every occurrence of `keyword`, if `when` holds (or is omitted), the
+        `require` predicate must also hold; occurrences that violate it are flagged.
+        """
     @staticmethod
-    def include_missing() -> Rule: ...
+    def include_missing() -> Rule:
+        """
+        Flag any `*INCLUDE` that resolves to a file not present on disk.
+        """
     @staticmethod
-    def keyword_forbidden(keyword: str) -> Rule: ...
+    def keyword_forbidden(keyword: str) -> Rule:
+        """
+        Flag every occurrence of `keyword` — the keyword must not appear at all.
+        """
     def only_in(self, /, patterns: Sequence[str]) -> Rule:
         """
         Apply only within files whose path contains one of `patterns`.

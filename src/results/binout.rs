@@ -8,7 +8,7 @@ use super::symbol::{ReadResult, SymNode};
 /// LS-DYNA binary output (binout) file reader.
 ///
 /// The file family is memory-mapped and the symbol table is frozen into an
-/// immutable, lock-free tree, so reads (including concurrent [`read_many`]) do
+/// immutable, lock-free tree, so reads (including concurrent [`read_many`](Self::read_many)) do
 /// no syscalls and take no locks.
 ///
 /// Usage:
@@ -130,7 +130,7 @@ impl Binout {
     }
 
     /// Aggregate a per-state variable across every time-state directory
-    /// (`d000001`, `d000002`, …) into a dense [`StateMatrix`] — the clean, fast
+    /// (`d000001`, `d000002`, …) into a dense `StateMatrix` — the clean, fast
     /// equivalent of stitching the state dirs together by hand.
     /// `read_states("nodout", "x_acceleration")` returns an `n_steps × n_nodes`
     /// matrix plus `time`; take `.column(i)` for one node's history. State reads
