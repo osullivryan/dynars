@@ -1,0 +1,56 @@
+site_name: dynars
+site_description: A fast toolkit for LS-DYNA keyword decks and binary results.
+site_url: https://osullivanbrothers.github.io/dynars/
+repo_url: https://github.com/osullivanbrothers/dynars
+repo_name: osullivanbrothers/dynars
+edit_uri: ""
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - content.code.copy
+    - content.tabs.link      # pick Python or Rust once; every tab follows
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list        # {: ...} attributes
+  - md_in_html       # the "grid cards" card layout
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true   # required for content.tabs.link
+
+# Dev-only files in docs/ that aren't part of the site.
+exclude_docs: |
+  keyword-api-plan.md
+  requirements.txt
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Decks & navigation: decks.md
+  - Validation: validation.md
+  - Workspace (batch): workspace.md
+  - Results: results.md
+  - API reference: reference.md

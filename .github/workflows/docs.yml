@@ -44,19 +44,24 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --no-deps --features signal,ffi
 
-      # Python API reference: build+install the extension, then pdoc the package.
-      - name: Build Python docs
+      # The narrative guide (mkdocs-material) is the front door; it builds to
+      # ./site. --strict fails on broken internal links or nav warnings.
+      - name: Build guide site
+        run: |
+          python -m pip install -r docs/requirements.txt
+          mkdocs build --strict
+
+      # Rust API reference into /rust (mkdocs already created ./site).
+      - name: Add Rust API reference
+        run: cp -r target/doc site/rust
+
+      # Python API reference into /python: build+install the extension, pdoc it.
+      - name: Add Python API reference
         run: |
           python -m pip install --upgrade maturin pdoc numpy
           maturin build --release --out dist
           python -m pip install --no-index --find-links dist dynars
           pdoc dynars -o site/python
-
-      - name: Assemble site
-        run: |
-          mkdir -p site
-          cp -r target/doc site/rust
-          cp docs/pages-index.html site/index.html
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

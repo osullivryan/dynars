@@ -1,0 +1,3 @@
+# Docs site build dependencies (see .github/workflows/docs.yml).
+mkdocs-material>=9.5
+pymdown-extensions>=10
