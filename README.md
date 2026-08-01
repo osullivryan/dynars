@@ -252,6 +252,13 @@ let reports = ws.validate_decks(&decks, [
 ]);
 ```
 
+> **Missing includes.** A missing `*INCLUDE` is never parsed — it adds no file and
+> no cached content (`files_parsed` doesn't count it), so nothing phantom leaks
+> into the deck. Add `Rule.include_missing()` to catch it explicitly; don't rely
+> on `references_resolve` alone, because if the missing file was the *only* source
+> of an entity kind, references to that kind are left unflagged (the dangling
+> check is conservative by design).
+
 The shared work is paid once and amortizes over the batch, so the workspace total
 stays roughly flat as decks are added while the naive per-deck approach grows
 linearly. Over a 28 MB shared mesh (500k nodes / 500k shells), naive `parse_deck`

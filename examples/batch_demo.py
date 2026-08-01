@@ -25,6 +25,10 @@ reports = ws.validate_decks(
     [
         dynars.Rule.references_resolve_with_connectivity(),
         dynars.Rule.duplicate_ids(),
+        # A missing *INCLUDE is never parsed (no file, no cached content) — this
+        # rule is what surfaces it. Don't rely on references_resolve alone: if the
+        # missing file was the only source of an entity kind, references to it are
+        # left unflagged (the dangling check is conservative).
         dynars.Rule.include_missing().with_severity(dynars.Severity.Warning),
     ],
 )

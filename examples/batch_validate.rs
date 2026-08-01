@@ -39,6 +39,10 @@ fn main() {
     let rules = [
         Rule::references_resolve_with_connectivity(),
         Rule::duplicate_ids(),
+        // A missing `*INCLUDE` is never parsed, so it adds no file and no cached
+        // content — this rule is what surfaces it. Don't rely on
+        // `references_resolve` alone: if the missing file was the only source of
+        // an entity kind, references to it are left unflagged (conservative).
         Rule::include_missing().with_severity(Severity::Warning),
     ];
     let reports = ws.validate_decks(&decks, rules);

@@ -380,3 +380,74 @@ fn findings_are_independent_per_deck() {
     assert!(dangling(&deck_b), "variant B flags undefined material 99");
     let _ = Path::new("");
 }
+
+#[test]
+fn missing_include_is_not_included_but_is_flagged() {
+    // A missing `*INCLUDE` is never parsed, so it contributes no file and no
+    // cached content — but it is recorded as a directive, so `include_missing`
+    // flags it. Its would-be definitions are simply absent, so a reference to a
+    // *tracked* kind dangles, while a reference to a kind nothing else defines is
+    // left alone (the conservative dangling rule assumes it's externally defined).
+    let dir = std::env::temp_dir().join("dynars_batch_missing");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    // Section 2 is defined here, so the Section *kind* is tracked; nothing defines
+    // any Material, so that kind is untracked. The part references section 1 and
+    // material 1 — both of which would have lived in the missing include.
+    let root = dir.join("root.k");
+    fs::write(
+        &root,
+        "*KEYWORD\n*INCLUDE\nmissing.k\n*SECTION_SHELL\n2,2\n*PART\np\n1,1,1\n*END\n",
+    )
+    .unwrap();
+
+    let ws = Workspace::new();
+    let deck = ws.parse_deck(&root).unwrap();
+
+    // The missing file is not a file, not parsed, not cached.
+    assert_eq!(deck.files.len(), 1, "only root.k — missing.k is not a file");
+    let s = ws.stats();
+    assert_eq!(s.files_parsed, 1, "missing.k never read: {s:?}");
+    assert_eq!(s.files_reused, 0, "{s:?}");
+
+    // `include_missing` flags the broken directive.
+    let missing = deck.validate([Rule::include_missing()]);
+    assert_eq!(missing.findings.len(), 1, "one missing include flagged");
+    assert!(
+        missing.findings[0].message.contains("missing.k"),
+        "{:?}",
+        missing.findings[0].message
+    );
+
+    // `references_resolve` dangles the tracked kind (Section) but NOT the
+    // untracked one (Material) — the behavior a caller must not rely on to catch
+    // missing includes.
+    let refs = deck.validate([Rule::references_resolve()]);
+    assert!(
+        refs.findings
+            .iter()
+            .any(|f| f.message.contains("Section 1")),
+        "section ref dangles (kind is tracked): {:?}",
+        refs.findings
+    );
+    assert!(
+        !refs.findings.iter().any(|f| f.message.contains("Material")),
+        "material ref is NOT flagged (kind untracked): {:?}",
+        refs.findings
+    );
+
+    // The workspace handles a missing include exactly like a standalone parse.
+    let plain = parse_deck(&root).unwrap();
+    assert_eq!(
+        finding_keys(
+            deck.validate([Rule::include_missing(), Rule::references_resolve()])
+                .findings
+        ),
+        finding_keys(
+            plain
+                .validate([Rule::include_missing(), Rule::references_resolve()])
+                .findings
+        ),
+        "workspace == parse_deck for a missing include"
+    );
+}
