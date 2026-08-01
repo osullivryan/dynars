@@ -395,6 +395,28 @@ pub enum StateBlock {
     Shell,
 }
 
+/// A global (whole-model) per-state scalar/vector in the global-variables block
+/// (right after the state time word). See [`D3plot::global_history`].
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(eq, eq_int, from_py_object, name = "GlobalField")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalField {
+    /// Total kinetic energy (1).
+    KineticEnergy,
+    /// Total internal energy (1).
+    InternalEnergy,
+    /// Total energy (1).
+    TotalEnergy,
+    /// Global velocity vector X (first of 3).
+    VelocityX,
+    /// Global velocity vector Y.
+    VelocityY,
+    /// Global velocity vector Z.
+    VelocityZ,
+}
+
 /// A per-node thermal / auxiliary state field (beyond displacement / velocity /
 /// acceleration), present per the IT and IDTDT header flags. Each maps to a
 /// strided slice of the node block. See [`D3plot::node_field`].
@@ -625,6 +647,34 @@ impl D3plot {
             off,
             self.ctrl.numnp * SPATIAL_DIM,
             ws,
+        )
+    }
+
+    /// A global per-state scalar (energy / velocity component) as a time history:
+    /// one value per state, in state order. The global-variables block holds
+    /// kinetic, internal, total energy, then the 3-component global velocity; this
+    /// returns `None` if the requested field isn't present (`nglbv` too small).
+    pub fn global_history(&self, field: GlobalField) -> Option<Vec<f64>> {
+        let idx = match field {
+            GlobalField::KineticEnergy => 0,
+            GlobalField::InternalEnergy => 1,
+            GlobalField::TotalEnergy => 2,
+            GlobalField::VelocityX => 3,
+            GlobalField::VelocityY => 4,
+            GlobalField::VelocityZ => 5,
+        };
+        if idx >= self.ctrl.nglbv {
+            return None;
+        }
+        let off_words = TIME_WORDS + idx;
+        let ws = self.ctrl.wordsize;
+        Some(
+            self.states
+                .iter()
+                .map(|loc| {
+                    read_float_at(&self.files[loc.file], loc.offset + off_words as u64 * ws, ws)
+                })
+                .collect(),
         )
     }
 
