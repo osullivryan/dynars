@@ -45,12 +45,17 @@ use crate::validate::{Report, Rule};
 /// duplicated rebuild.
 struct FileCache<T> {
     slots: Mutex<HashMap<PathBuf, Arc<OnceLock<Arc<T>>>>>,
+    /// Times `build` actually ran — i.e. distinct files whose index was computed
+    /// (cache misses). A shared file reused across decks counts once, which is the
+    /// whole point; exposed via [`WorkspaceStats`] as the "it ran once" signal.
+    builds: AtomicUsize,
 }
 
 impl<T> FileCache<T> {
     fn new() -> Self {
         FileCache {
             slots: Mutex::new(HashMap::new()),
+            builds: AtomicUsize::new(0),
         }
     }
 
@@ -66,7 +71,15 @@ impl<T> FileCache<T> {
             .entry(path.to_path_buf())
             .or_insert_with(|| Arc::new(OnceLock::new()))
             .clone();
-        slot.get_or_init(|| Arc::new(build())).clone()
+        slot.get_or_init(|| {
+            self.builds.fetch_add(1, Ordering::Relaxed);
+            Arc::new(build())
+        })
+        .clone()
+    }
+
+    fn builds(&self) -> usize {
+        self.builds.load(Ordering::Relaxed)
     }
 }
 
@@ -188,6 +201,13 @@ impl SharedIndex {
 pub struct WorkspaceStats {
     pub files_parsed: usize,
     pub files_reused: usize,
+    /// Distinct files whose *definition* index was extracted (a shared file counts
+    /// once, however many decks used it). The check-work-sharing analogue of
+    /// `files_parsed`.
+    pub def_indices_built: usize,
+    /// Distinct files whose *connectivity-reference* index was extracted — nonzero
+    /// only once a connectivity check has run.
+    pub ref_indices_built: usize,
 }
 
 /// An in-process batch context that parses (and checks) many decks against one
@@ -300,11 +320,15 @@ impl Workspace {
         });
     }
 
-    /// How many files were read from disk versus served from the shared cache.
+    /// How much the sharing bought: files read from disk vs. served from cache,
+    /// and how many distinct files had their check indices built (a shared file
+    /// counts once, not once per deck).
     pub fn stats(&self) -> WorkspaceStats {
         WorkspaceStats {
             files_parsed: self.shared.files_parsed.load(Ordering::Relaxed),
             files_reused: self.shared.files_reused.load(Ordering::Relaxed),
+            def_indices_built: self.shared.def_ids.builds(),
+            ref_indices_built: self.shared.ref_ids.builds(),
         }
     }
 }

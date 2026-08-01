@@ -316,6 +316,49 @@ fn validate_decks_parallel_matches_sequential() {
 }
 
 #[test]
+fn shared_indices_built_once_across_decks() {
+    // The check-work-sharing claim, made deterministic: the shared mesh's
+    // definition and connectivity indices are each built ONCE across both decks,
+    // not once per deck. Three distinct files (mesh, a/main, b/main) → a count of
+    // 3, never 4 (which would mean the mesh was re-extracted per deck).
+    let (a, b) = write_connectivity_variants();
+    let ws = Workspace::new();
+    let decks: Vec<Deck> = ws
+        .parse_decks([&a, &b])
+        .into_iter()
+        .map(|(_, d)| d.unwrap())
+        .collect();
+
+    // No connectivity rule: the connectivity index stays lazy (unbuilt); the
+    // definition index is built per distinct file — the shared mesh just once.
+    ws.validate_decks(&decks, [Rule::references_resolve(), Rule::duplicate_ids()]);
+    let s = ws.stats();
+    assert_eq!(s.files_parsed, 3, "mesh + two roots read once: {s:?}");
+    assert_eq!(s.files_reused, 1, "mesh reused for the 2nd deck: {s:?}");
+    assert_eq!(
+        s.def_indices_built, 3,
+        "def index built per distinct file: {s:?}"
+    );
+    assert_eq!(
+        s.ref_indices_built, 0,
+        "no connectivity check → ref index never built: {s:?}"
+    );
+
+    // Run a connectivity check: the connectivity index now builds — once per
+    // distinct file, the shared mesh included, and def stays cached (no rebuild).
+    ws.validate_decks(&decks, [Rule::references_resolve_with_connectivity()]);
+    let s = ws.stats();
+    assert_eq!(
+        s.ref_indices_built, 3,
+        "conn index built per distinct file: {s:?}"
+    );
+    assert_eq!(
+        s.def_indices_built, 3,
+        "def index unchanged — still cached: {s:?}"
+    );
+}
+
+#[test]
 fn findings_are_independent_per_deck() {
     // Variant B's part references undefined material 99; variant A is clean.
     // A shared include must not leak one deck's findings into the other.
