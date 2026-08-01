@@ -478,31 +478,55 @@ fn mmap(path: &std::path::Path) -> Result<Mmap, D3plotError> {
     Ok(unsafe { Mmap::map(&file)? })
 }
 
-/// Family member paths for a base d3plot: `base`, `base01`, `base02`, … For
-/// reading, `n = None` stops at the first missing sibling; for writing, `n =
-/// Some(k)` returns exactly `k` names.
+/// Family member paths for a base d3plot. For writing, `n = Some(k)` returns
+/// exactly `k` contiguous names (`base`, `base01`, …). For reading, `n = None`
+/// enumerates the base plus every sibling matching `<basename><digits>` present
+/// in the directory, sorted by **numeric** suffix — matching LS-DYNA / lasso, so
+/// non-contiguous or >99 numbering (`d3plot01, 02, 10, 22, 100`) is handled and a
+/// gap does not truncate the family.
 fn family_paths(base: &std::path::Path, n: Option<usize>) -> Vec<std::path::PathBuf> {
     let stem = base.to_string_lossy().into_owned();
-    let mut out = vec![base.to_path_buf()];
-    let mut i = 1;
-    loop {
-        if let Some(k) = n
-            && out.len() >= k
-        {
-            break;
+    if let Some(k) = n {
+        // Writer: contiguous names.
+        let mut out = vec![base.to_path_buf()];
+        let mut i = 1;
+        while out.len() < k {
+            let name = if i < 100 {
+                format!("{stem}{i:02}")
+            } else {
+                format!("{stem}{i}")
+            };
+            out.push(std::path::PathBuf::from(name));
+            i += 1;
         }
-        let name = if i < 100 {
-            format!("{stem}{i:02}")
-        } else {
-            format!("{stem}{i}")
-        };
-        let p = std::path::PathBuf::from(&name);
-        if n.is_none() && !p.exists() {
-            break;
-        }
-        out.push(p);
-        i += 1;
+        return out;
     }
+
+    // Reader: glob siblings `<basename><digits>` and numeric-sort.
+    let mut out = vec![base.to_path_buf()];
+    let (dir, basename) = match (base.parent(), base.file_name()) {
+        (Some(d), Some(f)) => (
+            if d.as_os_str().is_empty() { std::path::Path::new(".") } else { d },
+            f.to_string_lossy().into_owned(),
+        ),
+        _ => return out,
+    };
+    let mut sibs: Vec<(u64, std::path::PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let fname = e.file_name();
+            let s = fname.to_string_lossy();
+            if let Some(rest) = s.strip_prefix(&basename) {
+                if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) {
+                    if let Ok(num) = rest.parse::<u64>() {
+                        sibs.push((num, e.path()));
+                    }
+                }
+            }
+        }
+    }
+    sibs.sort_by_key(|(num, _)| *num);
+    out.extend(sibs.into_iter().map(|(_, p)| p));
     out
 }
 
