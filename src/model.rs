@@ -278,6 +278,13 @@ impl IdSet {
 /// the [`Deck`] and reused by validation and navigation alike.
 pub(crate) type Defs = HashMap<EntityKind, IdSet>;
 
+/// A file's defined ids grouped by kind, *physical* (pre-transform) — the
+/// content-only half of the definition index that a
+/// [`Workspace`](crate::batch::Workspace) caches per file and reuses across
+/// decks. Exactly what `collect_def_ids(file, None)` returns; [`build_defs`]
+/// shifts it per file via [`shift_def_ids`].
+pub(crate) type PhysicalDefIds = HashMap<EntityKind, Vec<i64>>;
+
 /// Every defined id in the deck, per kind.
 ///
 /// Extract ids into plain `Vec`s per file (parallel, no hashing), then build
@@ -291,7 +298,16 @@ pub(crate) fn build_defs(deck: &Deck) -> Defs {
         .files
         .par_iter()
         .zip(transforms.par_iter())
-        .map(|(f, transform)| collect_def_ids(f, transform.as_ref()))
+        .map(|(f, transform)| match &deck.shared {
+            // Batch deck: the *physical* id extraction (the O(bytes) scan) is
+            // content-only, so it's memoized once per file and reused across
+            // every deck in the workspace — here we apply just this file's cheap
+            // per-kind offset shift. See [`crate::batch::SharedIndex`].
+            Some(idx) => shift_def_ids(&idx.physical_def_ids(f), transform.as_ref()),
+            // Standalone deck: extract and shift in a single pass — the original
+            // hot path, untouched.
+            None => collect_def_ids(f, transform.as_ref()),
+        })
         .collect();
 
     // Gather each kind's id chunks (moves `Vec`s, no element copy).
@@ -345,12 +361,25 @@ impl Deck {
             .par_iter()
             .zip(transforms.par_iter())
             .flat_map_iter(|(f, transform)| {
+                // Batch decks: the file's cached connectivity references can prove
+                // it clean without re-walking its (millions of) element rows —
+                // only walk to locate offenders when the fast probe finds one, or
+                // can't decide (a polymorphic element ref). Standalone decks and
+                // the non-connectivity pass always walk.
+                let walk_elements = match (connectivity, &self.shared) {
+                    (true, Some(idx)) => {
+                        let refs = idx.physical_ref_ids(f);
+                        conn_clean(&refs, defs, transform.as_ref()) != Some(true)
+                    }
+                    _ => true,
+                };
                 check_refs(
                     f,
                     defs,
                     &self.user_schemas,
                     connectivity,
                     transform.as_ref(),
+                    walk_elements,
                 )
             })
             .collect()
@@ -388,6 +417,30 @@ fn compute_file_transforms(deck: &Deck) -> Vec<Option<TransformOffsets>> {
         .collect()
 }
 
+/// Apply a file's `*INCLUDE_TRANSFORM` offsets to its cached **physical** defined
+/// ids, yielding the *logical* ids [`build_defs`] merges. The physical extraction
+/// (`collect_def_ids(file, None)`) is content-only and shared across every deck in
+/// a workspace; only this per-kind shift is deck-specific. Zero/`None` offsets
+/// clone the ids straight through. See [`crate::batch::SharedIndex`].
+fn shift_def_ids(
+    physical: &HashMap<EntityKind, Vec<i64>>,
+    transform: Option<&TransformOffsets>,
+) -> HashMap<EntityKind, Vec<i64>> {
+    physical
+        .iter()
+        .map(|(&kind, ids)| {
+            let off = transform.map_or(0, |t| t.for_kind(kind));
+            let shifted = if off == 0 {
+                ids.clone()
+            } else {
+                // Def ids are non-negative, so a plain add is the shift.
+                ids.iter().map(|&id| id + off).collect()
+            };
+            (kind, shifted)
+        })
+        .collect()
+}
+
 /// Extract a file's defined ids grouped by kind, as plain `Vec`s (no hashing —
 /// dedup/hashing happens once in [`build_defs`]).
 ///
@@ -395,8 +448,10 @@ fn compute_file_transforms(deck: &Deck) -> Vec<Option<TransformOffsets>> {
 /// `transform` shifts each id by its kind's offset, so the whole deck shares one
 /// global id namespace and the dangling check never has to know a transform was
 /// involved. `transform` is `None` for the transform-free common case, which
-/// stays on the plain push path.
-fn collect_def_ids(
+/// stays on the plain push path — and is exactly the **physical** extraction a
+/// [`Workspace`](crate::batch::Workspace) caches per file (then re-shifts via
+/// [`shift_def_ids`]).
+pub(crate) fn collect_def_ids(
     file: &ParsedFile,
     transform: Option<&TransformOffsets>,
 ) -> HashMap<EntityKind, Vec<i64>> {
@@ -480,12 +535,131 @@ fn is_dangling(defs: &Defs, r: &Ref, id: i64, transform: Option<&TransformOffset
     }
 }
 
+/// Walk an `*ELEMENT_*` block's data rows, invoking `f(field, id, row)` for every
+/// reference field carrying a nonzero id. The hot connectivity byte-parsing —
+/// free vs. fixed layout decided once per row, the fixed-format column offset
+/// advanced incrementally rather than re-summed per field — lives here once, so
+/// the dangling scan ([`check_refs`]) and the referenced-id cache
+/// ([`collect_conn_ref_ids`]) share a single implementation.
+fn for_each_element_ref(
+    file: &ParsedFile,
+    block: &Block,
+    card0: &[keywords::Fld],
+    title: usize,
+    mut f: impl FnMut(&keywords::Fld, i64, usize),
+) {
+    let long = block.format == CardFormat::Long;
+    let lines = data_lines(file, block);
+    for (row, line) in lines.iter().enumerate().skip(title) {
+        if crate::schema::__is_free(line, block.format) {
+            let mut toks = line.split(|&c| c == b',');
+            for fd in card0 {
+                let Some(tok) = toks.next() else { break };
+                if !matches!(fd.r, Ref::None)
+                    && let Some(v) = parse_i64(tok)
+                    && v != 0
+                {
+                    f(fd, v, row);
+                }
+            }
+        } else {
+            let mut off = 0usize;
+            for fd in card0 {
+                if off >= line.len() {
+                    break;
+                }
+                let w = if long { fd.w * 2 } else { fd.w };
+                if !matches!(fd.r, Ref::None)
+                    && let Some(v) = parse_i64(crate::schema::__slice(line, off, w))
+                    && v != 0
+                {
+                    f(fd, v, row);
+                }
+                off += w;
+            }
+        }
+    }
+}
+
+/// The distinct *physical* ids an file's `*ELEMENT_*` connectivity references,
+/// grouped by target kind (nodes via N1.., the part via PID). Lets a batch deck
+/// answer "is this file's connectivity fully resolved?" without re-walking the
+/// element rows: the O(incidences) scan runs once and the deduped set (bounded by
+/// distinct entities, ~`numnp`) is reused across decks. See [`conn_clean`].
+///
+/// `exact` is false when an element card carries a polymorphic ([`Ref::AnyOf`])
+/// reference the per-kind grouping can't represent — the fast path then falls
+/// back to the full per-row scan for that file.
+pub(crate) struct PhysicalRefIds {
+    by_kind: HashMap<EntityKind, Vec<i64>>,
+    exact: bool,
+}
+
+/// Extract a file's distinct physical connectivity references (see
+/// [`PhysicalRefIds`]) — the content-only half of the connectivity dangling
+/// check, cached and reused across decks by a [`Workspace`](crate::batch::Workspace).
+pub(crate) fn collect_conn_ref_ids(file: &ParsedFile) -> PhysicalRefIds {
+    use std::collections::HashSet;
+    let mut sets: HashMap<EntityKind, HashSet<i64>> = HashMap::new();
+    let mut exact = true;
+    for block in &file.blocks {
+        let exact_name = file.keyword_name(block);
+        let base = canonical_base(exact_name);
+        if !base.starts_with("ELEMENT_") {
+            continue;
+        }
+        let Some(kw) = keywords::find(&base) else {
+            continue;
+        };
+        let card0 = kw.cards.first().copied().unwrap_or(&[]);
+        if card0.iter().all(|f| matches!(f.r, Ref::None)) {
+            continue;
+        }
+        let title = title_offset(exact_name);
+        for_each_element_ref(file, block, card0, title, |fd, v, _row| match fd.r {
+            Ref::To(k) => {
+                sets.entry(k).or_default().insert(v);
+            }
+            Ref::AnyOf(_) => exact = false,
+            Ref::None => {}
+        });
+    }
+    let by_kind = sets
+        .into_iter()
+        .map(|(k, s)| (k, s.into_iter().collect()))
+        .collect();
+    PhysicalRefIds { by_kind, exact }
+}
+
+/// From a file's cached connectivity references, decide whether its connectivity
+/// is fully resolved against `defs` (applying `transform`). `Some(true)` = clean
+/// (skip the row scan); `Some(false)` = has a dangler (walk to locate it);
+/// `None` = the cache can't decide (a polymorphic element ref), so walk.
+fn conn_clean(
+    refs: &PhysicalRefIds,
+    defs: &Defs,
+    transform: Option<&TransformOffsets>,
+) -> Option<bool> {
+    if !refs.exact {
+        return None;
+    }
+    // Reuses the exact `is_dangling` probe (tracked-kind gating, negative-id
+    // convention, transform shift) the per-row scan uses — same verdict, one set.
+    let dirty = refs.by_kind.iter().any(|(k, ids)| {
+        let r = Ref::To(*k);
+        ids.iter()
+            .any(|&id| id != 0 && is_dangling(defs, &r, id, transform))
+    });
+    Some(!dirty)
+}
+
 fn check_refs(
     file: &ParsedFile,
     defs: &Defs,
     user_schemas: &HashMap<String, Schema>,
     connectivity: bool,
     transform: Option<&TransformOffsets>,
+    walk_elements: bool,
 ) -> Vec<Dangling> {
     let mut out = Vec::new();
     // 1-based `*KEYWORD` line for each block, built once on first use (O(bytes))
@@ -512,13 +686,14 @@ fn check_refs(
             continue; // no references on this keyword
         }
 
-        // Element connectivity is per-line and high-cardinality — gated.
+        // Element connectivity is per-line and high-cardinality — gated. For a
+        // batch deck whose cached referenced-id set already proved this file's
+        // connectivity clean, `walk_elements` is false and the scan is skipped.
         let per_line = base.starts_with("ELEMENT_");
-        if per_line && !connectivity {
+        if per_line && (!connectivity || !walk_elements) {
             continue;
         }
 
-        let lines = data_lines(file, block);
         let title = title_offset(exact);
         // Line of the block's `*KEYWORD` — from the file's precomputed table, so
         // it's O(1) here rather than a fresh scan-from-start per block.
@@ -526,58 +701,24 @@ fn check_refs(
         let line_no = |ln: usize| block_line0 + ln;
 
         if per_line {
-            // Element cards: all ref fields on card 0, one element per line. This
-            // is the hot path (millions of rows), so walk each line once: decide
-            // free/fixed a single time, and advance the fixed-format offset
-            // incrementally rather than re-summing field widths per field.
+            // Element cards: all ref fields on card 0, one element per line — the
+            // hot path (millions of rows), walked once through the shared
+            // `for_each_element_ref` loop.
             let card0 = kw.cards.first().copied().unwrap_or(&[]);
-            let long = block.format == CardFormat::Long;
-            for (row, line) in lines.iter().enumerate().skip(title) {
-                if crate::schema::__is_free(line, block.format) {
-                    let mut toks = line.split(|&c| c == b',');
-                    for f in card0 {
-                        let Some(tok) = toks.next() else { break };
-                        if !matches!(f.r, Ref::None)
-                            && let Some(v) = parse_i64(tok)
-                            && v != 0
-                            && is_dangling(defs, &f.r, v, transform)
-                        {
-                            out.push(Dangling {
-                                from_keyword: base.clone(),
-                                field: f.n.to_string(),
-                                target: f.r,
-                                id: v,
-                                file: file.path.clone(),
-                                line: line_no(row),
-                            });
-                        }
-                    }
-                } else {
-                    let mut off = 0usize;
-                    for f in card0 {
-                        if off >= line.len() {
-                            break;
-                        }
-                        let w = if long { f.w * 2 } else { f.w };
-                        if !matches!(f.r, Ref::None)
-                            && let Some(v) = parse_i64(crate::schema::__slice(line, off, w))
-                            && v != 0
-                            && is_dangling(defs, &f.r, v, transform)
-                        {
-                            out.push(Dangling {
-                                from_keyword: base.clone(),
-                                field: f.n.to_string(),
-                                target: f.r,
-                                id: v,
-                                file: file.path.clone(),
-                                line: line_no(row),
-                            });
-                        }
-                        off += w;
-                    }
+            for_each_element_ref(file, block, card0, title, |fd, v, row| {
+                if is_dangling(defs, &fd.r, v, transform) {
+                    out.push(Dangling {
+                        from_keyword: base.clone(),
+                        field: fd.n.to_string(),
+                        target: fd.r,
+                        id: v,
+                        file: file.path.clone(),
+                        line: line_no(row),
+                    });
                 }
-            }
+            });
         } else {
+            let lines = data_lines(file, block);
             for (ci, card) in kw.cards.iter().enumerate() {
                 let Some(line) = lines.get(title + ci) else {
                     break;
@@ -1536,6 +1677,7 @@ mod tests {
             file_transforms: OnceLock::new(),
             sites: OnceLock::new(),
             user_schemas: HashMap::new(),
+            shared: None,
         }
     }
 

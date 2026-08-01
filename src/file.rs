@@ -4,13 +4,21 @@ use std::path::PathBuf;
 
 use memmap2::Mmap;
 
-/// Backing bytes for a [`ParsedFile`]: either a memory-mapped file (the fast
-/// path from `parse_file_blocks`) or an owned buffer (constructed from bytes,
-/// e.g. in tests). Both deref to `&[u8]`, so the rest of the code is agnostic.
+/// Backing bytes for a [`ParsedFile`]: a memory-mapped file (the fast path from
+/// `parse_file_blocks`), an owned buffer (constructed from bytes, e.g. in tests),
+/// or a `Shared` handle to another `Source` behind an [`Arc`]. All deref to
+/// `&[u8]`, so the rest of the code is agnostic.
+///
+/// `Shared` is the cross-deck reuse path ([`Workspace`](crate::batch::Workspace)):
+/// many decks that `*INCLUDE` the same file each hold a `Source::Shared` pointing
+/// at one cached mapping, so a gigabyte mesh is read and mapped exactly once no
+/// matter how many decks reference it. Cloning it bumps the `Arc` — no byte copy,
+/// no re-`mmap`.
 #[derive(Debug)]
 pub enum Source {
     Mapped(Mmap),
     Owned(Vec<u8>),
+    Shared(std::sync::Arc<Source>),
 }
 
 impl std::ops::Deref for Source {
@@ -20,6 +28,8 @@ impl std::ops::Deref for Source {
         match self {
             Source::Mapped(m) => m,
             Source::Owned(v) => v,
+            // Deref through the Arc to the inner Source's bytes.
+            Source::Shared(inner) => inner,
         }
     }
 }

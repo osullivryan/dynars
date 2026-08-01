@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod deck;
 pub mod file;
 pub mod include;
@@ -13,6 +14,9 @@ pub mod validate;
 /// structs (see [`schema`]).
 pub use dynars_derive::{Card, Keyword};
 pub use schema::{CardLayout, KeywordSchema};
+
+/// Batch parsing/checking across decks that share `*INCLUDE`s (see [`batch`]).
+pub use batch::Workspace;
 
 /// C ABI (and, through it, Fortran) bindings for the deck parse + validate
 /// path. Opt-in and self-contained: the `unsafe` FFI layer only compiles under

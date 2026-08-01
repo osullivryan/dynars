@@ -10,10 +10,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::file::ParsedFile;
-use crate::include::{IncludeDirective, Parsed, walk_includes};
+use crate::include::{GraphNode, IncludeDirective, Parsed, walk_includes};
 use crate::parser::{extract_includes, parse_file_blocks};
 
 /// A fully parsed deck: every file (root + includes) with its blocks intact,
@@ -50,6 +50,13 @@ pub struct Deck {
     /// keyword's field layout — the escape hatch for rare / vendor / newer-than-
     /// snapshot keywords. Empty for a plain parse. See [`Deck::register_schema`].
     pub(crate) user_schemas: HashMap<String, crate::schema::Schema>,
+    /// Cross-deck reuse cache, set only when this deck was produced by a
+    /// [`Workspace`](crate::batch::Workspace). `None` for a plain [`parse_deck`],
+    /// which keeps the resolution core and validation on their exact original
+    /// paths. When present, per-file content-only work (physical id extraction,
+    /// local-check findings) is memoized here and shared across every deck the
+    /// same `Workspace` parsed. See [`crate::batch`].
+    pub(crate) shared: Option<Arc<crate::batch::SharedIndex>>,
 }
 
 impl Deck {
@@ -92,6 +99,22 @@ pub fn parse_deck(root: &Path) -> Result<Deck, String> {
         })
     })?;
 
+    Ok(assemble_deck(nodes, None))
+}
+
+/// Lay the walker's flat node list out as a [`Deck`] — the shared final step of
+/// both [`parse_deck`] and [`Workspace::parse_deck`](crate::batch::Workspace).
+///
+/// Node order is the walker's deterministic BFS and node index *is* the file
+/// index, so the `(file, directive)` pairs in `includes` reference `files`
+/// directly and `transforms[fi]` is `files[fi]`'s effective offsets. `shared`
+/// carries a [`Workspace`](crate::batch::Workspace)'s reuse cache (`None` for a
+/// plain parse). Keeping every field default in one place means a batch deck and
+/// a standalone deck differ only by that one handle.
+pub(crate) fn assemble_deck(
+    nodes: Vec<GraphNode<ParsedFile>>,
+    shared: Option<Arc<crate::batch::SharedIndex>>,
+) -> Deck {
     let mut files: Vec<ParsedFile> = Vec::with_capacity(nodes.len());
     let mut includes: Vec<(usize, IncludeDirective)> = Vec::new();
     let mut transforms: Vec<crate::keywords::TransformOffsets> = Vec::with_capacity(nodes.len());
@@ -103,7 +126,7 @@ pub fn parse_deck(root: &Path) -> Result<Deck, String> {
         files.push(node.payload);
     }
 
-    Ok(Deck {
+    Deck {
         files,
         includes,
         transforms,
@@ -111,5 +134,6 @@ pub fn parse_deck(root: &Path) -> Result<Deck, String> {
         file_transforms: OnceLock::new(),
         sites: OnceLock::new(),
         user_schemas: HashMap::new(),
-    })
+        shared,
+    }
 }
