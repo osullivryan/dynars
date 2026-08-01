@@ -417,6 +417,24 @@ pub enum GlobalField {
     VelocityZ,
 }
 
+/// A per-part per-state scalar in the global-variables block (after the global
+/// scalars). See [`D3plot::part_field_history`].
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(eq, eq_int, from_py_object, name = "PartField")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartField {
+    /// Internal energy per part.
+    InternalEnergy,
+    /// Kinetic energy per part.
+    KineticEnergy,
+    /// Mass per part.
+    Mass,
+    /// Hourglass energy per part.
+    HourglassEnergy,
+}
+
 /// A per-node thermal / auxiliary state field (beyond displacement / velocity /
 /// acceleration), present per the IT and IDTDT header flags. Each maps to a
 /// strided slice of the node block. See [`D3plot::node_field`].
@@ -676,6 +694,73 @@ impl D3plot {
                 })
                 .collect(),
         )
+    }
+
+    /// A per-part per-state scalar as a dense `(n_states, n_parts)` row-major
+    /// matrix (row = state). The part block follows the 6 global scalars in the
+    /// global-variables section, laid out internal-energy, kinetic-energy,
+    /// velocity(3), mass, hourglass-energy — each `n_parts` wide. `None` if the
+    /// global block is too small to contain it.
+    pub fn part_field_history(&self, field: PartField) -> Option<(Vec<f64>, [usize; 2])> {
+        const GLOBAL_SCALARS: usize = 6; // kinetic, internal, total, vel x/y/z
+        let np = self.ctrl.nmmat;
+        if np == 0 {
+            return None;
+        }
+        // Offset of this field within the per-part block (in units of n_parts).
+        let (field_words_before, width) = match field {
+            PartField::InternalEnergy => (0, np),
+            PartField::KineticEnergy => (np, np),
+            // velocity occupies 3*np between kinetic and mass
+            PartField::Mass => (2 * np + 3 * np, np),
+            PartField::HourglassEnergy => (3 * np + 3 * np, np),
+        };
+        let start = GLOBAL_SCALARS + field_words_before;
+        if start + width > self.ctrl.nglbv {
+            return None;
+        }
+        let off_words = TIME_WORDS + start;
+        let ws = self.ctrl.wordsize;
+        let mut out = vec![0.0f64; self.states.len() * np];
+        for (s, loc) in self.states.iter().enumerate() {
+            let base = loc.offset + off_words as u64 * ws;
+            let row = read_floats_at(&self.files[loc.file], base, np, ws).ok()?;
+            out[s * np..(s + 1) * np].copy_from_slice(&row);
+        }
+        Some((out, [self.states.len(), np]))
+    }
+
+    /// Element deletion ("is alive") flags for a block at `state`: one value per
+    /// element (0 = deleted). The deletion block sits at the end of the state, in
+    /// the order solid, thick-shell, shell, beam. `None` if the file carries no
+    /// element deletion data (mdlopt != 2) or the block is empty.
+    pub fn element_alive(&self, block: StateBlock, state: usize) -> Option<Vec<f64>> {
+        if self.ctrl.mdlopt() != 2 {
+            return None; // node deletion (1) or none (0) — no per-element flags
+        }
+        let (n_solid, n_tshell, n_shell, n_beam) =
+            (self.ctrl.nel8, self.ctrl.nelth, self.ctrl.n_shells_with_data(), self.ctrl.nel2);
+        let (before, count) = match block {
+            StateBlock::Solid => (0, n_solid),
+            StateBlock::ThickShell => (n_solid, n_tshell),
+            StateBlock::Shell => (n_solid + n_tshell, n_shell),
+            StateBlock::Beam => (n_solid + n_tshell + n_shell, n_beam),
+            _ => return None,
+        };
+        if count == 0 {
+            return None;
+        }
+        // Deletion block starts after all state data except itself.
+        let del_start = TIME_WORDS
+            + self.ctrl.nglbv
+            + self.ctrl.node_data_words()
+            + self.ctrl.solid_thermal_words()
+            + self.ctrl.element_words()
+            + self.ctrl.nmsph * self.ctrl.n_sph_vars;
+        let loc = self.states.get(state)?;
+        let off_words = del_start + before;
+        let base = loc.offset + off_words as u64 * self.ctrl.wordsize;
+        read_floats_at(&self.files[loc.file], base, count, self.ctrl.wordsize).ok()
     }
 
     /// A thermal/auxiliary per-node field at `state`: `NUMNP × k` row-major, where
