@@ -516,12 +516,12 @@ fn family_paths(base: &std::path::Path, n: Option<usize>) -> Vec<std::path::Path
         for e in entries.flatten() {
             let fname = e.file_name();
             let s = fname.to_string_lossy();
-            if let Some(rest) = s.strip_prefix(&basename) {
-                if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()) {
-                    if let Ok(num) = rest.parse::<u64>() {
-                        sibs.push((num, e.path()));
-                    }
-                }
+            if let Some(rest) = s.strip_prefix(&basename)
+                && !rest.is_empty()
+                && rest.bytes().all(|b| b.is_ascii_digit())
+                && let Ok(num) = rest.parse::<u64>()
+            {
+                sibs.push((num, e.path()));
             }
         }
     }
@@ -545,14 +545,18 @@ fn index_family(files: &[&[u8]]) -> Result<(Control, Vec<StateLoc>, Vec<f64>), D
     let mut states = Vec::new();
     let mut times = Vec::new();
     if bps > 0 {
-        'outer: for (fi, bytes) in files.iter().enumerate() {
+        for (fi, bytes) in files.iter().enumerate() {
             let start = if fi == 0 { geom } else { 0 };
             let len = bytes.len() as u64;
             let mut off = start;
             while off + bps <= len {
                 let t = read_float_at(bytes, off, ws);
+                // An EOF marker ends the states in THIS family member, not the whole
+                // family: a geometry-only base file carries the marker right after
+                // its geometry (before the part-title section), with the actual
+                // states in the continuation files — so continue to the next file.
                 if is_eof_marker(t) {
-                    break 'outer;
+                    break;
                 }
                 times.push(t);
                 states.push(StateLoc {

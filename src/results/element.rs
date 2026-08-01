@@ -98,6 +98,40 @@ pub fn von_mises_stress(elem: &[f64]) -> f64 {
     von_mises(elem[0], elem[1], elem[2], elem[3], elem[4], elem[5])
 }
 
+// ── Beams ───────────────────────────────────────────────────────────────────
+//
+// A beam result record leads with 6 cross-section resultants, then per
+// integration-point stress/strain history. These extract the resultants.
+
+/// Beam cross-section force/moment resultants (the first 6 words of a beam record).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BeamResultants {
+    /// Axial force `N`.
+    pub axial_force: f64,
+    /// Transverse shear forces `Qs, Qt`.
+    pub shear_force: [f64; 2],
+    /// Bending moments `Ms, Mt`.
+    pub bending_moment: [f64; 2],
+    /// Torsional moment `T`.
+    pub torsion_moment: f64,
+}
+
+/// Cross-section resultants of a beam record, or `None` if it is too short.
+pub fn beam_resultants(elem: &[f64]) -> Option<BeamResultants> {
+    let r = elem.get(..6)?;
+    Some(BeamResultants {
+        axial_force: r[0],
+        shear_force: [r[1], r[2]],
+        bending_moment: [r[3], r[4]],
+        torsion_moment: r[5],
+    })
+}
+
+/// Beam axial force (word 0) — a ready extractor for the reductions.
+pub fn beam_axial_force(elem: &[f64]) -> f64 {
+    elem.first().copied().unwrap_or(0.0)
+}
+
 // ── Shell through-thickness layers ──────────────────────────────────────────
 //
 // A shell element's result record packs `n_layers` integration points at the
