@@ -668,6 +668,51 @@ impl D3plot {
         )
     }
 
+    /// Part titles `(id, name)` from the header part/contact title section (the
+    /// EOF-marker-gated block after the geometry, ntype 90001). Empty if the file
+    /// carries no title section. Titles are the fixed 18-word (72-byte) LS-DYNA
+    /// part names, trimmed. Ids here are the user part ids.
+    pub fn part_titles(&self) -> Vec<(i64, String)> {
+        let ws = self.ctrl.wordsize;
+        let wsz = ws as usize;
+        let bytes: &[u8] = &self.files[0];
+        let mut pos = self.ctrl.geom_bytes as usize;
+        // The section exists only if an EOF marker sits right after the geometry.
+        if !is_eof_marker(read_float_at(bytes, pos as u64, ws)) {
+            return Vec::new();
+        }
+        pos += wsz; // consume the marker
+        const TITLE_BYTES: usize = 18 * 4; // always 18 4-byte words, even in double
+        let mut out = Vec::new();
+        loop {
+            let ntype = read_int_at(bytes, pos, ws);
+            match ntype {
+                90000 => pos += wsz + TITLE_BYTES, // single title2
+                90001 | 90002 | 90020 => {
+                    pos += wsz;
+                    let count = read_int_at(bytes, pos, ws).max(0) as usize;
+                    pos += wsz;
+                    for _ in 0..count {
+                        let id = read_int_at(bytes, pos, ws);
+                        let tb = bytes.get(pos + wsz..pos + wsz + TITLE_BYTES).unwrap_or(&[]);
+                        let name = String::from_utf8_lossy(tb).trim().to_string();
+                        if ntype == 90001 {
+                            out.push((id, name));
+                        }
+                        pos += wsz + TITLE_BYTES;
+                    }
+                }
+                90100 => {
+                    pos += wsz;
+                    let nline = read_int_at(bytes, pos, ws).max(0) as usize;
+                    pos += wsz + nline * 20 * 4; // d3prop keywords, 20 4-byte words each
+                }
+                _ => break,
+            }
+        }
+        out
+    }
+
     /// A global per-state scalar (energy / velocity component) as a time history:
     /// one value per state, in state order. The global-variables block holds
     /// kinetic, internal, total energy, then the 3-component global velocity; this
