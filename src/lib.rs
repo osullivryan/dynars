@@ -106,6 +106,10 @@ pub mod _dynars {
     #[pymodule_export]
     use crate::python::parse_deck;
 
+    // Workspace: batch-parse/validate many decks sharing *INCLUDEs
+    #[pymodule_export]
+    use crate::python::PyWorkspace;
+
     // Occupant injury criteria (always available).
     #[pymodule_export]
     use crate::python::resultant;

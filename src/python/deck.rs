@@ -23,6 +23,21 @@ pub struct PyDeck {
     deck: crate::deck::Deck,
 }
 
+impl PyDeck {
+    /// Wrap an already-parsed core [`Deck`] — the seam the batch
+    /// [`Workspace`](crate::batch::Workspace) bindings use to hand back decks
+    /// that carry its shared cache.
+    pub(crate) fn from_deck(deck: crate::deck::Deck) -> Self {
+        Self { deck }
+    }
+
+    /// Borrow the underlying core [`Deck`] (for batch validation over borrowed
+    /// deck handles).
+    pub(crate) fn inner(&self) -> &crate::deck::Deck {
+        &self.deck
+    }
+}
+
 #[pymethods]
 impl PyDeck {
     #[new]

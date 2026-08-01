@@ -731,6 +731,56 @@ class StateBlock:
     def __ne__(self, /, other: object) -> bool: ...
     def __repr__(self, /) -> str: ...
 
+@final
+class Workspace:
+    """
+    An in-process batch context: parse and validate many decks that share
+    `*INCLUDE`s against one shared cache, so common files (mesh, materials) are
+    read, parsed, and indexed **once** no matter how many decks include them.
+    
+    ```python
+    import dynars
+    ws = dynars.Workspace()
+    decks = ws.parse_decks(["variant_a/main.k", "variant_b/main.k"])
+    reports = ws.validate_decks(decks, [
+        dynars.Rule.references_resolve(),
+        dynars.Rule.duplicate_ids(),
+    ])
+    print(ws.stats())  # {'files_parsed': ..., 'files_reused': ..., ...}
+    ```
+    
+    The decks handed back are ordinary `Deck`s — validate or navigate them
+    individually too; a deck from a workspace reuses the shared indices whether
+    you call `validate_decks` or its own `.validate(...)`.
+    """
+    def __new__(cls, /) -> Workspace: ...
+    def __repr__(self, /) -> str: ...
+    def parse_deck(self, /, path: str) -> Deck:
+        """
+        Parse one deck (root + all includes), reusing any file this workspace has
+        already read. Returns a navigable `Deck`.
+        """
+    def parse_decks(self, /, paths: Sequence[str]) -> list[Deck]:
+        """
+        Parse several decks in one batch, sharing all file work across them.
+        Returns a list of `Deck`s in input order; raises `RuntimeError` naming the
+        first root that fails to parse.
+        """
+    def stats(self, /) -> dict[str, int]:
+        """
+        Cache stats as a dict: `files_parsed` / `files_reused` (disk reads vs.
+        cache hits) and `def_indices_built` / `ref_indices_built` (distinct files
+        whose definition / connectivity index was extracted — a shared file counts
+        once).
+        """
+    def validate_decks(self, /, decks: Sequence[Deck], rules: Sequence[Rule]) -> list[Report]:
+        """
+        Validate several decks in parallel against the shared cache. Returns one
+        `Report` per deck, in order. Warms the shared definition index first, then
+        runs `rules` over every deck concurrently — a shared file's id and
+        connectivity indices are built once, not per deck.
+        """
+
 def bric(wx: Incomplete, wy: Incomplete, wz: Incomplete, crit_x: float, crit_y: float, crit_z: float) -> float:
     """
     Brain Injury Criterion from the three head angular-velocity channels (rad/s)

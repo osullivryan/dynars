@@ -12,8 +12,8 @@ use dynars::validate::{Finding, Rule};
 /// Two variant decks (`a/main.k`, `b/main.k`) that both `*INCLUDE ../shared.k`.
 /// `shared.k` defines material 1 and section 1; variant A's part resolves cleanly,
 /// variant B's part references an undefined material to exercise a per-deck finding.
-fn write_variants() -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join("dynars_batch_ws");
+fn write_variants(tag: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("dynars_batch_ws_{tag}"));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("a")).unwrap();
     fs::create_dir_all(dir.join("b")).unwrap();
@@ -88,7 +88,7 @@ fn deck_fingerprint(deck: &Deck) -> (Vec<(PathBuf, Vec<u8>)>, Vec<String>) {
 
 #[test]
 fn shared_include_is_parsed_once() {
-    let (a, b) = write_variants();
+    let (a, b) = write_variants("once");
     let ws = Workspace::new();
 
     let results = ws.parse_decks([&a, &b]);
@@ -108,7 +108,7 @@ fn shared_include_is_parsed_once() {
 
 #[test]
 fn workspace_deck_matches_parse_deck() {
-    let (a, b) = write_variants();
+    let (a, b) = write_variants("match");
     let ws = Workspace::new();
 
     for root in [&a, &b] {
@@ -230,8 +230,8 @@ fn shared_mesh_shifts_per_deck_across_offsets() {
 /// A shared clean mesh (nodes 1-4; part 1 → section 1 / mat 1; one shell over
 /// those nodes) plus two decks: A includes it as-is; B adds a shell whose 4th
 /// node (999) is undefined — a connectivity dangler in B only.
-fn write_connectivity_variants() -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join("dynars_batch_conn");
+fn write_connectivity_variants(tag: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("dynars_batch_conn_{tag}"));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("a")).unwrap();
     fs::create_dir_all(dir.join("b")).unwrap();
@@ -265,7 +265,7 @@ fn conn_keys(deck: &Deck) -> Vec<String> {
 
 #[test]
 fn connectivity_cache_matches_uncached() {
-    let (a, b) = write_connectivity_variants();
+    let (a, b) = write_connectivity_variants("cache");
     let ws = Workspace::new();
     let da = ws.parse_deck(&a).unwrap();
     let db = ws.parse_deck(&b).unwrap();
@@ -289,7 +289,7 @@ fn connectivity_cache_matches_uncached() {
 
 #[test]
 fn validate_decks_parallel_matches_sequential() {
-    let (a, b) = write_connectivity_variants();
+    let (a, b) = write_connectivity_variants("par");
     let ws = Workspace::new();
     let decks: Vec<Deck> = ws
         .parse_decks([&a, &b])
@@ -321,7 +321,7 @@ fn shared_indices_built_once_across_decks() {
     // definition and connectivity indices are each built ONCE across both decks,
     // not once per deck. Three distinct files (mesh, a/main, b/main) → a count of
     // 3, never 4 (which would mean the mesh was re-extracted per deck).
-    let (a, b) = write_connectivity_variants();
+    let (a, b) = write_connectivity_variants("built");
     let ws = Workspace::new();
     let decks: Vec<Deck> = ws
         .parse_decks([&a, &b])
@@ -362,7 +362,8 @@ fn shared_indices_built_once_across_decks() {
 fn findings_are_independent_per_deck() {
     // Variant B's part references undefined material 99; variant A is clean.
     // A shared include must not leak one deck's findings into the other.
-    let (a, b) = write_variants();
+    // (unique fixture dir per test to avoid cross-test temp-dir races)
+    let (a, b) = write_variants("indep");
     let ws = Workspace::new();
 
     let deck_a = ws.parse_deck(&a).unwrap();

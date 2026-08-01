@@ -293,6 +293,18 @@ impl Workspace {
         decks: &[Deck],
         rules: impl IntoIterator<Item = Rule>,
     ) -> Vec<Report> {
+        let refs: Vec<&Deck> = decks.iter().collect();
+        self.validate_refs(&refs, rules)
+    }
+
+    /// As [`validate_decks`](Workspace::validate_decks) but over *borrowed* decks
+    /// — the shape the Python bindings hold (each deck lives behind its own
+    /// handle, so there's no contiguous `&[Deck]` to pass).
+    pub(crate) fn validate_refs(
+        &self,
+        decks: &[&Deck],
+        rules: impl IntoIterator<Item = Rule>,
+    ) -> Vec<Report> {
         let rules: Vec<Rule> = rules.into_iter().collect();
         self.prime(decks);
         decks
@@ -306,7 +318,7 @@ impl Workspace {
     /// racing to build it. Single-flight makes this dup-free; the connectivity
     /// reference index stays lazy — only decks that actually run a connectivity
     /// check pay to build it.
-    fn prime(&self, decks: &[Deck]) {
+    fn prime(&self, decks: &[&Deck]) {
         // Distinct by canonical path: a shared file is warmed once, not per deck.
         let mut distinct: HashMap<&Path, &ParsedFile> = HashMap::new();
         for d in decks {

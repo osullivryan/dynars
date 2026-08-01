@@ -4,6 +4,7 @@
 //! can call the crate-private resolution internals (`model::site_index`,
 //! `entity_field`, …) that the public API deliberately hides.
 
+mod batch;
 mod deck;
 mod include_tree;
 mod injury;
@@ -13,6 +14,7 @@ mod results;
 mod signal;
 mod validate;
 
+pub use batch::PyWorkspace;
 pub use deck::{PyDeck, PyEntity, parse_deck};
 pub use include_tree::{PyIncludeNode, parse_include_tree};
 pub use injury::{

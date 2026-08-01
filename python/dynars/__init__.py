@@ -18,6 +18,7 @@ from dynars._dynars import (
     Rule,
     Severity,
     StateBlock,
+    Workspace,
     butterworth,
     cfc,
     clip,
@@ -61,6 +62,8 @@ __all__ = [
     "parse_deck",
     "Deck",
     "Entity",
+    # workspace: batch-parse/validate many decks sharing *INCLUDEs
+    "Workspace",
     "Rule",
     "Predicate",
     "Report",

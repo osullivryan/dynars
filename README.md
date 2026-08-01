@@ -28,6 +28,10 @@ Python bindings.
 - **Callable from C and Fortran.** The deck parse + validate path is exposed
   over a C ABI (opt-in `ffi` feature); Fortran binds it via `iso_c_binding`.
   See [C / Fortran API](#c--fortran-api).
+- **Batch-aware.** A `Workspace` parses and validates many decks that share
+  `*INCLUDE`s against one cache — a common mesh is read, parsed, and indexed once,
+  not once per deck (up to ~12× over a 32-deck batch). See
+  [Workspace](#workspace-batch-decks-that-share-includes).
 
 ## Installation
 
@@ -205,6 +209,63 @@ impl Check for DensityPositive {
 }
 let _ = deck.validate([Rule::custom(DensityPositive)]);
 ```
+
+### Workspace: batch decks that share includes
+
+Checking many decks — load-case or run variants of one model — usually means they
+all `*INCLUDE` the same big files (mesh, materials, sections). A `Workspace` reads,
+parses, and indexes each shared file **once** across the whole batch, then
+validates the decks in parallel. The decks it hands back are ordinary `Deck`s —
+navigate or validate them individually too; either way they reuse the shared cache.
+
+```python
+import dynars
+
+ws = dynars.Workspace()
+decks = ws.parse_decks(["variant_a/main.k", "variant_b/main.k", "variant_c/main.k"])
+
+reports = ws.validate_decks(decks, [
+    dynars.Rule.references_resolve_with_connectivity(),
+    dynars.Rule.duplicate_ids(),
+])
+for report in reports:
+    print(report.is_clean(), report.count(dynars.Severity.Error))
+
+# A shared mesh is read once and its id/connectivity indices built once, not per deck:
+print(ws.stats())  # {'files_parsed': 4, 'files_reused': 2, 'def_indices_built': 4, ...}
+```
+
+```rust
+use dynars::Workspace;
+use dynars::validate::Rule;
+
+let ws = Workspace::new();
+let decks: Vec<_> = ws
+    .parse_decks(["variant_a/main.k", "variant_b/main.k"])
+    .into_iter()
+    .filter_map(|(_root, d)| d.ok())
+    .collect();
+
+let reports = ws.validate_decks(&decks, [
+    Rule::references_resolve_with_connectivity(),
+    Rule::duplicate_ids(),
+]);
+```
+
+The shared work is paid once and amortizes over the batch, so the workspace total
+stays roughly flat as decks are added while the naive per-deck approach grows
+linearly. Over a 28 MB shared mesh (500k nodes / 500k shells), naive `parse_deck`
++ `validate` per deck vs. `Workspace` (`examples/batch_bench.rs`, or
+`examples/batch_bench.py` — build the extension `--release` first):
+
+| decks | naive total | workspace total | speedup |
+|------:|------------:|----------------:|--------:|
+| 4  | 240 ms  | 122 ms | 2.0× |
+| 8  | 481 ms  | 126 ms | 3.8× |
+| 16 | 969 ms  | 150 ms | 6.5× |
+| 32 | 1944 ms | 157 ms | 12.4× |
+
+Runnable walk-throughs: `examples/batch_validate.rs` / `examples/batch_demo.py`.
 
 ### Result post-processing
 
