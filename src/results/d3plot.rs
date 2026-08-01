@@ -275,22 +275,11 @@ impl Control {
     /// thermal + element data + SPH + deletion + airbag particles + rigid road +
     /// rigid-body motion.
     fn bytes_per_state(&self) -> u64 {
-        let sph = self.nmsph * self.n_sph_vars;
-        let airbag = self.n_airbags * self.n_airbag_state_vars
-            + self.n_particles * self.n_particle_state_vars;
-        let road = self.n_roads * 6;
-        let rigid = self.n_rigids * if self.reduced_rigid { 12 } else { 24 };
-        (TIME_WORDS
-            + self.nglbv
-            + self.node_data_words()
-            + self.solid_thermal_words()
-            + self.element_words()
-            + sph
-            + self.deletion_words()
-            + airbag
-            + road
-            + rigid) as u64
-            * self.wordsize
+        // Single source of truth: the last tail block's offset + its own size.
+        // rigid_off already chains time → globals → nodes → solid-thermal →
+        // elements → deletion → sph → airbag → road, so this stays in lockstep
+        // with the per-block readers.
+        (self.rigid_off() + self.n_rigids * self.rigid_vars()) as u64 * self.wordsize
     }
 
     /// `(word offset within a state, entity count, vars per entity)` for a result
@@ -370,6 +359,38 @@ impl Control {
             NodeField::ResidualMoment => has_resid.then_some(residm),
         }
     }
+
+    // Word offsets, within a state, of the tail blocks — in LS-DYNA *read* order
+    // (deletion, SPH, airbag particles, rigid road, rigid-body motion), which is
+    // what places the arrays. bytes_per_state sums the same set (order-independent).
+    fn deletion_off(&self) -> usize {
+        TIME_WORDS
+            + self.nglbv
+            + self.node_data_words()
+            + self.solid_thermal_words()
+            + self.element_words()
+    }
+    fn sph_off(&self) -> usize {
+        self.deletion_off() + self.deletion_words()
+    }
+    fn sph_words(&self) -> usize {
+        self.nmsph * self.n_sph_vars
+    }
+    fn airbag_off(&self) -> usize {
+        self.sph_off() + self.sph_words()
+    }
+    fn airbag_words(&self) -> usize {
+        self.n_airbags * self.n_airbag_state_vars + self.n_particles * self.n_particle_state_vars
+    }
+    fn road_off(&self) -> usize {
+        self.airbag_off() + self.airbag_words()
+    }
+    fn rigid_off(&self) -> usize {
+        self.road_off() + self.n_roads * 6
+    }
+    fn rigid_vars(&self) -> usize {
+        if self.reduced_rigid { 12 } else { 24 }
+    }
 }
 
 /// A per-entity result block in a state. Node blocks are (N, 3); element blocks
@@ -415,6 +436,20 @@ pub enum GlobalField {
     VelocityY,
     /// Global velocity vector Z.
     VelocityZ,
+}
+
+/// Airbag/CPM per-state data from [`D3plot::airbag_state`]: the airbag chamber
+/// state block and the particle state block, each with its `[rows, cols]` dims.
+#[derive(Debug, Clone)]
+pub struct AirbagState {
+    /// Airbag chamber state, `n_airbags × nstgeom` row-major.
+    pub airbag: Vec<f64>,
+    /// `[n_airbags, nstgeom]`.
+    pub airbag_dims: [usize; 2],
+    /// Particle state, `n_particles × nvar` row-major.
+    pub particle: Vec<f64>,
+    /// `[n_particles, nvar]`.
+    pub particle_dims: [usize; 2],
 }
 
 /// A per-part per-state scalar in the global-variables block (after the global
@@ -795,17 +830,85 @@ impl D3plot {
         if count == 0 {
             return None;
         }
-        // Deletion block starts after all state data except itself.
-        let del_start = TIME_WORDS
-            + self.ctrl.nglbv
-            + self.ctrl.node_data_words()
-            + self.ctrl.solid_thermal_words()
-            + self.ctrl.element_words()
-            + self.ctrl.nmsph * self.ctrl.n_sph_vars;
         let loc = self.states.get(state)?;
-        let off_words = del_start + before;
+        let off_words = self.ctrl.deletion_off() + before;
         let base = loc.offset + off_words as u64 * self.ctrl.wordsize;
         read_floats_at(&self.files[loc.file], base, count, self.ctrl.wordsize).ok()
+    }
+
+    /// **SPH** per-state block: `NMSPH × n_sph_vars` row-major (raw solver words;
+    /// the per-particle layout is set by the ISPHFG flags — typically material,
+    /// then radius/pressure/stress(6)/plastic-strain/density/energy/…). `None` if
+    /// the file has no SPH nodes or the state is out of range.
+    ///
+    /// ⚠ Not yet validated against a real SPH d3plot (no such test file available);
+    /// the state *sizing* is correct (files with SPH step right), but treat the
+    /// per-variable interpretation as provisional.
+    pub fn sph_state(&self, state: usize) -> Option<(Vec<f64>, [usize; 2])> {
+        if self.ctrl.nmsph == 0 {
+            return None;
+        }
+        let loc = self.states.get(state)?;
+        let base = loc.offset + self.ctrl.sph_off() as u64 * self.ctrl.wordsize;
+        let v = read_floats_at(&self.files[loc.file], base, self.ctrl.sph_words(), self.ctrl.wordsize).ok()?;
+        Some((v, [self.ctrl.nmsph, self.ctrl.n_sph_vars]))
+    }
+
+    /// **Airbag/CPM** per-state data (see [`AirbagState`]): airbag chamber state
+    /// (`n_airbags × nstgeom`) plus particle state (`n_particles × nvar`), both
+    /// row-major. `None` if the file has no airbag particle data.
+    ///
+    /// ⚠ Not yet validated against a real airbag d3plot; sizing is correct, the
+    /// per-variable interpretation is provisional.
+    pub fn airbag_state(&self, state: usize) -> Option<AirbagState> {
+        if self.ctrl.n_airbags == 0 {
+            return None;
+        }
+        let loc = self.states.get(state)?;
+        let ws = self.ctrl.wordsize;
+        let a_off = loc.offset + self.ctrl.airbag_off() as u64 * ws;
+        let a_n = self.ctrl.n_airbags * self.ctrl.n_airbag_state_vars;
+        let airbag = read_floats_at(&self.files[loc.file], a_off, a_n, ws).ok()?;
+        let p_off = a_off + a_n as u64 * ws;
+        let p_n = self.ctrl.n_particles * self.ctrl.n_particle_state_vars;
+        let particle = read_floats_at(&self.files[loc.file], p_off, p_n, ws).ok()?;
+        Some(AirbagState {
+            airbag,
+            airbag_dims: [self.ctrl.n_airbags, self.ctrl.n_airbag_state_vars],
+            particle,
+            particle_dims: [self.ctrl.n_particles, self.ctrl.n_particle_state_vars],
+        })
+    }
+
+    /// **Rigid-body motion** per-state block: `n_rigids × k` row-major, where `k`
+    /// is 12 (reduced: coordinates + 3×3 rotation) or 24 (adds translational and
+    /// rotational velocity/acceleration). `None` if the file has no rigid-body data.
+    ///
+    /// ⚠ Not yet validated against a real rigid-body d3plot; sizing is correct, the
+    /// per-variable interpretation is provisional.
+    pub fn rigid_body_motion(&self, state: usize) -> Option<(Vec<f64>, [usize; 2])> {
+        if self.ctrl.n_rigids == 0 {
+            return None;
+        }
+        let loc = self.states.get(state)?;
+        let base = loc.offset + self.ctrl.rigid_off() as u64 * self.ctrl.wordsize;
+        let k = self.ctrl.rigid_vars();
+        let v = read_floats_at(&self.files[loc.file], base, self.ctrl.n_rigids * k, self.ctrl.wordsize).ok()?;
+        Some((v, [self.ctrl.n_rigids, k]))
+    }
+
+    /// **Rigid-road** per-state motion block: `n_roads × 6` row-major. `None` if
+    /// the file has no rigid road surfaces.
+    ///
+    /// ⚠ Not yet validated against a real rigid-road d3plot; sizing is correct.
+    pub fn rigid_road_state(&self, state: usize) -> Option<(Vec<f64>, [usize; 2])> {
+        if self.ctrl.n_roads == 0 {
+            return None;
+        }
+        let loc = self.states.get(state)?;
+        let base = loc.offset + self.ctrl.road_off() as u64 * self.ctrl.wordsize;
+        let v = read_floats_at(&self.files[loc.file], base, self.ctrl.n_roads * 6, self.ctrl.wordsize).ok()?;
+        Some((v, [self.ctrl.n_roads, 6]))
     }
 
     /// A thermal/auxiliary per-node field at `state`: `NUMNP × k` row-major, where
@@ -2599,6 +2702,36 @@ mod tests {
         assert_eq!(c.n_rigids, 1);
         // rigid-body motion tail = 1*24 = 24; + time(1) + node(3) = 28.
         assert_eq!(c.bytes_per_state(), 28 * 4);
+        // Tail-block offsets chain correctly: rigid block is last, at word 4.
+        assert_eq!(c.rigid_off(), TIME_WORDS + 3); // time(1)+node(3), no elements
+        assert_eq!(c.rigid_vars(), 24);
+    }
+
+    #[test]
+    fn tail_block_offsets_chain_in_read_order() {
+        // Solids + SPH + element deletion: verify deletion precedes SPH (read order)
+        // and every tail offset chains to bytes_per_state.
+        let mut w = vec![0i32; 80];
+        w[15] = 3; // NDIM
+        w[16] = 2; // NUMNP
+        w[20] = 1; // IU
+        w[23] = 4; // NEL8 (solids)
+        w[27] = 7; // NV3D
+        w[36] = -10004; // MAXINT ⇒ mdlopt 2 (element deletion), 4 layers
+        w[37] = 3; // NMSPH
+        w[64] = 11; // isphfg1
+        for k in 65..=74 {
+            w[k] = 1; // isphfg2..11 = 1 → n_sph_vars = 9 + 0hist? isphfg9=1,others 1
+        }
+        let c = control_from_words(&w);
+        let time_glob_node = TIME_WORDS + 0 + 2 * 3; // time + no globals + iu*numnp*3
+        let elements = 4 * 7; // solids
+        assert_eq!(c.deletion_off(), time_glob_node + elements);
+        // deletion words (mdlopt 2) = nel8+nel4+nel2+nelth = 4.
+        assert_eq!(c.sph_off(), c.deletion_off() + 4);
+        // sph before airbag/road/rigid (all zero here) → rigid_off == end of sph.
+        assert_eq!(c.rigid_off(), c.sph_off() + c.sph_words());
+        assert_eq!(c.bytes_per_state(), c.rigid_off() as u64 * 4);
     }
 
     #[test]
