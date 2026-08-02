@@ -177,7 +177,7 @@ For a keyword you know at compile time, the opt-in `typed-keywords` feature
 generates a struct per built-in keyword with named, typed column fields:
 
 ```rust
-// Cargo.toml: dynars = { version = "0.1", features = ["typed-keywords"] }
+// Cargo.toml: dynars = { version = "1.0", features = ["typed-keywords"] }
 let m = dynars::keywords::typed::MAT_ELASTIC::parse(&parsed);
 let (mid, e) = (m.mid, m.e);   // Vec<i64>, Vec<f64>
 ```

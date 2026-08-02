@@ -18,8 +18,8 @@ Add the crate and pick the features you need:
 
 ```toml
 [dependencies]
-dynars = "0.1"
-# dynars = { version = "0.1", features = ["signal", "ffi"] }
+dynars = "1.0"
+# dynars = { version = "1.0", features = ["signal", "ffi"] }
 ```
 
 | Feature | Enables |

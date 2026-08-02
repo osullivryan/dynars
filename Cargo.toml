@@ -6,7 +6,7 @@ members = ["crates/derive"]
 # the release tag both derive from it, and each crate inherits it via
 # `version.workspace = true`.
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 license = "MIT"
 repository = "https://github.com/osullivryan/dynars"
 
@@ -15,7 +15,7 @@ repository = "https://github.com/osullivryan/dynars"
 # published: cargo strips `path` from the uploaded manifest and keeps `version`.
 # Centralized here so a version bump touches one file.
 [workspace.dependencies]
-dynars-derive = { path = "crates/derive", version = "0.1.0" }
+dynars-derive = { path = "crates/derive", version = "1.0.0" }
 
 [package]
 name = "dynars"

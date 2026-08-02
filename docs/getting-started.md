@@ -36,14 +36,14 @@ you use and the whole page follows.
 
     ```toml
     [dependencies]
-    dynars = "0.1"
+    dynars = "1.0"
     ```
 
     Optional features — off by default so a plain build stays lean:
 
     ```toml
     [dependencies]
-    dynars = { version = "0.1", features = ["signal", "ffi"] }
+    dynars = { version = "1.0", features = ["signal", "ffi"] }
     ```
 
     | Feature | Enables |
@@ -255,7 +255,7 @@ mental model — deck vs. keyword file, global ids, includes and transforms.
 - **`deck.table("FOO")` raises / returns nothing.** `FOO` isn't in the built-in
   library. Register a [schema](schemas.md) and read it with `table_with`.
 - **Signal / injury functions missing in Rust.** They live behind the `signal`
-  feature: `dynars = { version = "0.1", features = ["signal"] }`. The Python
+  feature: `dynars = { version = "1.0", features = ["signal"] }`. The Python
   wheels already include it.
 
 ## Next steps

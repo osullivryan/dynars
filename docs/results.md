@@ -230,7 +230,7 @@ implemented in the Rust core and verified bit-exact against SciPy.
 === "Rust"
 
     ```rust
-    // requires: dynars = { version = "0.1", features = ["signal"] }
+    // requires: dynars = { version = "1.0", features = ["signal"] }
     use dynars::results::{signal, injury};
 
     let a = injury::resultant(&ax, &ay, &az);
