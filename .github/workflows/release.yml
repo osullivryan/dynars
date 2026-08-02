@@ -1,20 +1,27 @@
 name: Release
 
-# Build wheels for Linux + Windows and publish to PyPI on tag.
+# Build wheels for Linux + Windows and publish to PyPI.
 # (macOS is omitted to save CI minutes; mac users install from the sdist.)
 # Because the extension is built with pyo3 `abi3-py39`, each job produces a
 # single wheel per platform that works on CPython 3.9+ (no per-version matrix).
 #
-# Wheels are built in release mode (`--release`, so LTO + opt-level 3 from
-# [profile.release] apply); publishing uses PyPI Trusted Publishing (OIDC) — no
-# API token or secret. See the setup notes at the bottom of this file.
+# Releases are CUT FROM THE ACTIONS TAB: open Actions -> Release -> "Run
+# workflow" (workflow_dispatch, on `main`). That builds + smoke-tests, tags the
+# current Cargo.toml version as vX.Y.Z, and publishes to PyPI via Trusted
+# Publishing (OIDC) — no API token or secret, all in one run. Pushes to main and
+# PRs only build + smoke-test; they never tag or publish.
+#
+# Wheels build in release mode (`--release`, so LTO + opt-level 3 from
+# [profile.release] apply). The version lives in ONE place, Cargo.toml
+# [package].version: maturin derives the wheel version from it (pyproject.toml
+# sets dynamic version) and the tag is derived from it too, so
+# tag == crate version == PyPI version by construction. See notes at the bottom.
 
 on:
   push:
-    branches: [main]        # build-test on pushes to main
-    tags: ["v*"]            # v1.2.3 -> build + publish
-  pull_request:
-  workflow_dispatch:
+    branches: [main]        # build-test only
+  pull_request:             # build-test only
+  workflow_dispatch:        # ← "Cut release": build, tag the Cargo version, publish
 
 permissions:
   contents: read
@@ -72,7 +79,7 @@ jobs:
           name: wheels-sdist
           path: dist
 
-  # Smoke-test the built wheel on each OS before we'd ever publish.
+  # Smoke-test the built wheel on each OS before we'd ever tag or publish.
   smoke-test:
     needs: [linux, windows]
     strategy:
@@ -96,32 +103,43 @@ jobs:
           python -m pip install --no-index --find-links dist dynars
           python -c "import dynars, dynars.kw; print('import OK, e.g.', dynars.kw.MAT_ELASTIC)"
 
-  # On a tag, refuse to publish unless the tag matches the crate version in
-  # Cargo.toml — the single source of truth. maturin derives the PyPI wheel
-  # version from that same Cargo.toml (pyproject.toml sets dynamic version), so
-  # this one check pins tag == Cargo version == PyPI version.
-  check-version:
-    name: Tag matches crate version
-    if: startsWith(github.ref, 'refs/tags/')
+  # Cut the release tag (dispatch only), once the wheels are built and tested.
+  # The tag is derived FROM Cargo.toml's version, so tag == crate version by
+  # construction; if that tag already exists, fail loudly (bump Cargo.toml first).
+  tag:
+    name: Cut release tag
+    if: github.event_name == 'workflow_dispatch'
+    needs: [smoke-test, sdist]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write        # push the tag
+    outputs:
+      version: ${{ steps.cut.outputs.version }}
     steps:
       - uses: actions/checkout@v6
-      - name: Verify tag == Cargo.toml version
+      - id: cut
+        name: Tag Cargo.toml version as vX.Y.Z
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[] | select(.name=="dynars") | .version')
-          TAG="${GITHUB_REF_NAME#v}"
-          echo "git tag: v$TAG   Cargo.toml: $VERSION"
-          test "$TAG" = "$VERSION" \
-            || { echo "::error::tag v$TAG does not match Cargo.toml version $VERSION"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing dynars v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::tag v$VERSION already exists — bump Cargo.toml [package].version before cutting a release"
+            exit 1
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "dynars v$VERSION"
+          git push origin "v$VERSION"
 
-  # Publish every built artifact (Linux + Windows wheels + sdist) to PyPI on a
-  # version tag, using Trusted Publishing (OIDC): no token, no secret. Gated on
-  # the smoke-test passing, so a broken wheel never reaches PyPI.
+  # Publish every built artifact (Linux + Windows wheels + sdist) to PyPI, using
+  # Trusted Publishing (OIDC): no token, no secret. Runs only after the tag is
+  # cut, so PyPI and the git tag always agree.
   publish:
     name: Publish to PyPI
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [smoke-test, sdist, check-version]
+    if: github.event_name == 'workflow_dispatch'
+    needs: [tag, smoke-test, sdist]
     runs-on: ubuntu-22.04
     environment:
       name: pypi
@@ -145,7 +163,9 @@ jobs:
 #
 # 1. GitHub: create an Environment named `pypi`
 #    (Settings -> Environments -> New environment). Optionally add required
-#    reviewers so a human approves each release.
+#    reviewers so a human approves each release before `publish` runs.
+#    (Tag pushes use the default GITHUB_TOKEN; if you add a tag protection
+#    ruleset, allow github-actions to create `v*` tags.)
 #
 # 2. PyPI: add a GitHub Actions trusted publisher for the `dynars` project
 #    (https://pypi.org/manage/project/dynars/settings/publishing/, or — if the
@@ -159,10 +179,8 @@ jobs:
 # 3. Cut a release. The version lives in ONE place — Cargo.toml
 #    [package].version — and the wheel + tag both derive from it:
 #        a. bump `version` in Cargo.toml (e.g. 0.1.0 -> 0.1.1), commit, push main;
-#        b. tag the same version and push it:
-#               git tag v0.1.1 && git push origin v0.1.1
-#    The `check-version` job fails the release if the tag != Cargo.toml version,
-#    so a mistyped or stale tag never publishes. On a matching tag the
-#    linux/windows/sdist jobs build (release mode) and smoke-test, then `publish`
-#    mints a short-lived OIDC token and uploads to PyPI.
+#        b. Actions -> Release -> "Run workflow" (on main).
+#    The run builds release wheels, smoke-tests them, tags v0.1.1 (failing if it
+#    already exists — i.e. you forgot to bump), then publishes to PyPI. No tag to
+#    type by hand, and tag/wheel/PyPI versions can't drift.
 # ---------------------------------------------------------------------------
