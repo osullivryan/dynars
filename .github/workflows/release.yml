@@ -4,6 +4,10 @@ name: Release
 # (macOS is omitted to save CI minutes; mac users install from the sdist.)
 # Because the extension is built with pyo3 `abi3-py39`, each job produces a
 # single wheel per platform that works on CPython 3.9+ (no per-version matrix).
+#
+# Wheels are built in release mode (`--release`, so LTO + opt-level 3 from
+# [profile.release] apply); publishing uses PyPI Trusted Publishing (OIDC) — no
+# API token or secret. See the setup notes at the bottom of this file.
 
 on:
   push:
@@ -91,22 +95,49 @@ jobs:
           python -m pip install numpy
           python -m pip install --no-index --find-links dist dynars
           python -c "import dynars, dynars.kw; print('import OK, e.g.', dynars.kw.MAT_ELASTIC)"
+
+  # Publish every built artifact (Linux + Windows wheels + sdist) to PyPI on a
+  # version tag, using Trusted Publishing (OIDC): no token, no secret. Gated on
+  # the smoke-test passing, so a broken wheel never reaches PyPI.
+  publish:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [smoke-test, sdist]
+    runs-on: ubuntu-22.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dynars
+    permissions:
+      id-token: write          # OIDC — tokenless "trusted publishing"; the only
+                               # permission the publish step needs.
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+# ---------------------------------------------------------------------------
+# One-time PyPI Trusted Publisher setup (no API token is ever stored here).
 #
-#  publish:
-#    name: Publish to PyPI
-#    if: startsWith(github.ref, 'refs/tags/')
-#    needs: [smoke-test, sdist]
-#    runs-on: ubuntu-22.04
-#    environment: pypi          # configure a PyPI trusted publisher for this env
-#    permissions:
-#      id-token: write          # OIDC — tokenless "trusted publishing"
-#    steps:
-#      - uses: actions/download-artifact@v6
-#        with:
-#          pattern: wheels-*
-#          merge-multiple: true
-#          path: dist
-#      - name: Publish
-#        uses: pypa/gh-action-pypi-publish@release/v1
-#        with:
-#          packages-dir: dist
+# 1. GitHub: create an Environment named `pypi`
+#    (Settings -> Environments -> New environment). Optionally add required
+#    reviewers so a human approves each release.
+#
+# 2. PyPI: add a GitHub Actions trusted publisher for the `dynars` project
+#    (https://pypi.org/manage/project/dynars/settings/publishing/, or — if the
+#    project does not exist yet — add a "pending publisher" at
+#    https://pypi.org/manage/account/publishing/). Enter exactly:
+#        Owner:            osullivryan
+#        Repository name:  dynars
+#        Workflow name:    release.yml
+#        Environment name: pypi
+#
+# 3. Push a tag: `git tag v0.1.0 && git push origin v0.1.0`. The linux/windows/
+#    sdist jobs build (release mode) and smoke-test; then `publish` mints a
+#    short-lived OIDC token and uploads to PyPI.
+# ---------------------------------------------------------------------------
