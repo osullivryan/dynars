@@ -39,6 +39,26 @@ Python bindings.
   not once per deck (up to ~12× over a 32-deck batch). See
   [Workspace](#workspace-batch-decks-that-share-includes).
 
+## Performance
+
+Speed is the point — the hot paths run at memory-bandwidth speeds. Measured on a
+10-core Apple Silicon machine (386 MB single-file deck, warm cache); full
+methodology, scaling curves, and reproduce steps are in [Benchmarks](#benchmarks).
+
+| Operation | Throughput |
+|-----------|-----------|
+| `*INCLUDE` scan, single large file (macOS, fault-bound) | ~15 GB/s |
+| `*INCLUDE` scan, many warm files (mmap, no copy) | ~45 GB/s |
+| Block index (mmap + split) | ~15 GB/s |
+| Node parse, `#[derive(Keyword)]` (specialized) | ~70 M nodes/s |
+| Node parse, builder / Python (interpreted) | ~57–64 M nodes/s |
+
+Extracting `*NODE` into typed arrays (the columnar path behind
+`deck.table("NODE")` / numpy) puts **100 M nodes under a second**, holding
+~110 M nodes/s until it's memory-bound:
+
+![*NODE marshalling throughput vs node count](assets/perf_marshal.png)
+
 ## Installation
 
 ```bash
@@ -603,33 +623,24 @@ format is detected from `*KEYWORD LONG=Y|S`. Free format is decided per line —
 a line switches to comma-splitting the moment it contains a comma, matching
 LS-DYNA's own rule.
 
-## Performance
+## Benchmarks
 
-Measured on a 10-core Apple Silicon machine, 386 MB single-file deck (5 M
-nodes), warm page cache:
+The [throughput table](#performance) above was measured on a 10-core Apple
+Silicon machine, 386 MB single-file deck (5 M nodes), warm page cache. Some
+detail behind the numbers:
 
-| Operation | Throughput |
-|-----------|-----------|
-| `*INCLUDE` scan, single large file (macOS, fault-bound) | ~15 GB/s |
-| `*INCLUDE` scan, many warm files (mmap, no copy) | ~45 GB/s |
-| Block index (mmap + split) | ~15 GB/s |
-| Node parse, `#[derive(Keyword)]` (specialized) | ~70 M nodes/s |
-| Node parse, builder / Python (interpreted) | ~57–64 M nodes/s |
+- Schema parsing is the single columnar path. `#[derive(Keyword)]` emits
+  monomorphized code (offsets known at compile time, no per-field enum
+  dispatch), so its `parse()` runs ~20% faster than the interpreted
+  builder/Python path — both tens of millions of entities per second.
+- The multi-file scan number roughly doubled after switching from `read()` to
+  `mmap` (eliminating a copy of every file). Single-file parallel scanning is
+  bounded by macOS's serialized page faults here; on Linux it should scale
+  toward memory bandwidth.
+- Cold decks larger than RAM are limited by disk bandwidth (~2 GB/s sustained
+  NVMe), not CPU — the scanner is ~7× faster than the disk can deliver bytes.
 
-Schema parsing is the single columnar path. `#[derive(Keyword)]` emits
-monomorphized code (offsets known at compile time, no per-field enum dispatch),
-so its `parse()` runs ~20% faster than the interpreted builder/Python path —
-both tens of millions of entities per second.
-
-The multi-file number roughly doubled after switching the scanner from `read()`
-to `mmap` (eliminating a copy of every file). Single-file parallel scanning is
-bounded by macOS's serialized page faults here; on Linux it should scale toward
-memory bandwidth.
-
-Cold decks larger than RAM are limited by disk bandwidth (~2 GB/s sustained
-NVMe), not CPU — the scanner is ~7× faster than the disk can deliver bytes.
-
-### Scaling
+### Scaling across include layouts
 
 Every pipeline stage is linear in deck size and parallel across include files.
 The figure below sweeps deck size (number of keywords) for three include layouts
@@ -652,13 +663,10 @@ constraints):
 - **The field-value check is the one sequential stage** — a single keyword's
   occurrences are scanned in order, so it doesn't gain from more files.
 
-**Extracting `*NODE` data into typed arrays** (the columnar path behind
-`deck.table("NODE")` / numpy) is its own curve — it scales with node count, and a
-two-pass parallel fill (count rows → allocate once → parse straight into disjoint
-ranges, no per-chunk merge) puts **100 M nodes under a second** and holds ~110 M
-nodes/s until the columns hit this box's 16 GB RAM ceiling (~140 M).
-
-![*NODE marshalling throughput vs node count](assets/perf_marshal.png)
+The `*NODE` marshalling curve [shown up top](#performance) scales with node count
+via a two-pass parallel fill (count rows → allocate once → parse straight into
+disjoint ranges, no per-chunk merge) — that's what puts 100 M nodes under a
+second and holds ~110 M nodes/s up to this box's 16 GB RAM ceiling (~140 M).
 
 Regenerate (measurement and plotting are split, so figures re-render from the
 committed CSVs without re-running the sweeps):
