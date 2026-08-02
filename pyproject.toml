@@ -4,7 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "dynars"
-version = "0.1.0"
+# Single source of truth for the version is Cargo.toml [package].version.
+# `dynamic = ["version"]` tells maturin to read the wheel version from there,
+# so the PyPI version always equals the crate version (no drift between the two).
+dynamic = ["version"]
 description = "High-performance LS-DYNA keyword file parser (Rust + numpy)"
 readme = "README.md"
 requires-python = ">=3.9"
