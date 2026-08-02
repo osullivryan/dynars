@@ -1,14 +1,15 @@
 [package]
 name = "dynars-arrow"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Binout/d3plot → Apache Arrow RecordBatches — the Parquet/Iceberg seam for dynars"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 # This crate is deliberately OUTSIDE the fast core: it pulls in arrow-rs, which
 # the base parser must never depend on. It converts already-parsed results into
 # Arrow RecordBatches; Parquet/Iceberg sinks live downstream of this.
 
 [dependencies]
-dynars = { path = "../.." }
+dynars = { workspace = true }   # path + version from [workspace.dependencies]
 arrow = "53"

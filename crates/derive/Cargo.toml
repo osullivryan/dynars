@@ -1,7 +1,10 @@
 [package]
 name = "dynars-derive"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+description = "Derive macro for dynars keyword schemas — #[derive(Keyword)] / #[derive(Card)]."
 
 [lib]
 proc-macro = true

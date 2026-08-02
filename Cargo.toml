@@ -1,10 +1,30 @@
 [workspace]
 members = ["crates/derive", "crates/arrow"]
 
+# Shared metadata for every crate in the workspace. [workspace.package].version
+# is the single source of truth — the PyPI wheel (maturin dynamic version) and
+# the release tag both derive from it, and each crate inherits it via
+# `version.workspace = true`. (Edition stays per-crate: arrow is on 2021.)
+[workspace.package]
+version = "0.1.0"
+license = "MIT"
+repository = "https://github.com/osullivryan/dynars"
+
+# Internal crates are pulled by `path` for local builds and by `version` when
+# published — cargo strips `path` from the uploaded manifest and keeps `version`.
+# Centralized here so a version bump touches one file, and so every dependent
+# (e.g. dynars-arrow -> dynars) carries a version and is publishable.
+[workspace.dependencies]
+dynars = { path = ".", version = "0.1.0" }
+dynars-derive = { path = "crates/derive", version = "0.1.0" }
+
 [package]
 name = "dynars"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
+license.workspace = true
+repository.workspace = true
+description = "High-performance LS-DYNA keyword file parser (Rust + numpy)"
 
 # docs.rs renders the Rust API. Build the signal + ffi feature docs (skip the
 # heavy `typed-keywords` and the Python bindings, which have their own docs).
@@ -52,7 +72,7 @@ num-complex = { version = "0.4", optional = true }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-dynars-derive = { path = "crates/derive", version = "0.1.0" }
+dynars-derive.workspace = true
 
 [profile.release]
 opt-level = 3
