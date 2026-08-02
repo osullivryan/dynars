@@ -6,7 +6,7 @@ members = ["crates/derive"]
 # the release tag both derive from it, and each crate inherits it via
 # `version.workspace = true`.
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 license = "MIT"
 repository = "https://github.com/osullivryan/dynars"
 

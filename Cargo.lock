@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "dynars"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow",
  "byteorder",
@@ -546,7 +546,7 @@ dependencies = [
 
 [[package]]
 name = "dynars-derive"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
