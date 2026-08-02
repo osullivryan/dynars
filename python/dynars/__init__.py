@@ -35,6 +35,7 @@ from dynars._dynars import (
     parse_deck,
     parse_include_tree,
     parse_keyword_file,
+    write_keyword,
 )
 from dynars import kw  # keyword-name constants (dynars.kw.MAT_ELASTIC)
 from dynars.binout import build_series
@@ -58,6 +59,7 @@ __all__ = [
     "KeywordFile",
     "parse_include_tree",
     "parse_keyword_file",
+    "write_keyword",
     # deck: parse once, validate + navigate
     "parse_deck",
     "Deck",

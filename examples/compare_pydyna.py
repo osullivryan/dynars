@@ -1,4 +1,4 @@
-"""Head-to-head: dynars vs Ansys pyDYNA (ansys-dyna-core) on *reading* LS-DYNA
+"""Head-to-head: dynars vs pyDYNA (ansys-dyna-core) on *reading* LS-DYNA
 keyword data — parse a deck and pull the data into arrays.
 
 pyDYNA is primarily a deck-*authoring* API (pure Python + pandas); this measures
@@ -23,10 +23,13 @@ import time
 import tempfile
 
 import numpy as np
+import pandas as pd
 
 import dynars
 from ansys.dyna.core import Deck
+from ansys.dyna.core.keywords import keywords as _kw
 
+PydNode = _kw.Node
 PYDYNA_CUTOFF_S = 60.0   # once a pyDYNA task exceeds this, skip it at larger sizes
 
 
@@ -121,9 +124,33 @@ def pyd_nodes_including(root):
     return np.vstack(arrs) if arrs else np.empty((0, 3))
 
 
-def bench_task(name, size, gen, dyn_fn, pyd_fn, pyd_enabled, rows):
-    """Time dynars (best of 3) and pyDYNA (1 run) on one task at one size."""
-    dyn_out, dyn_t = timed(dyn_fn, repeat=3)
+# ---------- authoring: build a *NODE deck from coordinate arrays, write a .k ----------
+def dyn_author(coords, outpath):
+    """dynars authoring: the columnar writer takes numpy arrays straight into
+    Rust (no per-row Python objects) — the inverse of the columnar read path."""
+    n = len(coords)
+    dynars.write_keyword(outpath, "NODE", {
+        "nid": np.arange(1, n + 1, dtype=np.int64),
+        "x": coords[:, 0], "y": coords[:, 1], "z": coords[:, 2],
+    })
+    return coords
+
+
+def pyd_author(coords, outpath):
+    """pyDYNA authoring: its home turf — a Node keyword from a DataFrame, exported."""
+    n = len(coords)
+    node = PydNode()
+    node.nodes = pd.DataFrame({"nid": np.arange(1, n + 1),
+                               "x": coords[:, 0], "y": coords[:, 1], "z": coords[:, 2]})
+    deck = Deck()
+    deck.append(node)
+    deck.export_file(outpath)
+    return coords
+
+
+def bench_task(name, size, gen, dyn_fn, pyd_fn, pyd_enabled, rows, dyn_repeat=3):
+    """Time dynars (best of `dyn_repeat`) and pyDYNA (1 run) on one task at one size."""
+    dyn_out, dyn_t = timed(dyn_fn, repeat=dyn_repeat)
     n_out = len(dyn_out)
     pyd_t = None
     if pyd_enabled:
@@ -142,7 +169,7 @@ def main():
     sizes = [10_000, 100_000, 1_000_000, 5_000_000]
     tmp = tempfile.mkdtemp(prefix="cmp_pydyna_")
     rows = []
-    pyd_ok = {"nodes": True, "shells": True, "include": True}
+    pyd_ok = {"nodes": True, "shells": True, "include": True, "author": True}
 
     print("== Task 1: parse *NODE -> (N,3) array ==")
     for n in sizes:
@@ -165,6 +192,16 @@ def main():
         pyd_ok["include"] = bench_task("include-tree", n, root, lambda: dyn_nodes(root),
                                        lambda: pyd_nodes_including(root),
                                        pyd_ok["include"], rows)
+
+    print("\n== Task 4: author a *NODE deck from arrays -> write .k (pyDYNA's home turf) ==")
+    arng = np.random.default_rng(1)
+    for n in [10_000, 100_000, 1_000_000, 5_000_000]:
+        coords = arng.random((n, 3))
+        outp = os.path.join(tmp, f"authored_{n}")
+        pyd_ok["author"] = bench_task("author", n, None,
+                                      lambda: dyn_author(coords, outp + ".dyn.k"),
+                                      lambda: pyd_author(coords, outp + ".pyd.k"),
+                                      pyd_ok["author"], rows, dyn_repeat=3)
 
     out = os.path.join(os.path.dirname(__file__), "..", "assets", "bench_pydyna.csv")
     out = os.path.abspath(out)

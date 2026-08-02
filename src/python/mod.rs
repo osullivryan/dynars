@@ -20,7 +20,7 @@ pub use include_tree::{PyIncludeNode, parse_include_tree};
 pub use injury::{
     bric, clip, hic, hic15, hic36, nic, nij, resultant, severity_index, tibia_index, ubric, vc,
 };
-pub use keyword::{PyKeywordFile, parse_keyword_file};
+pub use keyword::{PyKeywordFile, parse_keyword_file, write_keyword};
 pub use results::{
     PyBinout, PyBinoutEditor, PyD3plot, PyD3plotEditor, PyD3plotWriter, PyIntforWriter,
     open_d3plot, parse_binout,

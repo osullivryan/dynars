@@ -999,3 +999,15 @@ def vc(y: Incomplete, dt: float, scaling_factor: float, deformation_constant: fl
     """
     Viscous Criterion (VC)max from a chest deflection channel `y` (m).
     """
+
+def write_keyword(path: str, name: str, columns: dict) -> None:
+    """
+    Author a single-keyword deck from columnar arrays and write it to `path` —
+    the inverse of the columnar read path (`Deck.table` / `parse_keyword`).
+    
+    `columns` maps field name to a numpy `int64`/`float64` array (or a `list[str]`),
+    all the same length N; the cards are emitted in dict order, in free (comma)
+    format, straight from Rust with no per-row Python objects. Writes
+    `*KEYWORD` / `*<name>` / N card lines / `*END`. Rows are formatted in
+    parallel with the GIL released.
+    """

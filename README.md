@@ -59,9 +59,9 @@ Extracting `*NODE` into typed arrays (the columnar path behind
 
 ![*NODE marshalling throughput vs node count](assets/perf_marshal.png)
 
-It also reads decks **~100–200× faster than [Ansys pyDYNA](https://github.com/ansys/pydyna)**
-on the overlapping paths (nodes, connectivity, include resolution) — measured,
-reproducible, and caveated under [Benchmarks](#versus-ansys-pydyna).
+It also reads decks **~100–200× faster than [pyDYNA](https://github.com/ansys/pydyna)**
+(and authors them ~25× faster) — measured, reproducible, and caveated under
+[Benchmarks](#versus-pydyna).
 
 ## Installation
 
@@ -547,7 +547,7 @@ Runnable examples: `examples/schema_demo.{rs,py}` (declared schemas),
 ### Built-in keyword library
 
 You don't have to declare the common keywords at all — dynars ships schemas for
-**~3,170 LS-DYNA keywords**, generated from the [Ansys pyDYNA](https://github.com/ansys/pydyna)
+**~3,170 LS-DYNA keywords**, generated from the [pyDYNA](https://github.com/ansys/pydyna)
 field database (`codegen/`), plus hand-written `*NODE`/`*PART` that pyDYNA omits.
 Pass a keyword *name* and it resolves from the library:
 
@@ -644,29 +644,33 @@ detail behind the numbers:
 - Cold decks larger than RAM are limited by disk bandwidth (~2 GB/s sustained
   NVMe), not CPU — the scanner is ~7× faster than the disk can deliver bytes.
 
-### Versus Ansys pyDYNA
+### Versus pyDYNA
 
-[Ansys pyDYNA](https://github.com/ansys/pydyna) (`ansys-dyna-core`) is primarily
-a deck-**authoring** API (pure Python + pandas); its `Deck.import_file` also
-*reads* existing keyword files, which is the path compared here. Same machine,
-same decks, both reading into arrays (pyDYNA 0.12.1):
+[pyDYNA](https://github.com/ansys/pydyna) (`ansys-dyna-core`) is a deck
+**authoring** API (pure Python + pandas) that also *reads* keyword files. Same
+machine, same decks, both going array↔deck (pyDYNA 0.12.1):
+
+![dynars vs pyDYNA — reading and authoring LS-DYNA keyword data](assets/perf_pydyna.png)
 
 | Task — 1 M entities | dynars | pyDYNA | speedup |
 |---|---:|---:|---:|
-| Parse `*NODE` → `(N, 3)` coords | 21 ms | 2.94 s | **~140×** |
-| Parse `*ELEMENT_SHELL` → `(M, 4)` connectivity | 24 ms | 3.56 s | **~150×** |
-| Root + 8 `*INCLUDE` → all node coords | 20 ms | 2.45 s | **~120×** |
+| Read `*NODE` → `(N, 3)` coords | 22 ms | 2.9 s | **~130×** |
+| Read `*ELEMENT_SHELL` → `(M, 4)` connectivity | 24 ms | 3.6 s | **~150×** |
+| Root + 8 `*INCLUDE` → all node coords | 20 ms | 2.6 s | **~130×** |
+| Author `*NODE` deck → write `.k` | 50 ms | 1.3 s | **~26×** |
 
-The gap widens with size — at 5 M entities dynars stays ~0.1 s while pyDYNA takes
-14–22 s (**150–220×**). Two things keep this honest: pyDYNA builds a pandas
-DataFrame per keyword (that's its data model, not a bug), and it does **not**
-follow `*INCLUDE` — dynars resolves the whole include graph in one `parse_deck`,
-so the include row pits dynars' native path against a hand-rolled recursive
-loader over pyDYNA. Reproduce (numbers are machine-specific):
+Reading stays ~150–180× ahead at 5 M entities; authoring ~26×. Kept honest:
+pyDYNA builds a pandas DataFrame per keyword (its data model, not a bug), and it
+doesn't follow `*INCLUDE` — dynars resolves the whole graph in one `parse_deck`,
+so that row pits dynars' native path against a hand-rolled recursive loader over
+pyDYNA. Authoring goes through dynars' columnar writer, `write_keyword` (numpy
+columns straight into Rust — the inverse of `table()`); the naive per-card path
+is ~25× slower, which is why the writer exists. Reproduce (machine-specific):
 
 ```bash
 pip install ansys-dyna-core
-python examples/compare_pydyna.py        # -> assets/bench_pydyna.csv
+python examples/compare_pydyna.py     # -> assets/bench_pydyna.csv
+python scripts/plot_bench.py          # -> assets/perf_pydyna.png
 ```
 
 ### Scaling across include layouts

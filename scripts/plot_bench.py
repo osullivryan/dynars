@@ -170,6 +170,75 @@ def plot_marshal():
     print("wrote", os.path.relpath(out, ROOT))
 
 
+def plot_pydyna():
+    """dynars vs pyDYNA (assets/bench_pydyna.csv from
+    examples/compare_pydyna.py). Four panels — read *NODE, read connectivity,
+    resolve an include tree, author a *NODE deck — log-log, shared axes, with the
+    top speedup annotated. Skipped if the CSV isn't present (needs ansys-dyna-core)."""
+    path = os.path.join(ROOT, "assets", "bench_pydyna.csv")
+    if not os.path.exists(path):
+        return
+    by_task = defaultdict(list)
+    with open(path) as f:
+        for r in csv.DictReader(f):
+            by_task[r["task"]].append(r)
+    for rows in by_task.values():
+        rows.sort(key=lambda r: int(r["size"]))
+
+    tasks = [
+        ("nodes", "Read *NODE → coordinates"),
+        ("connectivity", "Read *ELEMENT_SHELL → connectivity"),
+        ("include-tree", "Resolve root + 8 *INCLUDE → nodes"),
+        ("author", "Author *NODE deck → write .k"),
+    ]
+    xs_all, ys_all = [], []
+    for rows in by_task.values():
+        for r in rows:
+            xs_all.append(int(r["size"]))
+            ys_all.append(max(float(r["dynars_s"]) * 1e3, 1e-3))
+            if r["pydyna_s"]:
+                ys_all.append(float(r["pydyna_s"]) * 1e3)
+    xlim = (min(xs_all) * 0.7, max(xs_all) * 1.5)
+    ylim = (min(ys_all) * 0.55, max(ys_all) * 2.0)
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
+    for ax, (key, title) in zip(axes.flat, tasks):
+        rows = by_task.get(key, [])
+        xs = [int(r["size"]) for r in rows]
+        ax.plot(xs, [max(float(r["dynars_s"]) * 1e3, 1e-3) for r in rows],
+                marker="o", markersize=4.5, linewidth=2.0, color="#1f77b4", label="dynars")
+        px = [int(r["size"]) for r in rows if r["pydyna_s"]]
+        py = [float(r["pydyna_s"]) * 1e3 for r in rows if r["pydyna_s"]]
+        ax.plot(px, py, marker="s", markersize=4.5, linewidth=2.0, color="#d62728", label="pyDYNA")
+        if rows and rows[-1]["speedup"]:
+            ax.text(0.96, 0.06, f"up to {float(rows[-1]['speedup']):.0f}×",
+                    transform=ax.transAxes, ha="right", va="bottom",
+                    fontsize=12, fontweight="bold", color="#333",
+                    bbox=dict(boxstyle="round,pad=0.3", fc="#fff7e6", ec="#e0c080"))
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.xaxis.set_major_locator(FixedLocator([1e4, 1e5, 1e6, 1e7]))
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _pos: human(v)))
+        ax.xaxis.set_minor_locator(NullLocator())
+        ax.yaxis.set_major_locator(FixedLocator([1, 10, 100, 1000, 10000]))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: fmt_ms(v)))
+        ax.yaxis.set_minor_locator(NullLocator())
+        ax.set_xlabel("entities")
+        ax.set_ylabel("time")
+        ax.set_title(title, fontsize=11)
+        ax.grid(True, which="major", ls=":", alpha=0.45)
+        ax.legend(fontsize=9)
+    fig.suptitle("dynars vs pyDYNA — reading & authoring LS-DYNA keyword data (log-log)",
+                 fontsize=13)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    out = os.path.join(ROOT, "assets", "perf_pydyna.png")
+    fig.savefig(out, dpi=145)
+    plt.close(fig)
+    print("wrote", os.path.relpath(out, ROOT))
+
+
 def main():
     by_shape = load()
     xlim, ylim = global_limits(by_shape)
@@ -197,6 +266,7 @@ def main():
     print("wrote", os.path.relpath(out, ROOT))
 
     plot_marshal()
+    plot_pydyna()
 
 
 if __name__ == "__main__":

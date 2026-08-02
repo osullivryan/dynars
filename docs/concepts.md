@@ -101,8 +101,8 @@ use handles when you want the *relationships*.
 
 Columnar reads and typed `field(name)` access both rest on a **schema** — a
 declaration of a keyword's card layout (each field's name, type, and width).
-dynars ships schemas for **~3,170 LS-DYNA keywords**, generated from the Ansys
-pyDYNA field database, so the common keywords "just work" with no declaration.
+dynars ships schemas for **~3,170 LS-DYNA keywords**, generated from the pyDYNA
+field database, so the common keywords "just work" with no declaration.
 
 For a vendor, rare, or newer-than-our-snapshot keyword, you describe the layout
 **once** and it becomes first-class — columns, typed fields, and (in Rust)

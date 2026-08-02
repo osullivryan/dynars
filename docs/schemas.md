@@ -1,7 +1,7 @@
 # Schemas: extending dynars
 
-dynars ships schemas for **~3,170 LS-DYNA keywords**, generated from the Ansys
-pyDYNA field database, so the common keywords parse — as columns and as typed
+dynars ships schemas for **~3,170 LS-DYNA keywords**, generated from the pyDYNA
+field database, so the common keywords parse — as columns and as typed
 `field(...)` access — with no declaration at all. For a vendor, rare, or
 newer-than-our-snapshot keyword, you describe its card layout **once** and it
 becomes first-class: same columnar reads, same typed navigation, and (in Rust)

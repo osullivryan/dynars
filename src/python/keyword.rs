@@ -7,9 +7,12 @@ use pyo3::prelude::*;
 
 // -- Phase 4: keyword-file marshalling ---------------------------------
 
-use numpy::IntoPyArray;
+use std::fmt::Write as _;
+
+use numpy::{IntoPyArray, PyReadonlyArray1};
 use pyo3::Bound;
 use pyo3::types::{PyDict, PyList};
+use rayon::prelude::*;
 
 use crate::file::ParsedFile;
 use crate::parser::Keyword;
@@ -226,6 +229,114 @@ pub(crate) fn table_to_pydict<'py>(
         }
     }
     Ok(d)
+}
+
+/// A column handed to [`write_keyword`], already copied out of numpy so it can
+/// be formatted off the GIL.
+enum WCol {
+    Int(Vec<i64>),
+    Float(Vec<f64>),
+    Str(Vec<String>),
+}
+
+impl WCol {
+    fn len(&self) -> usize {
+        match self {
+            WCol::Int(v) => v.len(),
+            WCol::Float(v) => v.len(),
+            WCol::Str(v) => v.len(),
+        }
+    }
+}
+
+/// Author a single-keyword deck from columnar arrays and write it to `path` —
+/// the inverse of the columnar read path (`Deck.table` / `parse_keyword`).
+///
+/// `columns` maps field name to a numpy `int64`/`float64` array (or a `list[str]`),
+/// all the same length N; the cards are emitted in dict order, in free (comma)
+/// format, straight from Rust with no per-row Python objects. Writes
+/// `*KEYWORD` / `*<name>` / N card lines / `*END`. Rows are formatted in
+/// parallel with the GIL released.
+#[pyfunction]
+#[pyo3(signature = (path, name, columns))]
+pub fn write_keyword(
+    py: Python<'_>,
+    path: String,
+    name: String,
+    columns: &Bound<'_, PyDict>,
+) -> PyResult<()> {
+    let mut cols: Vec<WCol> = Vec::with_capacity(columns.len());
+    for (_key, val) in columns.iter() {
+        let col = if let Ok(a) = val.extract::<PyReadonlyArray1<'_, i64>>() {
+            WCol::Int(a.as_array().to_vec())
+        } else if let Ok(a) = val.extract::<PyReadonlyArray1<'_, f64>>() {
+            WCol::Float(a.as_array().to_vec())
+        } else if let Ok(a) = val.extract::<PyReadonlyArray1<'_, i32>>() {
+            WCol::Int(a.as_array().iter().map(|&x| x as i64).collect())
+        } else {
+            WCol::Str(val.extract::<Vec<String>>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(
+                    "each column must be an int64/float64 numpy array or a list[str]",
+                )
+            })?)
+        };
+        cols.push(col);
+    }
+    if cols.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err("no columns given"));
+    }
+    let n = cols[0].len();
+    if cols.iter().any(|c| c.len() != n) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "all columns must have the same length",
+        ));
+    }
+
+    let bytes = py.detach(|| emit_free_deck(&name, &cols, n));
+    std::fs::write(Path::new(&path), bytes)
+        .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+}
+
+/// Format `*KEYWORD` / `*<name>` / N free-format card lines / `*END`, building
+/// the body in parallel over row chunks.
+fn emit_free_deck(name: &str, cols: &[WCol], n: usize) -> Vec<u8> {
+    const CHUNK: usize = 65_536;
+    let parts: Vec<String> = (0..n.div_ceil(CHUNK))
+        .into_par_iter()
+        .map(|c| {
+            let (lo, hi) = (c * CHUNK, ((c + 1) * CHUNK).min(n));
+            let mut s = String::with_capacity((hi - lo) * 40);
+            for i in lo..hi {
+                for (k, col) in cols.iter().enumerate() {
+                    if k > 0 {
+                        s.push(',');
+                    }
+                    match col {
+                        WCol::Int(v) => {
+                            let _ = write!(s, "{}", v[i]);
+                        }
+                        WCol::Float(v) => {
+                            let _ = write!(s, "{}", v[i]);
+                        }
+                        WCol::Str(v) => s.push_str(&v[i]),
+                    }
+                }
+                s.push('\n');
+            }
+            s
+        })
+        .collect();
+
+    let body_len: usize = parts.iter().map(|p| p.len()).sum();
+    let mut out = String::with_capacity(name.len() + body_len + 16);
+    out.push_str("*KEYWORD\n*");
+    out.push_str(name);
+    out.push('\n');
+    for p in &parts {
+        out.push_str(p);
+    }
+    out.push_str("*END\n");
+    out.into_bytes()
 }
 
 /// Parse an LS-DYNA keyword file into an editable [`PyKeywordFile`].

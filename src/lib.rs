@@ -139,6 +139,9 @@ pub mod _dynars {
     use crate::python::parse_keyword_file;
 
     #[pymodule_export]
+    use crate::python::write_keyword;
+
+    #[pymodule_export]
     use crate::python::PyBinout;
 
     #[pymodule_export]
