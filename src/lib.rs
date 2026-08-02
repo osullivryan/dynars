@@ -112,6 +112,16 @@ pub use schema::{CardLayout, KeywordSchema};
 /// Batch parsing/checking across decks that share `*INCLUDE`s (see [`batch`]).
 pub use batch::Workspace;
 
+/// Surgical single-field editing: [`Field::locate`](model::Field::locate) →
+/// [`Deck::set_field`](deck::Deck::set_field), preserving every other byte.
+pub use model::FieldLoc;
+pub use parser::FieldEdit;
+
+/// File-first navigation: [`Deck::file`](deck::Deck::file) /
+/// [`Deck::files`](deck::Deck::files) hand out a [`FileView`] whose keywords are
+/// scoped to one `*INCLUDE`.
+pub use model::FileView;
+
 /// C ABI (and, through it, Fortran) bindings for the deck parse + validate
 /// path. Opt-in and self-contained: the `unsafe` FFI layer only compiles under
 /// `--features ffi`, so a normal build, the Python extension, and the CLI never
@@ -199,6 +209,12 @@ pub mod _dynars {
 
     #[pymodule_export]
     use crate::python::PyEntity;
+
+    #[pymodule_export]
+    use crate::python::PyKeyword;
+
+    #[pymodule_export]
+    use crate::python::PyFile;
 
     #[pymodule_export]
     use crate::python::parse_deck;

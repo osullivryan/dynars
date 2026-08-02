@@ -1,18 +1,76 @@
 //! PyO3 bindings: the `Deck` handle — parse once, validate + navigate.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use pyo3::Bound;
 use pyo3::PyResult;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict};
 
 use super::validate::{PyReport, PyRule, report_to_py};
 use crate::validate;
 
 // ── Deck: parse once, validate + navigate off one handle ─────────────────
-use crate::keywords::EntityKind;
+use crate::keywords::{EntityKind, canonical_base};
 use crate::model;
+
+/// Convert a typed [`model::Value`] into the matching Python scalar.
+fn value_to_py(py: Python<'_>, v: model::Value) -> Bound<'_, pyo3::PyAny> {
+    match v {
+        model::Value::Int(i) => i.into_pyobject(py).unwrap().into_any(),
+        model::Value::Float(f) => f.into_pyobject(py).unwrap().into_any(),
+        model::Value::Str(s) => s.into_pyobject(py).unwrap().into_any(),
+    }
+}
+
+/// Coerce a Python `str` / `int` / `float` into the text written into a field.
+/// A `str` is written verbatim (full control over the exact column text); a
+/// `float` uses the shorter of plain and scientific notation, so a large/small
+/// magnitude like `2.1e11` stays compact (`2.1e11`) and fits a fixed column
+/// instead of expanding to `210000000000`.
+fn coerce_value(v: &Bound<'_, pyo3::PyAny>) -> PyResult<String> {
+    if let Ok(s) = v.extract::<String>() {
+        Ok(s)
+    } else if let Ok(i) = v.extract::<i64>() {
+        Ok(i.to_string())
+    } else if let Ok(f) = v.extract::<f64>() {
+        let plain = format!("{f}");
+        let sci = format!("{f:e}");
+        Ok(if sci.len() < plain.len() { sci } else { plain })
+    } else {
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "value must be str, int, or float",
+        ))
+    }
+}
+
+fn edit_name(e: crate::parser::FieldEdit) -> String {
+    match e {
+        crate::parser::FieldEdit::InPlace => "in_place".to_string(),
+        crate::parser::FieldEdit::Reflowed => "reflowed".to_string(),
+    }
+}
+
+/// Locate `name` on `(file, block)` and write `value` in place. Returns
+/// `"in_place"` / `"reflowed"`, or `None` if the field isn't found (or the
+/// keyword has no schema). One call — the read/`&mut` borrow split the Rust API
+/// exposes is handled here.
+fn apply_set_field(
+    deck: &Py<PyDeck>,
+    py: Python<'_>,
+    file: usize,
+    block: usize,
+    name: &str,
+    value: &Bound<'_, pyo3::PyAny>,
+) -> PyResult<Option<String>> {
+    let s = coerce_value(value)?;
+    let mut d = deck.borrow_mut(py);
+    let Some(loc) = model::locate_field(&d.deck, file, block, name) else {
+        return Ok(None);
+    };
+    Ok(d.deck.set_field(&loc, &s).map(edit_name))
+}
 
 /// A parsed LS-DYNA deck (root + all includes). Parse once with
 /// [`parse_deck`], then validate (`validate`) and navigate
@@ -155,6 +213,64 @@ impl PyDeck {
         Ok(())
     }
 
+    /// Every occurrence of `keyword` across the whole deck (root + includes), as
+    /// `Keyword` handles — matched on the canonical base, so `SECTION_SHELL` also
+    /// matches `SECTION_SHELL_TITLE`. The occurrence-navigation counterpart to
+    /// the columnar `table`; unlike `part`/`material`/… it isn't limited to
+    /// definition entities.
+    fn keywords(slf: Py<Self>, py: Python<'_>, keyword: String) -> Vec<PyKeyword> {
+        let base = canonical_base(&keyword);
+        let sites: Vec<(usize, usize)> = {
+            let d = slf.borrow(py);
+            d.deck
+                .files
+                .iter()
+                .enumerate()
+                .flat_map(|(fi, f)| {
+                    let base = base.clone();
+                    (0..f.blocks.len())
+                        .filter(move |&bi| canonical_base(f.keyword_name(&f.blocks[bi])) == base)
+                        .map(move |bi| (fi, bi))
+                })
+                .collect()
+        };
+        sites
+            .into_iter()
+            .map(|(file, block)| PyKeyword {
+                deck: slf.clone_ref(py),
+                file,
+                block,
+            })
+            .collect()
+    }
+
+    /// The deck's parsed files as `File` handles — the root first, then each
+    /// `*INCLUDE`d file in include order. File-first navigation: pick a file,
+    /// then read/edit its keywords.
+    fn files(slf: Py<Self>, py: Python<'_>) -> Vec<PyFile> {
+        let n = slf.borrow(py).deck.files.len();
+        (0..n)
+            .map(|file| PyFile {
+                deck: slf.clone_ref(py),
+                file,
+            })
+            .collect()
+    }
+
+    /// The first parsed file whose path ends with `suffix` (e.g. `"sub.k"` or
+    /// `"mesh/part.k"`), as a `File` — the way into a specific include. `None`
+    /// if nothing matches.
+    fn file(slf: Py<Self>, py: Python<'_>, suffix: String) -> Option<PyFile> {
+        let idx = {
+            let d = slf.borrow(py);
+            (0..d.deck.files.len()).find(|&i| d.deck.files[i].path.ends_with(&suffix))
+        };
+        idx.map(|file| PyFile {
+            deck: slf.clone_ref(py),
+            file,
+        })
+    }
+
     fn __repr__(&self) -> String {
         format!("Deck({} files)", self.deck.files.len())
     }
@@ -283,11 +399,21 @@ impl PyEntity {
     fn field<'py>(&self, py: Python<'py>, name: String) -> Option<Bound<'py, pyo3::PyAny>> {
         let d = self.deck.borrow(py);
         let v = model::entity_field(&d.deck, self.file, self.block, &name)?;
-        Some(match v {
-            model::Value::Int(i) => i.into_pyobject(py).unwrap().into_any(),
-            model::Value::Float(f) => f.into_pyobject(py).unwrap().into_any(),
-            model::Value::Str(s) => s.into_pyobject(py).unwrap().into_any(),
-        })
+        Some(value_to_py(py, v))
+    }
+
+    /// Overwrite a named field in place, preserving every other byte of the
+    /// deck. Returns `"in_place"`, or `"reflowed"` if the value overflowed its
+    /// fixed column (that one card re-emitted in free format), or `None` if the
+    /// field isn't found. Realise the change with the owning file's `write` /
+    /// `to_bytes` (`deck.file(...)` / `deck.files()`).
+    fn set_field(
+        slf: PyRef<'_, Self>,
+        py: Python<'_>,
+        name: String,
+        value: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<Option<String>> {
+        apply_set_field(&slf.deck, py, slf.file, slf.block, &name, &value)
     }
     /// Follow the reference in field `name` to the entity it points at.
     fn reference(slf: PyRef<'_, Self>, py: Python<'_>, name: String) -> Option<PyEntity> {
@@ -330,5 +456,147 @@ impl PyEntity {
     }
     fn __repr__(&self, py: Python<'_>) -> String {
         format!("Entity({} {} [{}])", self.kind(), self.id, self.keyword(py))
+    }
+}
+
+/// A keyword occurrence — one `*KEYWORD` block — reached by name
+/// (`Deck.keywords`) or through a file (`File.keywords`). Read fields, and edit
+/// one in place with `set_field`. Keeps its [`PyDeck`] alive.
+#[pyclass(name = "Keyword")]
+pub struct PyKeyword {
+    deck: Py<PyDeck>,
+    file: usize,
+    block: usize,
+}
+
+#[pymethods]
+impl PyKeyword {
+    /// The full `*KEYWORD` name of this occurrence (e.g. `SECTION_SHELL_TITLE`).
+    #[getter]
+    fn name(&self, py: Python<'_>) -> String {
+        let d = self.deck.borrow(py);
+        let f = &d.deck.files[self.file];
+        f.keyword_name(&f.blocks[self.block]).to_string()
+    }
+    /// The include file this occurrence lives in.
+    #[getter]
+    fn file(&self, py: Python<'_>) -> String {
+        let d = self.deck.borrow(py);
+        d.deck.files[self.file].path.display().to_string()
+    }
+    /// 1-based line of this occurrence's `*KEYWORD` line (jump-to location).
+    #[getter]
+    fn line(&self, py: Python<'_>) -> usize {
+        let d = self.deck.borrow(py);
+        let f = &d.deck.files[self.file];
+        crate::schema::block_line(f, &f.blocks[self.block])
+    }
+    /// Read a field by name (case-insensitive) → int / float / str. Honours a
+    /// user schema registered with `register_schema`.
+    fn field<'py>(&self, py: Python<'py>, name: String) -> Option<Bound<'py, pyo3::PyAny>> {
+        let d = self.deck.borrow(py);
+        let v = model::read_field(&d.deck, self.file, self.block, &name)?;
+        Some(value_to_py(py, v))
+    }
+    /// Overwrite a named field in place, preserving every other byte of the
+    /// deck. Returns `"in_place"` / `"reflowed"`, or `None` if the field isn't
+    /// found. Persist via the owning file's `write` / `to_bytes`.
+    fn set_field(
+        &self,
+        py: Python<'_>,
+        name: String,
+        value: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<Option<String>> {
+        apply_set_field(&self.deck, py, self.file, self.block, &name, &value)
+    }
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!("Keyword({} [{}])", self.name(py), self.file(py))
+    }
+}
+
+/// One parsed file in a deck — the root or one `*INCLUDE` instance. Lists its
+/// keywords (file-first navigation) and reads/writes its (possibly edited)
+/// bytes. Keeps its [`PyDeck`] alive.
+#[pyclass(name = "File")]
+pub struct PyFile {
+    deck: Py<PyDeck>,
+    file: usize,
+}
+
+#[pymethods]
+impl PyFile {
+    /// This file's path — the resolved `*INCLUDE` path, or the root deck path.
+    #[getter]
+    fn path(&self, py: Python<'_>) -> String {
+        self.deck.borrow(py).deck.files[self.file].path.display().to_string()
+    }
+    /// This file's index in the deck (`0` is the root).
+    #[getter]
+    fn index(&self) -> usize {
+        self.file
+    }
+    /// The keyword occurrences in this file as `Keyword` handles. With `name`,
+    /// only occurrences of that keyword (canonical-base match); without it,
+    /// every block in file order.
+    #[pyo3(signature = (name=None))]
+    fn keywords(slf: PyRef<'_, Self>, py: Python<'_>, name: Option<String>) -> Vec<PyKeyword> {
+        let file = slf.file;
+        let want = name.as_deref().map(canonical_base);
+        let blocks: Vec<usize> = {
+            let d = slf.deck.borrow(py);
+            let f = &d.deck.files[file];
+            (0..f.blocks.len())
+                .filter(|&bi| match &want {
+                    Some(base) => canonical_base(f.keyword_name(&f.blocks[bi])) == *base,
+                    None => true,
+                })
+                .collect()
+        };
+        blocks
+            .into_iter()
+            .map(|block| PyKeyword {
+                deck: slf.deck.clone_ref(py),
+                file,
+                block,
+            })
+            .collect()
+    }
+    /// Whether this file has a pending edit.
+    #[getter]
+    fn dirty(&self, py: Python<'_>) -> bool {
+        self.deck.borrow(py).deck.files[self.file].is_dirty()
+    }
+    /// The (possibly edited) file contents as bytes.
+    fn to_bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.deck.borrow(py).deck.files[self.file].to_bytes())
+    }
+    /// Write the (possibly edited) file to `path`.
+    fn write(&self, py: Python<'_>, path: String) -> PyResult<()> {
+        self.deck.borrow(py).deck.files[self.file]
+            .write(Path::new(&path))
+            .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+    }
+    /// Low-level, schema-free field write: overwrite `(block, row, col)` passing
+    /// the fields' fixed column `widths` (e.g. `[10]*8`). For keywords dynars
+    /// ships no schema for; otherwise prefer `Keyword.set_field`. Returns
+    /// `"in_place"` / `"reflowed"`, or `None` if the card/field is out of range.
+    #[pyo3(signature = (block, row, col, widths, value))]
+    fn set_field(
+        &self,
+        py: Python<'_>,
+        block: usize,
+        row: usize,
+        col: usize,
+        widths: Vec<usize>,
+        value: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<Option<String>> {
+        let s = coerce_value(&value)?;
+        let mut d = self.deck.borrow_mut(py);
+        Ok(d.deck.files[self.file]
+            .set_field(block, row, col, &widths, &s)
+            .map(edit_name))
+    }
+    fn __repr__(&self, py: Python<'_>) -> String {
+        format!("File('{}'{})", self.path(py), if self.dirty(py) { ", edited" } else { "" })
     }
 }

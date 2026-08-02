@@ -1046,6 +1046,36 @@ pub(crate) fn entity_field(deck: &Deck, file: usize, block: usize, name: &str) -
     None
 }
 
+/// Read a named field via the navigation handle — respects a user schema
+/// registered with [`Deck::register_schema`], unlike [`entity_field`] (built-in
+/// only). (Used by the Python `Keyword` binding.)
+#[cfg_attr(not(feature = "python"), allow(dead_code))]
+pub(crate) fn read_field(deck: &Deck, file: usize, block: usize, name: &str) -> Option<Value> {
+    Keyword {
+        deck,
+        file,
+        block,
+        identity: None,
+    }
+    .field(name)
+    .map(|f| f.value())
+}
+
+/// Locate a named field on a block for a surgical write, via the navigation
+/// handle (so registered user schemas apply). (Used by the Python `set_field`
+/// bindings; the two-step `locate` + `set_field` borrow split is hidden behind a
+/// single call there.)
+#[cfg_attr(not(feature = "python"), allow(dead_code))]
+pub(crate) fn locate_field(deck: &Deck, file: usize, block: usize, name: &str) -> Option<FieldLoc> {
+    Keyword {
+        deck,
+        file,
+        block,
+        identity: None,
+    }
+    .locate(name)
+}
+
 /// The `(Ref, id)` of a named reference field on a block. (Used by the Python
 /// `Entity` binding; the Rust `Field::reference` path doesn't go through it.)
 #[cfg_attr(not(feature = "python"), allow(dead_code))]
@@ -1162,6 +1192,39 @@ impl Deck {
         self.entities(EntityKind::Curve)
     }
 
+    /// The deck's parsed files as [`FileView`]s — the **root first**, then each
+    /// `*INCLUDE`d file in include-walk order. The file-first entry point: pick or
+    /// iterate a file, then read its keywords, versus [`keywords`](Deck::keywords)
+    /// which spans the whole deck. A file `*INCLUDE`d at two different
+    /// `*INCLUDE_TRANSFORM` offsets appears once per instance.
+    ///
+    /// (The [`includes`](Deck::includes) field is the complementary view — the
+    /// raw/resolved `*INCLUDE` *directives* and their offsets, not navigable
+    /// files.)
+    pub fn files(&self) -> impl Iterator<Item = FileView<'_>> {
+        (0..self.files.len()).map(move |file| FileView { deck: self, file })
+    }
+
+    /// The first parsed file whose path ends with `suffix` (matched by whole path
+    /// components, e.g. `"modcontacts.k"` or `"sub/mesh.k"`), as a [`FileView`] —
+    /// the file-first way into a specific include. `None` if nothing matches.
+    ///
+    /// ```no_run
+    /// # fn demo(deck: &mut dynars::deck::Deck) -> Option<()> {
+    /// let loc = deck.file("modcontacts.k")?
+    ///     .keywords_named("CONTACT_TIED_SHELL_EDGE_TO_SURFACE_BEAM_OFFSET")
+    ///     .next()?
+    ///     .locate("fs")?;
+    /// deck.set_field(&loc, "0.15");
+    /// # Some(()) }
+    /// ```
+    pub fn file(&self, suffix: impl AsRef<std::path::Path>) -> Option<FileView<'_>> {
+        let suffix = suffix.as_ref();
+        (0..self.files.len())
+            .find(|&i| self.files[i].path.ends_with(suffix))
+            .map(|file| FileView { deck: self, file })
+    }
+
     /// Bulk **columnar** read of every occurrence of `keyword` across the whole
     /// deck (root + includes), using dynars' built-in schema. This is the fast
     /// path underneath [`keywords`](Deck::keywords) navigation — same keyword
@@ -1188,6 +1251,31 @@ impl Deck {
     /// newer than our snapshot). Spans the whole deck, like [`table`](Deck::table).
     pub fn table_with(&self, schema: &Schema) -> Table {
         parse_schema_files(&self.files, schema)
+    }
+
+    /// Apply a surgical single-field edit located by [`Field::locate`],
+    /// preserving every other byte in the deck. Returns how the write landed
+    /// ([`FieldEdit`](crate::parser::FieldEdit)) — in place, or reflowed to free
+    /// format because the value overflowed its fixed column — or `None` if the
+    /// address no longer resolves.
+    ///
+    /// The edit is a write-time overlay: [`ParsedFile::write`] /
+    /// [`ParsedFile::to_bytes`] emit it, but the navigation API keeps reading the
+    /// original bytes. The idiom is locate → set → write:
+    ///
+    /// ```no_run
+    /// # fn demo(deck: &mut dynars::deck::Deck) -> Option<()> {
+    /// // Retard the analysis termination time from whatever it is to 0.02.
+    /// let loc = deck.keywords("CONTROL_TERMINATION").next()?
+    ///     .field("endtim")?.locate()?;
+    /// deck.set_field(&loc, "0.02");
+    /// deck.files[0].write(std::path::Path::new("edited.k")).ok()?;
+    /// # Some(()) }
+    /// ```
+    pub fn set_field(&mut self, loc: &FieldLoc, value: &str) -> Option<crate::parser::FieldEdit> {
+        self.files
+            .get_mut(loc.file)?
+            .set_field(loc.block, loc.row, loc.col, &loc.widths, value)
     }
 
     /// The user schema registered for a canonical `base`, if any. Consulted
@@ -1296,6 +1384,75 @@ impl<'d> CardRef<'d> {
             ),
         }
     }
+    /// This card's per-slot fixed-format widths, scaled for `fmt` and with user
+    /// array fields expanded to one entry per element — so the slot index equals
+    /// the comma-token index ([`free_index`](CardRef::free_index)). Drives the
+    /// width-aware in-place write in [`Deck::set_field`].
+    fn scaled_widths(&self, fmt: CardFormat) -> Vec<usize> {
+        let scale = |w: usize| if fmt == CardFormat::Long { w * 2 } else { w };
+        match self {
+            CardRef::Static(c) => c.iter().map(|f| scale(f.w)).collect(),
+            CardRef::User(c) => c
+                .iter()
+                .flat_map(|f| std::iter::repeat_n(scale(f.width), f.count.max(1)))
+                .collect(),
+        }
+    }
+}
+
+/// A view of one parsed file — the root deck or one `*INCLUDE` instance — that
+/// hands out [`Keyword`] occurrences scoped to just that file. The file-first
+/// counterpart to [`Deck::keywords`] (which spans the whole deck): reach it with
+/// [`Deck::file`] or [`Deck::files`], then read its keywords.
+#[derive(Clone, Copy)]
+pub struct FileView<'d> {
+    deck: &'d Deck,
+    file: usize,
+}
+
+impl<'d> FileView<'d> {
+    /// This file's path — the resolved `*INCLUDE` path, or the root deck path.
+    pub fn path(&self) -> &'d std::path::Path {
+        &self.deck.files[self.file].path
+    }
+
+    /// This file's index in [`Deck::files`](crate::deck::Deck#structfield.files)
+    /// (`0` is the root).
+    pub fn index(&self) -> usize {
+        self.file
+    }
+
+    /// Every keyword occurrence in this file, in file order — including control
+    /// keywords (`*KEYWORD`, `*CONTROL_*`, …). Filter with [`Keyword::name`] /
+    /// [`Keyword::base`], or use [`keywords_named`](FileView::keywords_named).
+    pub fn keywords(&self) -> impl Iterator<Item = Keyword<'d>> + 'd {
+        let (deck, file) = (self.deck, self.file);
+        (0..deck.files[file].blocks.len()).map(move |block| Keyword {
+            deck,
+            file,
+            block,
+            identity: None,
+        })
+    }
+
+    /// Occurrences of `keyword` in this file only, matched on the canonical base
+    /// (so `SECTION_SHELL` also matches `SECTION_SHELL_TITLE`) — exactly like
+    /// [`Deck::keywords`], but scoped to this one include.
+    pub fn keywords_named(&self, keyword: &str) -> impl Iterator<Item = Keyword<'d>> + 'd {
+        let base = canonical_base(keyword);
+        let (deck, file) = (self.deck, self.file);
+        (0..deck.files[file].blocks.len())
+            .filter(move |&block| {
+                let f = &deck.files[file];
+                canonical_base(f.keyword_name(&f.blocks[block])) == base
+            })
+            .map(move |block| Keyword {
+                deck,
+                file,
+                block,
+                identity: None,
+            })
+    }
 }
 
 /// One keyword occurrence in a deck — a single `*KEYWORD` block. The one handle
@@ -1397,6 +1554,23 @@ impl<'d> Keyword<'d> {
             }
         }
         None
+    }
+
+    /// Snapshot the named field's address for a surgical write — sugar for
+    /// [`field`](Keyword::field) + [`Field::locate`]. Reach the keyword however
+    /// you like (by name, id, kind, or a followed reference), then hand the
+    /// [`FieldLoc`] to [`Deck::set_field`] once the read borrow has ended:
+    ///
+    /// ```no_run
+    /// # fn demo(deck: &mut dynars::deck::Deck) {
+    /// let loc = deck.part(5).and_then(|p| p.locate("t1"));  // *PART shell thickness
+    /// if let Some(loc) = loc {
+    ///     deck.set_field(&loc, "2.0");
+    /// }
+    /// # }
+    /// ```
+    pub fn locate(&self, field: &str) -> Option<FieldLoc> {
+        self.field(field)?.locate()
     }
 
     /// This occurrence's own id, when it defines an entity (`None` for a
@@ -1648,6 +1822,48 @@ impl<'d> Field<'d> {
             Ref::AnyOf(ks) => ks.iter().find_map(|k| self.deck.get(*k, logical(*k))),
         }
     }
+
+    /// Snapshot this field's address for a later surgical write via
+    /// [`Deck::set_field`]. Locating borrows the deck immutably (you navigate
+    /// with the full read API); the returned [`FieldLoc`] owns its coordinates,
+    /// so it outlives that borrow and can be handed to `&mut Deck`.
+    ///
+    /// `None` without a schema — a width-aware in-place edit needs the card's
+    /// column widths. For a keyword dynars ships no layout for, either register
+    /// one with [`Deck::register_schema`](crate::deck::Deck::register_schema) or
+    /// drop to [`ParsedFile::set_field`](crate::file::ParsedFile::set_field)
+    /// with explicit widths.
+    pub fn locate(&self) -> Option<FieldLoc> {
+        let card = self.card?;
+        Some(FieldLoc {
+            file: self.file,
+            block: self.block,
+            row: self.row,
+            // Expanded slot index == comma-token index; `widths` is per-slot, so
+            // both the fixed offset and the free token land on the same field.
+            col: card.free_index(self.col),
+            widths: card.scaled_widths(self.block_format()),
+        })
+    }
+}
+
+/// A resolved, borrow-free address of one field: what [`Field::locate`]
+/// produces and [`Deck::set_field`](crate::deck::Deck::set_field) consumes.
+///
+/// Reading a deck borrows it immutably; editing needs `&mut Deck`. A `FieldLoc`
+/// carries a field's coordinates (and its card's column widths) across that
+/// split, so you navigate with the rich read API, snapshot the field, then
+/// write — no borrow conflict, and the write reuses the schema widths captured
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldLoc {
+    file: usize,
+    block: usize,
+    row: usize,
+    /// Field index, expanded so it is both the fixed column and the comma token.
+    col: usize,
+    /// Per-slot fixed widths of the card, scaled for the block's format.
+    widths: Vec<usize>,
 }
 
 #[cfg(test)]
@@ -1869,5 +2085,91 @@ mod tests {
                 .iter()
                 .any(|f| f.message.contains(&(b + 1).to_string()))
         );
+    }
+
+    // ── schema-aware surgical editing: locate + set_field ─────────────────
+
+    /// Locate a named field via the built-in schema, edit it in place, and
+    /// confirm the write touches only that field's bytes.
+    #[test]
+    fn set_field_by_name_is_byte_minimal() {
+        // *MAT_ELASTIC card: mid ro e pr ... in 10-wide columns.
+        let src = format!(
+            "*MAT_ELASTIC\n{}\n",
+            ["1", "7.85", "2.1e11", "0.3"]
+                .iter()
+                .map(|v| format!("{v:>10}"))
+                .collect::<String>()
+        );
+        let mut d = deck(src.as_bytes());
+
+        // Read the schema-typed value, then snapshot the field's address.
+        let mat = d.keywords("MAT_ELASTIC").next().unwrap();
+        assert_eq!(mat.field("e").unwrap().as_f64(), Some(2.1e11));
+        let loc = mat.field("e").unwrap().locate().unwrap();
+
+        // Apply the edit; the write reused the schema's 10-wide column.
+        assert_eq!(d.set_field(&loc, "2.0e11"), Some(crate::parser::FieldEdit::InPlace));
+
+        let out = d.files[0].to_bytes();
+        let ndiff = src.bytes().zip(out).filter(|(a, b)| a != b).count();
+        assert_eq!(ndiff, 1, "only the one digit of E changed");
+    }
+
+    /// A schema-less keyword can't be located (no column widths), so `locate`
+    /// returns `None` — the low-level `ParsedFile::set_field` is the escape hatch.
+    #[test]
+    fn locate_needs_a_schema() {
+        let d = deck(b"*NOT_A_REAL_KEYWORD_XYZ\n1,2,3\n");
+        let kw = d.keywords("NOT_A_REAL_KEYWORD_XYZ").next().unwrap();
+        assert!(kw.card(0).unwrap().at(0).unwrap().locate().is_none());
+    }
+
+    /// The edit is a write-time overlay: navigation keeps reading the original
+    /// bytes until you write/round-trip the file.
+    #[test]
+    fn set_field_is_a_write_overlay() {
+        let src = format!(
+            "*MAT_ELASTIC\n{}\n",
+            ["1", "7.85", "2.1e11", "0.3"]
+                .iter()
+                .map(|v| format!("{v:>10}"))
+                .collect::<String>()
+        );
+        let mut d = deck(src.as_bytes());
+        let loc = d.keywords("MAT_ELASTIC").next().unwrap().field("e").unwrap().locate().unwrap();
+        d.set_field(&loc, "9.9e9");
+
+        // Navigation still sees the pre-edit value...
+        assert_eq!(
+            d.keywords("MAT_ELASTIC").next().unwrap().field("e").unwrap().as_f64(),
+            Some(2.1e11)
+        );
+        // ...but the emitted bytes carry the edit.
+        assert!(d.files[0].to_bytes().windows(5).any(|w| w == b"9.9e9"));
+    }
+
+    /// File-first navigation: `Deck::file`/`files` scope keywords to one include,
+    /// so an edit targets the intended file even when the keyword also appears in
+    /// another. (deck_multi names files f0.k, f1.k.)
+    #[test]
+    fn file_view_scopes_keywords_to_one_include() {
+        let a = format!("*MAT_ELASTIC\n{}\n", ["1", "1.0", "1e9", "0.3"].map(|v| format!("{v:>10}")).concat());
+        let b = format!("*MAT_ELASTIC\n{}\n", ["2", "2.0", "2e9", "0.3"].map(|v| format!("{v:>10}")).concat());
+        let mut d = deck_multi(&[a.as_bytes(), b.as_bytes()]);
+
+        // Two files, root first; both hold a *MAT_ELASTIC.
+        let files: Vec<_> = d.files().map(|f| f.path().to_path_buf()).collect();
+        assert_eq!(files.len(), 2);
+        assert_eq!(d.keywords("MAT_ELASTIC").count(), 2);
+
+        // Scope to f1.k and edit *its* E; f0.k must be byte-untouched.
+        let loc = d.file("f1.k").and_then(|f| f.keywords_named("MAT_ELASTIC").next()).and_then(|k| k.locate("e")).unwrap();
+        assert_eq!(d.set_field(&loc, "9e9"), Some(crate::parser::FieldEdit::InPlace));
+
+        assert_eq!(d.files[0].to_bytes(), a.as_bytes(), "other include untouched");
+        assert!(d.files[1].to_bytes().windows(3).any(|w| w == b"9e9"));
+        // A non-matching suffix selects nothing.
+        assert!(d.file("nope.k").is_none());
     }
 }

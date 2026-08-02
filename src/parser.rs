@@ -872,6 +872,203 @@ impl ParsedFile {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Surgical single-field editing.
+//
+// Where `set_keyword` re-emits a whole block, `set_field` patches one field and
+// leaves every other byte of the file untouched. Blocks already tile the source
+// as byte spans and edits ride the same per-block overlay, so a field write is a
+// splice inside one block's bytes: locate the target data card, replace just
+// that field's bytes, keep the rest verbatim. On a fixed card the value is
+// right-justified back into its column (columns don't move, so a `$#` header
+// ruler stays aligned); a value too wide for its column re-emits that one line
+// in free format. Comment and blank lines are skipped when counting cards and
+// are never rewritten.
+// ---------------------------------------------------------------------------
+
+/// How a surgical field write landed, returned by [`ParsedFile::set_field`] and
+/// [`Deck::set_field`](crate::deck::Deck::set_field).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldEdit {
+    /// The value fit its field, so only that field's bytes changed — every other
+    /// byte on the line (and in the file) is untouched.
+    InPlace,
+    /// The value was wider than its fixed-width column, so that one data card was
+    /// re-emitted in free (comma) format. No other line moved.
+    Reflowed,
+}
+
+/// Byte range (end-of-line excluded) of the `row`-th data card within `buf`,
+/// a single block's bytes. Skips the leading trivia up to the `*KEYWORD` line,
+/// then skips `$`-comment and blank lines, mirroring how [`CardIter`] and
+/// `data_lines` count cards — so the same `row` addresses the same card whether
+/// or not comments sit between cards. `None` if the block has fewer data cards.
+fn data_line_range(buf: &[u8], row: usize) -> Option<(usize, usize)> {
+    let mut pos = 0;
+    let mut past_keyword = false;
+    let mut count = 0;
+    while pos < buf.len() {
+        let nl = find_line_end(buf, pos);
+        let end = if nl > pos && buf[nl - 1] == b'\r' { nl - 1 } else { nl };
+        let line = &buf[pos..end];
+        let next = if nl < buf.len() { nl + 1 } else { buf.len() };
+        if !past_keyword {
+            // The keyword line is the first `*` line (trivia is $-comments/blanks).
+            if line.first() == Some(&b'*') {
+                past_keyword = true;
+            }
+            pos = next;
+            continue;
+        }
+        if !crate::schema::__is_skippable(line) {
+            if count == row {
+                return Some((pos, end));
+            }
+            count += 1;
+        }
+        pos = next;
+    }
+    None
+}
+
+/// `(start, end, count)`: the byte range of the `idx`-th comma token within
+/// `line` and the total token count. `start == end == line.len()` when `idx` is
+/// past the last token.
+fn free_segment(line: &[u8], idx: usize) -> (usize, usize, usize) {
+    let mut seg = 0usize;
+    let mut start = 0usize;
+    let mut found = None;
+    let mut i = 0usize;
+    while i <= line.len() {
+        if i == line.len() || line[i] == b',' {
+            if seg == idx {
+                found = Some((start, i));
+            }
+            seg += 1;
+            start = i + 1;
+        }
+        i += 1;
+    }
+    match found {
+        Some((s, e)) => (s, e, seg),
+        None => (line.len(), line.len(), seg),
+    }
+}
+
+/// Split a fixed-format `line` into trimmed tokens by `widths` (already scaled
+/// for `LONG`). Used only for the overflow reflow, so trailing empty columns are
+/// dropped by the caller.
+fn fixed_tokens(line: &[u8], widths: &[usize]) -> Vec<String> {
+    let mut out = Vec::with_capacity(widths.len());
+    let mut off = 0usize;
+    for &w in widths {
+        let tok = if off >= line.len() {
+            ""
+        } else {
+            std::str::from_utf8(trim(&line[off..(off + w).min(line.len())])).unwrap_or("")
+        };
+        out.push(tok.to_string());
+        off += w;
+    }
+    out
+}
+
+impl ParsedFile {
+    /// Surgically overwrite one field of a data card, preserving every other
+    /// byte in the file.
+    ///
+    /// `block_index` selects the `*KEYWORD` block; `row` is the 0-based data
+    /// card within it (comment and blank lines are not counted); `col` is the
+    /// 0-based field. `widths` are the fields' fixed-format column widths,
+    /// already scaled for a `LONG` deck (pass the real per-keyword widths — e.g.
+    /// `&[10; 8]` for a standard 8×10 card — so the value lands in the right
+    /// columns); on a free (comma) card only `col` is used.
+    ///
+    /// The write is byte-minimal. On a fixed card the value is right-justified
+    /// into its column and only that column's bytes change ([`FieldEdit::InPlace`]);
+    /// on a free card only the `col`-th comma token changes. If the value is
+    /// wider than its fixed column the single card is re-emitted in free format
+    /// ([`FieldEdit::Reflowed`]) so no neighbouring column is disturbed. `None`
+    /// if the card or (on a fixed card) the field does not exist.
+    ///
+    /// Comments are never touched: `$` lines and blank lines are skipped when
+    /// counting cards and copied through verbatim, so a `$#` header ruler stays
+    /// put — and, because an in-place write keeps the columns, stays aligned.
+    ///
+    /// This is the schema-free primitive; [`Field::locate`](crate::model::Field::locate)
+    /// plus [`Deck::set_field`](crate::deck::Deck::set_field) supply `widths`
+    /// from the keyword's schema for you.
+    pub fn set_field(
+        &mut self,
+        block_index: usize,
+        row: usize,
+        col: usize,
+        widths: &[usize],
+        value: &str,
+    ) -> Option<FieldEdit> {
+        let block = self.blocks.get(block_index)?;
+        let (span, fmt) = (block.span.clone(), block.format);
+        let mut buf = match self.edits.get(&block_index) {
+            Some(e) => e.clone(),
+            None => self.src()[span].to_vec(),
+        };
+        let (ls, le) = data_line_range(&buf, row)?;
+        let val = value.as_bytes();
+
+        // Free format (declared, or the line contains a comma): replace the
+        // col-th comma token in place; extend with commas if the card is short.
+        if crate::schema::__is_free(&buf[ls..le], fmt) {
+            let (seg_start, seg_end, segs) = free_segment(&buf[ls..le], col);
+            if col < segs {
+                buf.splice(ls + seg_start..ls + seg_end, val.iter().copied());
+            } else {
+                let mut add = vec![b','; col - segs + 1];
+                add.extend_from_slice(val);
+                buf.splice(le..le, add);
+            }
+            self.edits.insert(block_index, buf);
+            return Some(FieldEdit::InPlace);
+        }
+
+        // Fixed / long: right-justify into the column when the value fits.
+        if col >= widths.len() {
+            return None;
+        }
+        let off: usize = widths[..col].iter().sum();
+        let w = widths[col];
+        if val.len() <= w {
+            let line = &buf[ls..le];
+            let mut new_line = Vec::with_capacity(line.len().max(off + w));
+            if line.len() >= off {
+                new_line.extend_from_slice(&line[..off]);
+            } else {
+                new_line.extend_from_slice(line);
+            }
+            new_line.resize(off + (w - val.len()), b' '); // pad to the slot, left-justified space
+            new_line.extend_from_slice(val);
+            if line.len() > off + w {
+                new_line.extend_from_slice(&line[off + w..]); // fields after the slot, verbatim
+            }
+            buf.splice(ls..le, new_line);
+            self.edits.insert(block_index, buf);
+            return Some(FieldEdit::InPlace);
+        }
+
+        // Overflow: re-emit just this card in free (comma) format.
+        let mut tokens = fixed_tokens(&buf[ls..le], widths);
+        if col >= tokens.len() {
+            tokens.resize(col + 1, String::new());
+        }
+        tokens[col] = value.to_string();
+        while tokens.len() > col + 1 && tokens.last().is_some_and(|s| s.is_empty()) {
+            tokens.pop();
+        }
+        buf.splice(ls..le, tokens.join(",").into_bytes());
+        self.edits.insert(block_index, buf);
+        Some(FieldEdit::Reflowed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,5 +1328,96 @@ mod tests {
         assert_eq!(cards[0], vec!["1", "0.0", "0.0", "0.0"]);
         assert_eq!(cards[1][0], "2");
         assert_eq!(cards[1][3], "3.0");
+    }
+
+    // ── surgical single-field editing ─────────────────────────────────────
+
+    /// Join values into 10-wide right-justified LS-DYNA columns.
+    fn cols(vals: &[&str]) -> String {
+        vals.iter().map(|v| format!("{v:>10}")).collect()
+    }
+
+    /// A fixed-format field write is byte-minimal: only the target column's
+    /// bytes change; the `$#` ruler, the sibling columns, and every other line
+    /// are untouched.
+    #[test]
+    fn set_field_fixed_is_byte_minimal() {
+        let src = format!(
+            "*MAT_ELASTIC\n$#     mid        ro         e        pr\n{}\n*END\n",
+            cols(&["1", "7.85", "2.1e11", "0.3"])
+        );
+        let mut p = parsed(src.as_bytes());
+        // Card 0, column 2 (E): 2.1e11 -> 2.0e11, fits the 10-wide slot.
+        assert_eq!(
+            p.set_field(0, 0, 2, &[10; 4], "2.0e11"),
+            Some(FieldEdit::InPlace)
+        );
+        let out = p.to_bytes();
+        let want = format!(
+            "*MAT_ELASTIC\n$#     mid        ro         e        pr\n{}\n*END\n",
+            cols(&["1", "7.85", "2.0e11", "0.3"])
+        );
+        assert_eq!(out, want.as_bytes());
+        // "2.1e11" vs "2.0e11": exactly one byte differs from the source.
+        let ndiff = src.bytes().zip(out).filter(|(a, b)| a != b).count();
+        assert_eq!(ndiff, 1);
+    }
+
+    /// Setting a previously-blank trailing column extends only that line.
+    #[test]
+    fn set_field_fixed_extends_short_card() {
+        let src = format!("*SOMETHING\n{}\n*END\n", cols(&["1"]));
+        let mut p = parsed(src.as_bytes());
+        assert_eq!(p.set_field(0, 0, 1, &[10; 3], "42"), Some(FieldEdit::InPlace));
+        let want = format!("*SOMETHING\n{}\n*END\n", cols(&["1", "42"]));
+        assert_eq!(p.to_bytes(), want.as_bytes());
+    }
+
+    /// A free (comma) card edits one token in place, keeping the others' spacing.
+    #[test]
+    fn set_field_free_replaces_one_token() {
+        let src = b"*DAMPING_PART_STIFFNESS\n5200001,.1\n*END\n";
+        let mut p = parsed(src);
+        assert_eq!(p.set_field(0, 0, 1, &[], "0.25"), Some(FieldEdit::InPlace));
+        assert_eq!(p.to_bytes(), b"*DAMPING_PART_STIFFNESS\n5200001,0.25\n*END\n");
+    }
+
+    /// A value too wide for its fixed column reflows just that card to free
+    /// format; the surrounding lines stay verbatim.
+    #[test]
+    fn set_field_overflow_reflows_one_line() {
+        let src = format!(
+            "*PARAM\n{}\n{}\n*END\n",
+            cols(&["1", "2.00", "3.00"]),
+            cols(&["9"])
+        );
+        let mut p = parsed(src.as_bytes());
+        // 12 chars into a 10-wide column -> reflow this card only.
+        assert_eq!(
+            p.set_field(0, 0, 1, &[10; 3], "123456789012"),
+            Some(FieldEdit::Reflowed)
+        );
+        let want = format!("*PARAM\n1,123456789012,3.00\n{}\n*END\n", cols(&["9"]));
+        assert_eq!(p.to_bytes(), want.as_bytes());
+    }
+
+    /// Row counting skips `$`-comment and blank lines, and CRLF endings survive.
+    #[test]
+    fn set_field_skips_comments_and_keeps_crlf() {
+        let src = format!("*MAT\r\n$ note\r\n\r\n{}\r\n*END\r\n", cols(&["1", "1.00"]));
+        let mut p = parsed(src.as_bytes());
+        assert_eq!(p.set_field(0, 0, 1, &[10; 2], "9.0"), Some(FieldEdit::InPlace));
+        let want = format!("*MAT\r\n$ note\r\n\r\n{}\r\n*END\r\n", cols(&["1", "9.0"]));
+        assert_eq!(p.to_bytes(), want.as_bytes());
+    }
+
+    /// Out-of-range card or column is a no-op reported as `None`.
+    #[test]
+    fn set_field_out_of_range() {
+        let src = format!("*MAT\n{}\n*END\n", cols(&["1"]));
+        let mut p = parsed(src.as_bytes());
+        assert_eq!(p.set_field(0, 5, 0, &[10], "1"), None); // no 6th card
+        assert_eq!(p.set_field(0, 0, 3, &[10], "1"), None); // only 1 column
+        assert_eq!(p.to_bytes(), src.as_bytes()); // nothing written
     }
 }

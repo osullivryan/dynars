@@ -336,3 +336,46 @@ handle is the star public type and wants that name. Proposed: the handle is
 `dynars::derive::{Card, Keyword}`. If you'd rather leave the derive macro at the
 root, the handle stays `dynars::model::Keyword` (not re-exported at root). Either
 works; everything else in this plan is independent of the choice.
+
+## Surgical field editing (implemented)
+
+Update one field and write a deck back that is byte-identical everywhere else —
+no whole-deck rewrite, no disturbing neighbouring fields. Builds on the Phase 1
+block overlay: blocks tile the source as byte spans and edits ride a per-block
+`edits` map, so a field write is a splice inside one block's bytes.
+
+- **Low-level (schema-free):** `ParsedFile::set_field(block, row, col, widths, value)`
+  in `parser.rs`. `row` counts data cards only; fixed values are right-justified
+  back into their column (columns do not move); a value too wide for its column
+  reflows *that one card* to free/comma format. Returns `FieldEdit::{InPlace,Reflowed}`.
+- **Schema-aware:** `Field::locate() -> Option<FieldLoc>` snapshots the field's
+  address plus its card's scaled column widths; `Deck::set_field(&loc, value)`
+  applies it. Two steps because locating borrows the deck immutably and applying
+  needs `&mut` — `FieldLoc` is borrow-free and carries the widths across the split.
+  `locate()` is `None` without a schema (register one or use the low-level path).
+  Recommended entry: `Keyword::locate(field)` (sugar for `field(name)?.locate()`),
+  so the whole read API drives navigation, then `.locate(f)`. No `Deck`-level
+  name-lookup helper was added — it would privilege one navigation mode.
+
+**Scoping to a specific include (file-first).** `Deck::file(suffix) ->
+Option<FileView>` selects one parsed include by path suffix; `Deck::files()`
+iterates them all (root first). A `FileView` yields `Keyword`s scoped to that one
+file — `keywords()` (all) / `keywords_named(name)` — the file-first counterpart
+to `Deck::keywords` (whole deck). So:
+`deck.file("sub.k").and_then(|f| f.keywords_named(name).next()).and_then(|k| k.locate(fld))`.
+(The `Deck::includes` field is the complementary directive list — raw/resolved
+paths + offsets, not navigable files.) Equivalent keyword-first form: filter the
+deck-wide iterator on `Keyword::file()`. Schema-free path: reach the include's
+`ParsedFile` via `deck.files.iter_mut().find(...)` and call `ParsedFile::set_field`.
+
+**Comments and formatting are preserved for free.** `$` lines and blank lines are
+skipped when counting cards and are never rewritten, so interspersed comments and
+a `$#` header ruler stay put — and, because an in-place fixed write keeps the
+columns, the ruler stays *aligned*. Only the overflow-reflow case changes a whole
+line (that one card, to comma format); every other byte round-trips verbatim.
+
+**Write-time overlay.** Edits surface only through `ParsedFile::to_bytes`/`write`;
+the navigation API keeps reading the original bytes. Idiom: locate -> set -> write.
+
+See `examples/surgical_edit.rs` (runs on the AWG `orion.k`: three field edits,
+three changed lines across a 67 MB deck, re-parsed to confirm the new values).

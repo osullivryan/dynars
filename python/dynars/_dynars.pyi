@@ -357,6 +357,26 @@ class Deck:
         """
         `(kind, count)` of defined ids, most-numerous first.
         """
+    def file(self, /, suffix: str) -> File |None:
+        """
+        The first parsed file whose path ends with `suffix` (e.g. `"sub.k"` or
+        `"mesh/part.k"`), as a `File` — the way into a specific include. `None`
+        if nothing matches.
+        """
+    def files(self, /) -> list[File]:
+        """
+        The deck's parsed files as `File` handles — the root first, then each
+        `*INCLUDE`d file in include order. File-first navigation: pick a file,
+        then read/edit its keywords.
+        """
+    def keywords(self, /, keyword: str) -> list[Keyword]:
+        """
+        Every occurrence of `keyword` across the whole deck (root + includes), as
+        `Keyword` handles — matched on the canonical base, so `SECTION_SHELL` also
+        matches `SECTION_SHELL_TITLE`. The occurrence-navigation counterpart to
+        the columnar `table`; unlike `part`/`material`/… it isn't limited to
+        definition entities.
+        """
     def material(self, /, id: int) -> Entity |None:
         """
         The *MAT with this id, or `None` if none is defined. Ids are global
@@ -479,6 +499,59 @@ class Entity:
         """
         Follow this entity's first field that references a *SECTION to that
         section, or `None` if there is no such field or it doesn't resolve.
+        """
+    def set_field(self, /, name: str, value: str | int | float) -> str |None:
+        """
+        Overwrite a named field in place, preserving every other byte of the
+        deck. Returns `"in_place"`, or `"reflowed"` if the value overflowed its
+        fixed column (that one card re-emitted in free format), or `None` if the
+        field isn't found. Realise the change with the owning file's `write` /
+        `to_bytes` (`deck.file(...)` / `deck.files()`).
+        """
+
+@final
+class File:
+    """
+    One parsed file in a deck — the root or one `*INCLUDE` instance. Lists its
+    keywords (file-first navigation) and reads/writes its (possibly edited)
+    bytes. Keeps its [`PyDeck`] alive.
+    """
+    def __repr__(self, /) -> str: ...
+    @property
+    def dirty(self, /) -> bool:
+        """
+        Whether this file has a pending edit.
+        """
+    @property
+    def index(self, /) -> int:
+        """
+        This file's index in the deck (`0` is the root).
+        """
+    def keywords(self, /, name: str | None = None) -> list[Keyword]:
+        """
+        The keyword occurrences in this file as `Keyword` handles. With `name`,
+        only occurrences of that keyword (canonical-base match); without it,
+        every block in file order.
+        """
+    @property
+    def path(self, /) -> str:
+        """
+        This file's path — the resolved `*INCLUDE` path, or the root deck path.
+        """
+    def set_field(self, /, block: int, row: int, col: int, widths: Sequence[int], value: str | int | float) -> str |None:
+        """
+        Low-level, schema-free field write: overwrite `(block, row, col)` passing
+        the fields' fixed column `widths` (e.g. `[10]*8`). For keywords dynars
+        ships no schema for; otherwise prefer `Keyword.set_field`. Returns
+        `"in_place"` / `"reflowed"`, or `None` if the card/field is out of range.
+        """
+    def to_bytes(self, /) -> bytes:
+        """
+        The (possibly edited) file contents as bytes.
+        """
+    def write(self, /, path: str) -> None:
+        """
+        Write the (possibly edited) file to `path`.
         """
 
 @final
@@ -605,6 +678,41 @@ class IntforWriter:
     def write(self, /, path: str) -> None:
         """
         Write the intfor file to `path`.
+        """
+
+@final
+class Keyword:
+    """
+    A keyword occurrence — one `*KEYWORD` block — reached by name
+    (`Deck.keywords`) or through a file (`File.keywords`). Read fields, and edit
+    one in place with `set_field`. Keeps its [`PyDeck`] alive.
+    """
+    def __repr__(self, /) -> str: ...
+    def field(self, /, name: str) -> Any |None:
+        """
+        Read a field by name (case-insensitive) → int / float / str. Honours a
+        user schema registered with `register_schema`.
+        """
+    @property
+    def file(self, /) -> str:
+        """
+        The include file this occurrence lives in.
+        """
+    @property
+    def line(self, /) -> int:
+        """
+        1-based line of this occurrence's `*KEYWORD` line (jump-to location).
+        """
+    @property
+    def name(self, /) -> str:
+        """
+        The full `*KEYWORD` name of this occurrence (e.g. `SECTION_SHELL_TITLE`).
+        """
+    def set_field(self, /, name: str, value: str | int | float) -> str |None:
+        """
+        Overwrite a named field in place, preserving every other byte of the
+        deck. Returns `"in_place"` / `"reflowed"`, or `None` if the field isn't
+        found. Persist via the owning file's `write` / `to_bytes`.
         """
 
 @final

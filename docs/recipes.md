@@ -220,17 +220,34 @@ concepts behind them, see [Concepts](concepts.md); for full APIs, the
     history = allc[:, i, :] - allc[0, i, :]        # displacement vs. state 0
     ```
 
-## Change a material property and write the file back
+## Change a material property and write the deck back
+
+Surgical, include-aware, byte-minimal: only the one field changes; comments,
+rulers, and the rest of the deck are preserved verbatim.
 
 === "Python"
 
     ```python
-    kf = dynars.parse_keyword_file("materials.k")
-    i = kf.block_names().index("MAT_ELASTIC")
-    block = kf.keyword(i)
-    block["cards"][0][2] = "70000.0"              # field index 2 = Young's modulus
-    kf.set_keyword(i, "MAT_ELASTIC", block["cards"])
-    kf.write("materials_edited.k")                # untouched blocks stay byte-for-byte
+    deck = dynars.parse_deck("root.k")
+
+    deck.material(72).set_field("e", 2.1e11)      # by id; "in_place" / "reflowed"
+    # or by name: deck.keywords("MAT_ELASTIC")[0].set_field("e", 2.1e11)
+
+    for f in deck.files():                         # realise the write-time overlay
+        if f.dirty:
+            f.write(f.path)
+    ```
+
+=== "Rust"
+
+    ```rust
+    let mut deck = dynars::deck::parse_deck("root.k".as_ref()).unwrap();
+    if let Some(loc) = deck.material(72).and_then(|m| m.locate("e")) {
+        deck.set_field(&loc, "2.1e11");
+    }
+    for f in &deck.files {
+        if f.is_dirty() { f.write(&f.path).unwrap(); }
+    }
     ```
 
 ## Read a keyword dynars doesn't ship

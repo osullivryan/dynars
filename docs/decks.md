@@ -213,45 +213,76 @@ Keywords the built-in library doesn't ship are still reachable — register a
 
 ## Editing a deck (round-trip)
 
-Navigation and columns are read-only views of a `Deck`. To **change** a file and
-write it back, drop to a `KeywordFile` — one file, seen as keyword blocks that
-tile the bytes exactly, so everything you don't touch is preserved byte-for-byte.
+Navigation and columns are read-only views, but a `Deck` can also **edit** one
+field and write the deck back **byte-identical everywhere else** — no whole-deck
+rewrite, and nothing but the field you change is touched. Comments (including
+`$#` header rulers) and every other card are preserved verbatim; a fixed-format
+value is right-justified back into its own column, so the columns don't move.
+Find the field with the same navigation you already use, then `set_field`:
 
 === "Python"
 
     ```python
     import dynars
 
-    kf = dynars.parse_keyword_file("part.k")
-    print(kf.num_blocks, kf.block_names()[:5])
+    deck = dynars.parse_deck("root.k")
 
-    # Find a block and edit a card value (cards are lists of string fields):
-    i = kf.block_names().index("MAT_ELASTIC")
-    block = kf.keyword(i)                 # {"name", "options", "cards"}
-    cards = block["cards"]
-    cards[0][2] = "70000.0"               # change Young's modulus
-    kf.set_keyword(i, "MAT_ELASTIC", cards)
+    # By name (schema-aware): retard the termination time.
+    deck.keywords("CONTROL_TERMINATION")[0].set_field("endtim", 0.02)
 
-    kf.write("part_edited.k")             # or: raw = kf.to_bytes()
+    # By entity id: change a material's Young's modulus.
+    deck.material(72).set_field("e", 2.1e11)        # -> "in_place"
+
+    # Scope to one *INCLUDE: a contact's static friction, in modcontacts.k only.
+    mc = deck.file("modcontacts.k")
+    contact = mc.keywords("CONTACT_TIED_SHELL_EDGE_TO_SURFACE_BEAM_OFFSET")[0]
+    contact.set_field("fs", 0.1)
+
+    # Edits are a write-time overlay — realise them by writing the touched files.
+    for f in deck.files():
+        if f.dirty:
+            f.write(f.path)                          # in place, or a new path
     ```
 
 === "Rust"
 
     ```rust
-    use dynars::parser::parse_file_blocks;
+    use dynars::deck::parse_deck;
 
-    // Split a file into keyword blocks (mmap, no copy); blocks tile the source.
-    let parsed = parse_file_blocks(std::path::Path::new("part.k")).unwrap();
-    println!("{} blocks", parsed.blocks.len());
-    // Edits are an overlay keyed by block index; re-emitting reproduces the input
-    // for untouched blocks. See the `parser` module docs for the write path.
+    let mut deck = parse_deck(std::path::Path::new("root.k")).unwrap();
+
+    // Navigate (immutable) → snapshot the field's address → apply (&mut deck).
+    // `FieldLoc` is borrow-free, so it crosses the read/write borrow split.
+    if let Some(loc) = deck.keywords("CONTROL_TERMINATION").next()
+        .and_then(|k| k.locate("endtim"))
+    {
+        deck.set_field(&loc, "0.02");     // Some(FieldEdit::InPlace | Reflowed)
+    }
+
+    // File-first: pick one include, then its keyword.
+    if let Some(loc) = deck.file("modcontacts.k")
+        .and_then(|f| f.keywords_named("CONTACT_TIED_SHELL_EDGE_TO_SURFACE_BEAM_OFFSET").next())
+        .and_then(|k| k.locate("fs"))
+    {
+        deck.set_field(&loc, "0.1");
+    }
+
+    // Write the touched files (untouched ones round-trip byte-for-byte).
+    for f in &deck.files {
+        if f.is_dirty() { f.write(&f.path).unwrap(); }
+    }
     ```
 
-!!! warning "Editing is per-file, not per-deck"
-    `KeywordFile` does not follow `*INCLUDE`s — it's a single file. To edit a
-    model spread over includes, open and rewrite the specific file that holds the
-    keyword. Use a `Deck` to *find* where an entity lives (`entity.file`), then a
-    `KeywordFile` to change it.
+`set_field` returns `"in_place"` (only that field's bytes changed) or
+`"reflowed"` (the value was wider than its fixed column, so that one card was
+re-emitted in free format — no other line moves). Without a schema for the
+keyword, either [register one](schemas.md) or use the low-level, explicit-width
+form: `deck.file("sub.k").set_field(block, row, col, widths, value)`.
+
+!!! tip "Standalone single files"
+    To edit one file with no `*INCLUDE` graph around it, `parse_keyword_file`
+    returns a `KeywordFile` with the same lossless round-trip and block-level
+    editing (`set_keyword`), plus `to_bytes` / `write`.
 
 ## Next steps
 

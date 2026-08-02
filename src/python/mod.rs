@@ -15,7 +15,7 @@ mod signal;
 mod validate;
 
 pub use batch::PyWorkspace;
-pub use deck::{PyDeck, PyEntity, parse_deck};
+pub use deck::{PyDeck, PyEntity, PyFile, PyKeyword, parse_deck};
 pub use include_tree::{PyIncludeNode, parse_include_tree};
 pub use injury::{
     bric, clip, hic, hic15, hic36, nic, nij, resultant, severity_index, tibia_index, ubric, vc,

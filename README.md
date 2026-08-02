@@ -18,7 +18,7 @@ An extremely fast LS-DYNA keyword file parser, written in Rust with Python bindi
 If you need to...
 
 * Check millions of nodes for ID ranges
-* Scan through GBs of files for *INCLUDEs
+* Traverse through GBs of decks for *INCLUDEs
 * See if your coworker used that one *MAT card you don't like.
 * Calculate HIC on a 5-second 10kHz signal
 * Get the maximum Von-Mises stress of a part
@@ -101,20 +101,37 @@ for child in root.children:
     print(child.path, child.kind, child.byte_count)
 ```
 
-### Read and edit a keyword file
+### Edit a single field, in place
+
+Change one field and write the deck back **byte-identical everywhere else** —
+comments and `$#` rulers kept, columns unmoved, include-aware. Find the field
+with the navigation you already use, then `set_field`:
 
 ```python
 import dynars
 
+deck = dynars.parse_deck("root.k")
+
+deck.material(72).set_field("e", 2.1e11)                            # by id, schema-aware
+deck.keywords("CONTROL_TERMINATION")[0].set_field("endtim", 0.02)  # by name
+deck.file("modcontacts.k").keywords("CONTACT_TIED_SHELL_EDGE_TO_SURFACE_BEAM_OFFSET")[0] \
+    .set_field("fs", 0.1)                                           # scoped to one *INCLUDE
+
+for f in deck.files():        # edits are a write-time overlay — realise them
+    if f.dirty:
+        f.write(f.path)
+```
+
+`set_field` returns `"in_place"`, or `"reflowed"` if the value was too wide for
+its fixed column (that one card re-emitted in free format — no other line moves).
+For a standalone single file (no `*INCLUDE` graph), `parse_keyword_file` gives a
+`KeywordFile` with the same lossless round-trip and block-level editing:
+
+```python
 kf = dynars.parse_keyword_file("deck.k")
-print(kf.num_blocks, kf.block_names())
-
 nodes = dynars.parse_keyword(kf, "NODE")   # {"nid": int64[N], "x": ..., ...}
-
-# Edit any of the ~2000 keywords, then write the deck back.
 i = kf.block_names().index("MAT_ELASTIC")
-cards = kf.keyword(i)["cards"]
-cards[0][2] = "70000.0"                    # change Young's modulus
+cards = kf.keyword(i)["cards"]; cards[0][2] = "70000.0"
 kf.set_keyword(i, "MAT_ELASTIC", cards)
 kf.write("deck_edited.k")
 ```
