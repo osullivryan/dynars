@@ -11,14 +11,28 @@
   <a href="https://osullivryan.github.io/dynars/python/dynars.html">Python API</a>
 </p>
 
-A fast LS-DYNA keyword file parser, written in Rust with Python bindings. It's
-built for very large decks and does two things:
+An extremely fast LS-DYNA keyword file parser, written in Rust with Python bindings. 
 
-1. **Include-tree scanning.** Walks a deck's `*INCLUDE` graph across many files,
-   in parallel, at memory-bandwidth speed.
-2. **Keyword marshalling.** Indexes a file into keyword blocks, reads the
-   high-volume keywords (`*NODE`, `*ELEMENT_*`) as columnar numpy arrays, edits
-   keywords, and writes the deck back.
+> The purpose of dynars is _speed_, and speed alone. 
+
+If you need to...
+
+* Check millions of nodes for ID ranges
+* Scan through GBs of files for *INCLUDEs
+* See if your coworker used that one *MAT card you don't like.
+* Calculate HIC on a 5-second 10kHz signal
+* Get the maximum Von-Mises stress of a part
+
+and do it _fast_ **dynars is the tool for you**. dynars' primary goal
+is to be the fastest LS-DYNA parser publicly available.
+
+
+> [!IMPORTANT]
+> While dynars strives to be as complete as possible, you 
+> should also check out the other great LS-DYNA packages such as
+> [lasso](https://github.com/open-lasso-python/lasso-python) and
+> [pyDyna](https://github.com/ansys/pydyna).
+
 
 ## Highlights
 
