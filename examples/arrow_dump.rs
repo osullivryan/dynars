@@ -1,6 +1,6 @@
 //! Convert a binout to Arrow tables and print the shape of each branch.
-//! Usage: cargo run -p dynars-arrow --example dump -- <binout>
-use dynars_arrow::binout_tables;
+//! Usage: cargo run --example arrow_dump --features arrow -- <binout>
+use dynars::arrow::binout_tables;
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: dump <binout>");

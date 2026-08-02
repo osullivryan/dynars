@@ -81,11 +81,17 @@
 //! - `ffi` — C ABI (and, through it, Fortran) bindings for the parse + validate
 //!   path.
 //! - `typed-keywords` — a generated typed struct per keyword (~3170; opt-in).
+//! - `arrow` — convert `binout`/`d3plot` results into Apache Arrow
+//!   `RecordBatch`es (the Parquet/Iceberg seam); pulls in arrow-rs, so opt-in.
 
 // Keep the docs honest: broken or private intra-doc links are warnings (the docs
 // CI builds with `-D warnings`, so they fail the build there).
 #![warn(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 
+/// Convert `binout`/`d3plot` results into Apache Arrow `RecordBatch`es — the
+/// Parquet/Iceberg seam. Behind the `arrow` feature (pulls in arrow-rs).
+#[cfg(feature = "arrow")]
+pub mod arrow;
 pub mod batch;
 pub mod deck;
 pub mod file;

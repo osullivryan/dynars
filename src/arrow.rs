@@ -1,7 +1,8 @@
 //! Convert LS-DYNA results into Apache Arrow `RecordBatch`es.
 //!
-//! This is the **seam** in front of the Parquet / Iceberg sinks. It lives in a
-//! separate crate so the fast core never takes an arrow-rs dependency. The
+//! This is the **seam** in front of the Parquet / Iceberg sinks. It lives behind
+//! the opt-in `arrow` feature so the fast core never takes an arrow-rs
+//! dependency. The
 //! shape mirrors `python/dynars/iceberg.py`: one long/tidy table per binout
 //! branch,
 //!
@@ -23,7 +24,7 @@ use arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 
-use dynars::results::Binout;
+use crate::results::Binout;
 
 /// One binout branch rendered as an Arrow table.
 pub struct BranchTable {
@@ -158,7 +159,7 @@ fn safe(name: &str) -> String {
 pub fn binout_tables(
     path: &str,
     run_id: &str,
-) -> Result<Vec<BranchTable>, dynars::results::LsdaError> {
+) -> Result<Vec<BranchTable>, crate::results::LsdaError> {
     let b = Binout::new(path)?;
     let branches = b.read(&[])?.keys();
     let mut out = Vec::new();

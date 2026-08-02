@@ -525,6 +525,7 @@ dependencies = [
 name = "dynars"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "byteorder",
  "clap",
  "dashmap",
@@ -541,14 +542,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "dynars-arrow"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "dynars",
 ]
 
 [[package]]

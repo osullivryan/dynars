@@ -1,21 +1,20 @@
 [workspace]
-members = ["crates/derive", "crates/arrow"]
+members = ["crates/derive"]
 
 # Shared metadata for every crate in the workspace. [workspace.package].version
 # is the single source of truth — the PyPI wheel (maturin dynamic version) and
 # the release tag both derive from it, and each crate inherits it via
-# `version.workspace = true`. (Edition stays per-crate: arrow is on 2021.)
+# `version.workspace = true`.
 [workspace.package]
 version = "0.1.0"
 license = "MIT"
 repository = "https://github.com/osullivryan/dynars"
 
-# Internal crates are pulled by `path` for local builds and by `version` when
-# published — cargo strips `path` from the uploaded manifest and keeps `version`.
-# Centralized here so a version bump touches one file, and so every dependent
-# (e.g. dynars-arrow -> dynars) carries a version and is publishable.
+# dynars-derive (the proc-macro crate — it must be its own crate, as derive
+# macros always are) is pulled by `path` for local builds and by `version` when
+# published: cargo strips `path` from the uploaded manifest and keeps `version`.
+# Centralized here so a version bump touches one file.
 [workspace.dependencies]
-dynars = { path = ".", version = "0.1.0" }
 dynars-derive = { path = "crates/derive", version = "0.1.0" }
 
 [package]
@@ -26,10 +25,10 @@ license.workspace = true
 repository.workspace = true
 description = "High-performance LS-DYNA keyword file parser (Rust + numpy)"
 
-# docs.rs renders the Rust API. Build the signal + ffi feature docs (skip the
-# heavy `typed-keywords` and the Python bindings, which have their own docs).
+# docs.rs renders the Rust API. Build the signal + ffi + arrow feature docs (skip
+# the heavy `typed-keywords` and the Python bindings, which have their own docs).
 [package.metadata.docs.rs]
-features = ["signal", "ffi"]
+features = ["signal", "ffi", "arrow"]
 
 [lib]
 name = "dynars"
@@ -41,6 +40,11 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 [[bin]]
 name = "dynars"
 path = "src/main.rs"
+
+# The arrow example needs the optional `arrow` feature to compile.
+[[example]]
+name = "arrow_dump"
+required-features = ["arrow"]
 
 [features]
 default = []
@@ -55,6 +59,9 @@ signal = ["iir_filters", "num-complex"]
 ffi = []
 # Generated typed struct per keyword (~3170). Opt-in — adds a one-time compile.
 typed-keywords = []
+# Convert binout/d3plot results into Apache Arrow RecordBatches (the Parquet /
+# Iceberg seam, `dynars::arrow`). Opt-in so the fast core never pulls arrow-rs.
+arrow = ["dep:arrow"]
 
 [dependencies]
 rayon = "1.10"
@@ -73,6 +80,9 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dynars-derive.workspace = true
+# Optional: Arrow conversion (feature `arrow`, module `dynars::arrow`). Heavy —
+# kept out of the fast core, and never pulled by a default/`python` build.
+arrow = { version = "53", optional = true }
 
 [profile.release]
 opt-level = 3
