@@ -49,8 +49,13 @@ exclude_docs: |
 nav:
   - Home: index.md
   - Getting started: getting-started.md
-  - Decks & navigation: decks.md
-  - Validation: validation.md
-  - Workspace (batch): workspace.md
-  - Results: results.md
+  - Concepts: concepts.md
+  - Guides:
+    - Decks & navigation: decks.md
+    - Validation: validation.md
+    - Workspace (batch): workspace.md
+    - Results: results.md
+    - Schemas: schemas.md
+  - Recipes: recipes.md
+  - Command line: cli.md
   - API reference: reference.md

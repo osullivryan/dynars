@@ -58,6 +58,45 @@ cache.
 reads avoided) and `def_indices_built` / `ref_indices_built` (a shared mesh's id
 and connectivity indices are built **once**, not once per deck).
 
+`validate_decks` returns one `Report` per deck, **in input order** — zip it back
+against your roots to report per-deck:
+
+=== "Python"
+
+    ```python
+    roots = ["variant_a/main.k", "variant_b/main.k", "variant_c/main.k"]
+    decks = ws.parse_decks(roots)
+    reports = ws.validate_decks(decks, [dynars.Rule.references_resolve()])
+    for root, r in zip(roots, reports):
+        status = "clean" if r.is_clean() else f"{r.count(dynars.Severity.Error)} error(s)"
+        print(f"{status:>12}  {root}")
+    ```
+
+=== "Rust"
+
+    ```rust
+    let pairs = ws.parse_decks(roots);              // Vec<(PathBuf, Result<Deck, _>)>
+    let decks: Vec<_> = pairs.iter().filter_map(|(_, d)| d.as_ref().ok().cloned()).collect();
+    let reports = ws.validate_decks(&decks, [Rule::references_resolve()]);
+    let _ = reports;
+    ```
+
+## Navigating a deck from a workspace
+
+The decks a `Workspace` hands back are ordinary `Deck`s — navigate or validate
+them individually, and they still reuse the shared indices. So you can parse a
+batch once, then walk any one of them without re-reading its includes.
+
+=== "Python"
+
+    ```python
+    ws = dynars.Workspace()
+    decks = ws.parse_decks(["variant_a/main.k", "variant_b/main.k"])
+
+    part = decks[0].part(5)                 # navigation reuses the shared cache
+    own_report = decks[1].validate([dynars.Rule.duplicate_ids()])  # so does .validate()
+    ```
+
 ## The mental model
 
 A `Workspace` is a **cache**, not a collection of decks — created empty, with work

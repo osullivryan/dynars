@@ -46,16 +46,23 @@ the one you use and the rest of the page follows:
 
 <div class="grid cards" markdown>
 
-- **[Getting started](getting-started.md)** — install and run your first
-  parse + validate.
+- **[Getting started](getting-started.md)** — install, a five-minute tour, and
+  your first parse + validate.
+- **[Concepts](concepts.md)** — the mental model: deck vs. keyword file, global
+  ids, includes & transforms, columns vs. handles.
 - **[Decks & navigation](decks.md)** — parse a deck, walk includes, navigate by
-  id and follow references, bulk-read keywords.
+  id and follow references, bulk-read, and edit files.
 - **[Validation](validation.md)** — the typed rule model, built-in checks, file
-  scope, and custom checks.
+  scope, house rules, and custom checks.
 - **[Workspace (batch)](workspace.md)** — parse and validate many decks that
   share `*INCLUDE`s against one cache, in parallel.
-- **[Results](results.md)** — read `d3plot` / `binout`, element invariants,
-  signal processing, and occupant-injury criteria.
+- **[Results](results.md)** — read and write `d3plot` / `binout`, element
+  invariants, signal processing, and occupant-injury criteria.
+- **[Schemas](schemas.md)** — teach dynars a keyword it doesn't ship, then read
+  it like any built-in.
+- **[Recipes](recipes.md)** — short, task-oriented "how do I…" snippets.
+- **[Command line](cli.md)** — the `dynars` CLI: parse a deck, scan its include
+  tree, generate test decks.
 - **[API reference](reference.md)** — the complete Rust and Python API.
 
 </div>

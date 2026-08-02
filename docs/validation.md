@@ -2,7 +2,8 @@
 
 Rules run over a parsed `Deck`, reusing the parse and fanning out across cores.
 There is **no default rule set** — you pass exactly the checks you want and get
-back a `Report` of findings, each with a clickable `file:line`.
+back a `Report` of findings, each with a clickable `file:line`. What counts as an
+error is your policy, so you assemble it.
 
 ## Built-in rules
 
@@ -56,10 +57,55 @@ The built-ins:
 | `include_missing` | every `*INCLUDE` resolves to a file on disk |
 | `field_forbidden_values` / `field_required` / `keyword_forbidden` | field- and keyword-level policy |
 
+## Reading the report
+
+`validate` returns a `Report`. Three things to know:
+
+- `is_clean()` is `True` when there are **no `Error`-severity findings** — warnings
+  don't sink it.
+- `count(severity)` totals findings at one level; `len(report)` (Python) is the
+  grand total.
+- `findings` is the list; each `Finding` has `.severity`, `.rule`, `.keyword`,
+  `.message`, and a clickable `.location()`.
+
+=== "Python"
+
+    ```python
+    report = deck.validate([dynars.Rule.references_resolve(), dynars.Rule.duplicate_ids()])
+
+    print(report.is_clean(),
+          report.count(dynars.Severity.Error),
+          report.count(dynars.Severity.Warning))
+
+    # Group findings by rule for a tidy summary:
+    from collections import Counter
+    by_rule = Counter(f.rule for f in report.findings)
+    for rule, n in by_rule.most_common():
+        print(f"{n:>5}  {rule}")
+
+    for f in report.findings:
+        print(f"{f.severity}  {f.location()}  {f.message}")
+    ```
+
+=== "Rust"
+
+    ```rust
+    use dynars::validate::Severity;
+
+    let report = deck.validate([Rule::references_resolve(), Rule::duplicate_ids()]);
+    println!("{} error(s), {} warning(s)",
+             report.count(Severity::Error), report.count(Severity::Warning));
+
+    for f in &report.findings {
+        println!("{:?}  {}  {}", f.severity, f.location(), f.message);
+    }
+    ```
+
 ## Severity and file scope
 
 Every rule takes a severity override and a file scope. Scopes match on a path
-substring (case-insensitive).
+substring (case-insensitive), so `"submodel/"` matches any include under a
+`submodel` directory.
 
 === "Python"
 
@@ -79,14 +125,142 @@ substring (case-insensitive).
     Rule::duplicate_ids().only_in(["assembly/"]);        // only within these
     ```
 
-Compose field predicates with `all` / `any` / `not` (`Predicate.all_ / any_ /
-not_` in Python, `Expr::all / any / not` in Rust).
+## Composing field predicates
+
+`field_required` takes a `when` (optional guard) and a `require` predicate.
+Compose them with `all` / `any` / `not` to express real policies — "solid
+sections must use a valid element formulation **and** a positive thickness".
+
+=== "Python"
+
+    ```python
+    from dynars import Rule, Predicate, Cmp
+
+    # If it's a shell section (ELFORM in {2, 16}), require NIP >= 3 and a positive T1.
+    Rule.field_required(
+        "SECTION_SHELL",
+        when=Predicate.any_([
+            Predicate.field("ELFORM", Cmp.Eq, 2),
+            Predicate.field("ELFORM", Cmp.Eq, 16),
+        ]),
+        require=Predicate.all_([
+            Predicate.field("NIP", Cmp.Ge, 3),
+            Predicate.field("T1", Cmp.Gt, 0.0),
+        ]),
+    )
+    ```
+
+=== "Rust"
+
+    ```rust
+    use dynars::validate::{Rule, Expr, Cmp, Value, pred};
+
+    Rule::field_required(
+        "SECTION_SHELL",
+        Some(Expr::any([
+            pred("ELFORM", Cmp::Eq, Value::Int(2)),
+            pred("ELFORM", Cmp::Eq, Value::Int(16)),
+        ])),
+        Expr::all([
+            pred("NIP", Cmp::Ge, Value::Int(3)),
+            pred("T1", Cmp::Gt, Value::Float(0.0)),
+        ]),
+    );
+    ```
+
+## A house rule set
+
+In practice you keep a standing list of rules — your team's "house rules" — and
+run it on every model. Assemble it once and reuse it.
+
+=== "Python"
+
+    ```python
+    import dynars
+    from dynars import Rule, Predicate, Cmp, Severity
+
+    HOUSE_RULES = [
+        Rule.references_resolve(),
+        Rule.duplicate_ids(),
+        Rule.include_missing(),
+        Rule.rigid_context(),
+        Rule.unreferenced_entities().with_severity(Severity.Warning),
+        Rule.keyword_forbidden("MAT_ADD_EROSION"),          # not allowed in production decks
+        Rule.field_forbidden_values("CONTROL_TIMESTEP", "DT2MS", [0.0]),
+        Rule.field_required(
+            "SECTION_SHELL",
+            when=Predicate.field("ELFORM", Cmp.Eq, 2),
+            require=Predicate.field("NIP", Cmp.Gt, 0),
+        ),
+    ]
+
+    report = dynars.parse_deck("main.k").validate(HOUSE_RULES)
+    print(report.is_clean(), report.count(Severity.Error))
+    ```
+
+=== "Rust"
+
+    ```rust
+    use dynars::deck::parse_deck;
+    use dynars::validate::{Rule, Expr, Cmp, Value, Severity};
+
+    fn house_rules() -> Vec<Rule> {
+        vec![
+            Rule::references_resolve(),
+            Rule::duplicate_ids(),
+            Rule::include_missing(),
+            Rule::rigid_context(),
+            Rule::unreferenced_entities().with_severity(Severity::Warning),
+            Rule::keyword_forbidden("MAT_ADD_EROSION"),
+            Rule::field_forbidden_values("CONTROL_TIMESTEP", "DT2MS", [Value::Float(0.0)]),
+            Rule::field_required(
+                "SECTION_SHELL",
+                Some(Expr::field("ELFORM", Cmp::Eq, Value::Int(2))),
+                Expr::field("NIP", Cmp::Gt, Value::Int(0)),
+            ),
+        ]
+    }
+
+    let report = parse_deck(std::path::Path::new("main.k")).unwrap().validate(house_rules());
+    println!("{}", report.count(Severity::Error));
+    ```
+
+## Gate a pipeline on the result
+
+Because `is_clean()` is a plain boolean and findings carry `file:line`, wiring
+validation into CI or a pre-submit hook is a few lines: print the findings and
+exit non-zero if there are errors.
+
+=== "Python"
+
+    ```python
+    import sys, dynars
+
+    report = dynars.parse_deck(sys.argv[1]).validate(HOUSE_RULES)
+    for f in report.findings:
+        print(f"{f.location()}: {f.severity}: {f.message}")   # editor-clickable
+    sys.exit(0 if report.is_clean() else 1)
+    ```
+
+=== "Rust"
+
+    ```rust
+    use dynars::deck::parse_deck;
+
+    let root = std::env::args().nth(1).expect("usage: check <root.k>");
+    let report = parse_deck(std::path::Path::new(&root)).unwrap().validate(house_rules());
+    for f in &report.findings {
+        println!("{}: {:?}: {}", f.location(), f.severity, f.message);
+    }
+    std::process::exit(if report.is_clean() { 0 } else { 1 });
+    ```
 
 ## Custom checks
 
 When the built-ins don't cover a policy, drop to arbitrary logic. In Rust,
-implement the `Check` trait and wrap it in `Rule::custom`; in Python, walk the
-deck yourself and build findings.
+implement the `Check` trait and wrap it in `Rule::custom`, so it composes with the
+built-ins in one `validate` call and fans out with them. In Python, walk the same
+views the built-ins use and build your own findings.
 
 === "Python"
 
@@ -121,10 +295,12 @@ deck yourself and build findings.
         }
     }
 
-    let report = deck.validate([Rule::custom(DensityPositive)]);
+    // Composes with the built-ins in one call:
+    let report = deck.validate([Rule::references_resolve(), Rule::custom(DensityPositive)]);
     ```
 
 ## Validating many decks
 
 Checking a batch of decks that share includes? Do it once against a shared cache
-— see [Workspace (batch)](workspace.md).
+— see [Workspace (batch)](workspace.md). The same rules apply; only the driver
+changes.
