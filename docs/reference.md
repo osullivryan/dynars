@@ -5,9 +5,9 @@ item lives here:
 
 <div class="grid cards" markdown>
 
-- **[Rust API →](https://osullivanbrothers.github.io/dynars/rust/dynars/)**
+- **[Rust API →](https://osullivryan.github.io/dynars/rust/dynars/)**
   <br>rustdoc for the `dynars` crate.
-- **[Python API →](https://osullivanbrothers.github.io/dynars/python/dynars.html)**
+- **[Python API →](https://osullivryan.github.io/dynars/python/dynars.html)**
   <br>pdoc for the `dynars` package.
 
 </div>

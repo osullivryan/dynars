@@ -6,9 +6,9 @@
 </p>
 
 <p align="center">
-  <a href="https://osullivanbrothers.github.io/dynars/"><b>Documentation</b></a> ·
-  <a href="https://osullivanbrothers.github.io/dynars/rust/dynars/">Rust API</a> ·
-  <a href="https://osullivanbrothers.github.io/dynars/python/dynars.html">Python API</a>
+  <a href="https://osullivryan.github.io/dynars/"><b>Documentation</b></a> ·
+  <a href="https://osullivryan.github.io/dynars/rust/dynars/">Rust API</a> ·
+  <a href="https://osullivryan.github.io/dynars/python/dynars.html">Python API</a>
 </p>
 
 High-performance LS-DYNA keyword file parser, written in Rust with first-class

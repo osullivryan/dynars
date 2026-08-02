@@ -28,7 +28,7 @@ parquet = ["pyarrow>=14"]
 iceberg = ["pyarrow>=14", "pyiceberg[sql-sqlite]>=0.7"]
 
 [project.urls]
-Repository = "https://github.com/osullivanbrothers/dynars"
+Repository = "https://github.com/osullivryan/dynars"
 
 [tool.maturin]
 features = ["python"]

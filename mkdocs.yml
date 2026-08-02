@@ -1,8 +1,8 @@
 site_name: dynars
 site_description: A fast toolkit for LS-DYNA keyword decks and binary results.
-site_url: https://osullivanbrothers.github.io/dynars/
-repo_url: https://github.com/osullivanbrothers/dynars
-repo_name: osullivanbrothers/dynars
+site_url: https://osullivryan.github.io/dynars/
+repo_url: https://github.com/osullivryan/dynars
+repo_name: osullivryan/dynars
 edit_uri: ""
 
 theme:
