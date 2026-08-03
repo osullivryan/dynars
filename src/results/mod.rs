@@ -37,7 +37,7 @@ mod lsda;
 pub mod signal;
 mod symbol;
 
-pub use binout::Binout;
+pub use binout::{Binout, StateColumns};
 pub use d3plot::{
     AirbagState, BlockArray, D3plot, D3plotEditor, D3plotError, D3plotWriter, FsiforField,
     GlobalField, InterfaceField, InterfaceFields, IntforWriter, NodeField, NodeFields, PartField,

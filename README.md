@@ -291,20 +291,33 @@ into signal processing and occupant injury criteria. These live in the Rust core
 and are verified bit-exact against SciPy.
 
 ```python
-import dynars
+import numpy as np, dynars
+from dynars import signal, injury
 
 b = dynars.parse_binout("binout*")
-dt = 1e-4
 
-ax = dynars.cfc(b.read(["nodout", "d000001", "x_acceleration"]), 1000.0, dt)  # CFC1000
-vel = dynars.integrate(ax, dt)
-low = dynars.butterworth(ax, 4, 300.0, 1 / dt, "low")
+# `read(branch, var)` aggregates a variable across all output states; `id=`
+# returns one node's contiguous [T] history (like lasso, but zero-copy).
+node = 1000001
+t  = b.read("nodout", "time")                # [T]
+dt = t[1] - t[0]
+ax = b.read("nodout", "x_acceleration", id=node)   # [T]
+ay = b.read("nodout", "y_acceleration", id=node)
+az = b.read("nodout", "z_acceleration", id=node)
 
-a_res = dynars.resultant(ax_g, ay_g, az_g)   # sqrt(x^2 + y^2 + z^2)
-hic36 = dynars.hic36(a_res, dt)              # also hic15, hic
-a3ms  = dynars.clip(a_res, dt)               # 3 ms clip
-csi   = dynars.severity_index(a_res, dt)     # Gadd severity index
+ax_cfc = signal.cfc(ax, 1000.0, dt)          # CFC1000
+vel    = signal.integrate(ax_cfc, dt)
+low    = signal.butterworth(ax_cfc, 4, 300.0, 1 / dt, "low")
+
+a_res = injury.resultant(ax, ay, az)         # sqrt(x^2 + y^2 + z^2)
+hic36 = injury.hic36(a_res, dt)              # also hic15, hic
+a3ms  = injury.clip(a_res, dt)               # 3 ms clip
+csi   = injury.severity_index(a_res, dt)     # Gadd severity index
 ```
+
+(`read("nodout", "x_acceleration")` returns the full `[T, nodes]` matrix; `id=`
+decodes just that node's column. `read_states` is the structured form — `{time,
+values, ids}` in one call.)
 
 Filtering (`cfc`, `filtfilt`, `butterworth`) is behind the `signal` feature,
 which the published wheels include. CFC and the injury criteria are always
@@ -544,9 +557,4 @@ cargo check --features python # type-check the pyo3 bindings
 maturin generate-stubs --features python --out python/dynars
 ```
 
-## Status
 
-Speed is mature. The open frontier is correctness coverage on real decks:
-long-format field widths, multi-line element cards, and per-keyword field schemas
-for the generic splitter. Validating against representative customer `.k` files
-is the highest-value next step.

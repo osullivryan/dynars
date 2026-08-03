@@ -48,14 +48,13 @@ print(f"wrote {os.path.getsize(path)} bytes -> {path}\n")
 b = dynars.parse_binout(path)
 print("top-level:", b.read())
 print("userdata/matrix (flattened):", b.read(["userdata", "matrix"]))
-print("nodout states:", [k for k in b.read(["nodout"]) if k.startswith("d")])
+print("nodout variables:", b.read("nodout"))
 
-# Reassemble the [nstate, nnodes] block from the per-state dirs.
-states = sorted(k for k in b.read(["nodout"]) if k.startswith("d"))
-got = np.array([b.read(["nodout", s, "x_displacement"]) for s in states])
+# Aggregate the [nstate, nnodes] block straight from the reader.
+got = b.read("nodout", "x_displacement")           # [nstate, nnodes]
 print("nodout/x_displacement reassembled shape:", got.shape)
 assert np.allclose(got, x_disp), "round-trip mismatch"
-times_back = np.array([b.read(["nodout", s, "time"])[0] for s in states])
+times_back = b.read("nodout", "time")              # [nstate]
 assert np.allclose(times_back, t)
 print("time:", times_back)
 print("\nOK — round-trips through the reader")

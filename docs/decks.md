@@ -140,8 +140,18 @@ what's there; the per-kind iterators hand you the entities.
     ```python
     for mat in deck.materials():
         print(mat.id, mat.keyword, f"{mat.file}:{mat.line}")
+    # parts(), sections(), curves() likewise.
 
-    # parts(), sections(), curves() likewise. A quick census of the whole deck:
+    # By keyword name — every occurrence of ANY keyword, not just definitions:
+    for kw in deck.keywords("CONTACT_TIED_SHELL_EDGE_TO_SURFACE"):
+        print(kw.name, f"{kw.file}:{kw.line}")
+
+    # File-first: enumerate files, or scope to one *INCLUDE.
+    for f in deck.files():                 # root first, then includes
+        print(f.index, f.path)
+    contacts = deck.file("modcontacts.k").keywords("CONTACT_TIED_SHELL_EDGE_TO_SURFACE")
+
+    # A quick census of the whole deck:
     for kind, count in deck.definition_counts():
         print(f"{count:>8}  {kind}")
     ```
@@ -163,11 +173,12 @@ what's there; the per-kind iterators hand you the entities.
     }
     ```
 
-!!! note "Python enumerates by kind, Rust by name"
-    Python exposes `parts()`, `materials()`, `sections()`, `curves()`. Rust adds a
-    generic `deck.keywords("ELEMENT_SHELL")` that yields every occurrence of *any*
-    keyword by name. In Python, use `deck.table(name)` (below) for arbitrary
-    keywords.
+!!! note "By kind, by name, or by file"
+    Definition entities: `parts()`, `materials()`, `sections()`, `curves()` (both
+    languages). Any keyword by name: `deck.keywords(name)` yields every
+    occurrence. Scope to one include: `deck.file(suffix)` / `deck.files()` hand
+    back a `File` whose `keywords()` are that file's only. For whole *columns* of
+    an arbitrary keyword, `deck.table(name)` (below).
 
 ## Bulk-read a keyword as columns
 

@@ -8,22 +8,24 @@ guides — and the choices they make — will read easily.
 dynars gives you two entry points, and picking the right one saves a lot of
 friction.
 
-- **`KeywordFile`** (`parse_keyword_file`) is **one file**, seen as a flat list
-  of keyword blocks that tile the bytes exactly. It is the tool for **editing** —
-  round-trip a file, change a card, write it back byte-for-byte where you didn't
-  touch it. It does *not* follow `*INCLUDE`s.
 - **`Deck`** (`parse_deck`) is the **root plus every file it includes**, parsed in
-  one pass and presented as one model. It is the tool for **understanding** —
-  navigate by id, follow references, bulk-read columns across every file, and
-  validate. Ids are global across the whole include graph.
+  one pass and presented as one model. It navigates by id, follows references,
+  bulk-reads columns across every file, validates — and **edits**: change a
+  single field (`set_field`) and write the deck back byte-identical everywhere
+  else, include-aware. Ids are global across the whole include graph. This is the
+  tool you reach for most.
+- **`KeywordFile`** (`parse_keyword_file`) is **one standalone file**, seen as a
+  flat list of keyword blocks that tile the bytes exactly, with the same lossless
+  round-trip and block-level editing. It does *not* follow `*INCLUDE`s — use it
+  for a lone file with no include graph around it.
 
 ```text
-parse_keyword_file("part.k")   -> KeywordFile   (one file, editable blocks)
-parse_deck("main.k")           -> Deck          (root + all *INCLUDEs, navigable)
+parse_deck("main.k")           -> Deck          (root + all *INCLUDEs; navigate, validate, edit)
+parse_keyword_file("part.k")   -> KeywordFile   (one standalone file, editable blocks)
 ```
 
-Rule of thumb: reach for a **`Deck`** to read or check a model; reach for a
-**`KeywordFile`** to rewrite a specific file. (See [editing a
+Rule of thumb: reach for a **`Deck`** to read, check, or edit a model; reach for a
+**`KeywordFile`** only for a lone file with no includes. (See [editing a
 deck](decks.md#editing-a-deck-round-trip).)
 
 ## The navigation spine

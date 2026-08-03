@@ -36,9 +36,12 @@ pip install dynars
 ```
 
 The published wheels bundle the `signal` feature, so filtering and injury
-criteria are available out of the box. `import dynars` exposes everything —
-`parse_deck`, `Workspace`, `Rule`, `D3plot`, `Binout`, the signal/injury
-functions, and the keyword-name constants under `dynars.kw`.
+criteria are available out of the box. `import dynars` exposes the core at the
+top level — `parse_deck`, `Workspace`, `Rule`, `D3plot`, `Binout` — with
+post-processing grouped into submodules: signal processing under
+`dynars.signal` (`cfc`, `butterworth`, `integrate`, …), occupant injury criteria
+under `dynars.injury` (`hic36`, `resultant`, `clip`, …), and the keyword-name
+constants under `dynars.kw`.
 
 ## Keywords dynars doesn't ship
 

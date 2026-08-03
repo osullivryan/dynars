@@ -42,6 +42,20 @@ pub struct StateMatrix {
     pub n_channels: usize,
 }
 
+/// A few entity columns of a per-state variable — `time` plus a row-major
+/// `n_steps × n_cols` block — produced by [`Binout::read_columns`] **without**
+/// building the full `[n_steps, n_channels]` [`StateMatrix`]. The one-column case
+/// (`n_cols == 1`) is exactly one entity's contiguous time-history.
+#[derive(Debug, Clone)]
+pub struct StateColumns {
+    /// One time value per state (length `n_steps`).
+    pub time: Vec<f64>,
+    /// Row-major `n_steps × n_cols`: state `i`, requested column `c` at `i*n_cols + c`.
+    pub values: Vec<f64>,
+    pub n_steps: usize,
+    pub n_cols: usize,
+}
+
 impl StateMatrix {
     /// All channels at one state (a row of the matrix).
     pub fn row(&self, step: usize) -> &[f64] {
@@ -135,7 +149,10 @@ impl Binout {
     /// `read_states("nodout", "x_acceleration")` returns an `n_steps × n_nodes`
     /// matrix plus `time`; take `.column(i)` for one node's history. State reads
     /// run concurrently and lock-free ([`read_many`](Self::read_many)).
-    pub fn read_states(&self, branch: &str, var: &str) -> Result<StateMatrix, LsdaError> {
+    /// The sorted `dNNNNNN` state-directory names under `branch` (one per output
+    /// state). Shared by [`read_states`](Self::read_states) and
+    /// [`read_columns`](Self::read_columns).
+    fn state_dirs(&self, branch: &str) -> Result<Vec<String>, LsdaError> {
         let mut states: Vec<String> = self
             .read(&[branch])?
             .keys()
@@ -150,15 +167,32 @@ impl Binout {
                 "no state directories under {branch}"
             )));
         }
-        let n_steps = states.len();
-        let var_paths: Vec<Vec<&str>> =
-            states.iter().map(|s| vec![branch, s.as_str(), var]).collect();
+        Ok(states)
+    }
+
+    /// One time value per state (from each `<branch>/<state>/time`).
+    fn state_times(&self, branch: &str, states: &[String]) -> Vec<f64> {
         let time_paths: Vec<Vec<&str>> = states
             .iter()
             .map(|s| vec![branch, s.as_str(), "time"])
             .collect();
+        self.read_many(&time_paths)
+            .into_iter()
+            .map(|r| {
+                r.ok()
+                    .map(|x| x.to_f64_vec())
+                    .and_then(|v| v.first().copied())
+                    .unwrap_or(0.0)
+            })
+            .collect()
+    }
+
+    pub fn read_states(&self, branch: &str, var: &str) -> Result<StateMatrix, LsdaError> {
+        let states = self.state_dirs(branch)?;
+        let n_steps = states.len();
+        let var_paths: Vec<Vec<&str>> =
+            states.iter().map(|s| vec![branch, s.as_str(), var]).collect();
         let var_res = self.read_many(&var_paths);
-        let time_res = self.read_many(&time_paths);
 
         let mut values: Vec<f64> = Vec::new();
         let mut n_channels = 0;
@@ -170,15 +204,7 @@ impl Binout {
             }
             values.extend_from_slice(&row);
         }
-        let time: Vec<f64> = time_res
-            .into_iter()
-            .map(|r| {
-                r.ok()
-                    .map(|x| x.to_f64_vec())
-                    .and_then(|v| v.first().copied())
-                    .unwrap_or(0.0)
-            })
-            .collect();
+        let time = self.state_times(branch, &states);
         let ids: Vec<i64> = self
             .read(&[branch, "metadata", "ids"])
             .map(|r| r.to_f64_vec().iter().map(|&x| x as i64).collect())
@@ -189,6 +215,44 @@ impl Binout {
             ids,
             n_steps,
             n_channels,
+        })
+    }
+
+    /// One entity's time-history (or a few), decoded **only** for the requested
+    /// column indices — without building the full `[n_steps, n_channels]`
+    /// [`StateMatrix`]. For each state it decodes just those elements straight
+    /// from the memory map, so a single node's history out of a wide `nodout`
+    /// costs `O(n_steps)` memory and touches ~one page per state instead of the
+    /// whole record. `cols` are column indices (see [`StateMatrix::index_of`] /
+    /// [`Binout::ids`] to map an LS-DYNA id to its column).
+    pub fn read_columns(
+        &self,
+        branch: &str,
+        var: &str,
+        cols: &[usize],
+    ) -> Result<StateColumns, LsdaError> {
+        let states = self.state_dirs(branch)?;
+        let n_steps = states.len();
+        // Decode only `cols` from each state's record, in parallel, in state order.
+        let rows: Vec<Result<Vec<f64>, LsdaError>> = states
+            .par_iter()
+            .map(|s| {
+                let node = self.resolve(&[branch, s.as_str(), var])?;
+                let mut row = Vec::with_capacity(cols.len());
+                node.read_cols_f64(&self.files, cols, &mut row)?;
+                Ok(row)
+            })
+            .collect();
+        let mut values = Vec::with_capacity(n_steps * cols.len());
+        for r in rows {
+            values.extend_from_slice(&r?);
+        }
+        let time = self.state_times(branch, &states);
+        Ok(StateColumns {
+            time,
+            values,
+            n_steps,
+            n_cols: cols.len(),
         })
     }
 

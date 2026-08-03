@@ -96,6 +96,132 @@ fn readresult_to_py<'py>(py: Python<'py>, r: ReadResult) -> PyResult<Bound<'py, 
     })
 }
 
+/// Normalize `read`'s positional args into path segments: a single list/tuple
+/// arg is expanded to its items, otherwise each arg is one segment — so both
+/// `read("a", "b")` and `read(["a", "b"])` work.
+fn norm_segs(path: &[Bound<'_, pyo3::PyAny>]) -> PyResult<Vec<String>> {
+    if path.len() == 1 {
+        if let Ok(list) = path[0].cast::<PyList>() {
+            return list.iter().map(|x| x.extract::<String>()).collect();
+        }
+        if let Ok(tup) = path[0].cast::<pyo3::types::PyTuple>() {
+            return tup.iter().map(|x| x.extract::<String>()).collect();
+        }
+    }
+    path.iter().map(|x| x.extract::<String>()).collect()
+}
+
+/// Whether `name` is a `dNNNNNN` per-state record directory.
+fn is_state_dir(name: &str) -> bool {
+    name.len() > 1 && name.starts_with('d') && name[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A resolved column selection: which columns, and whether it came from a single
+/// (`id`/`name`) selector — a single one yields a 1-D `[T]` result, a plural
+/// (`ids`/`names`) selector a 2-D `[T, k]`.
+struct Selection {
+    cols: Vec<usize>,
+    single: bool,
+}
+
+/// Resolve at most one of `{id, ids, name, names}` to column indices: `id`/`ids`
+/// look up `<branch>/metadata/ids`, `name`/`names` the `<branch>/metadata/legend`
+/// entity names. `Ok(None)` when no selector is given; `ValueError` if more than
+/// one is; `KeyError` if an id/name is absent.
+fn resolve_cols(
+    inner: &RustBinout,
+    py: Python<'_>,
+    branch: &str,
+    id: Option<i64>,
+    ids: Option<Vec<i64>>,
+    name: Option<String>,
+    names: Option<Vec<String>>,
+) -> PyResult<Option<Selection>> {
+    let n = id.is_some() as u8 + ids.is_some() as u8 + name.is_some() as u8 + names.is_some() as u8;
+    if n == 0 {
+        return Ok(None);
+    }
+    if n > 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "pass only one of id, ids, name, names",
+        ));
+    }
+    // `id`/`ids` index metadata/ids; `name`/`names` index metadata/legend.
+    let by_ids = id.is_some() || ids.is_some();
+    let table = if by_ids {
+        py.detach(|| inner.ids(branch))
+            .map_err(lsda_err)?
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        py.detach(|| inner.legend(branch)).map_err(lsda_err)?
+    };
+    let find = |want: &str| -> PyResult<usize> {
+        table.iter().position(|s| s == want).ok_or_else(|| {
+            let what = if by_ids { "id" } else { "name" };
+            pyo3::exceptions::PyKeyError::new_err(format!("{what} {want:?} not found in '{branch}'"))
+        })
+    };
+    let (wanted, single): (Vec<String>, bool) = match (id, ids, name, names) {
+        (Some(id), ..) => (vec![id.to_string()], true),
+        (_, Some(ids), ..) => (ids.iter().map(|v| v.to_string()).collect(), false),
+        (_, _, Some(name), _) => (vec![name], true),
+        (_, _, _, Some(names)) => (names, false),
+        _ => unreachable!(),
+    };
+    let cols = wanted.iter().map(|w| find(w)).collect::<PyResult<Vec<usize>>>()?;
+    Ok(Some(Selection { cols, single }))
+}
+
+/// Turn a resolved [`Selection`] plus decoded columns into a numpy array: `[T]`
+/// for a single selector, `[T, k]` otherwise.
+fn columns_to_py<'py>(
+    py: Python<'py>,
+    sc: &crate::results::StateColumns,
+    single: bool,
+) -> PyResult<Bound<'py, pyo3::PyAny>> {
+    if single {
+        Ok(sc.values.clone().into_pyarray(py).into_any())
+    } else {
+        let values =
+            numpy::ndarray::Array2::from_shape_vec((sc.n_steps, sc.n_cols), sc.values.clone())
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(values.into_pyarray(py).into_any())
+    }
+}
+
+/// Aggregate `branch/dNNNNNN/var` across all states into a numpy array — the
+/// lasso-style data path behind `read(branch, var[, id/ids/name/names])`. Full:
+/// `[T, C]` (or `[T]` for a scalar-per-state channel like `time`); a selector
+/// decodes only the chosen column(s) (`[T]` or `[T, k]`), never building the
+/// full matrix.
+#[allow(clippy::too_many_arguments)]
+fn aggregate<'py>(
+    inner: &RustBinout,
+    py: Python<'py>,
+    branch: &str,
+    var: &str,
+    id: Option<i64>,
+    ids: Option<Vec<i64>>,
+    name: Option<String>,
+    names: Option<Vec<String>>,
+) -> PyResult<Bound<'py, pyo3::PyAny>> {
+    if let Some(sel) = resolve_cols(inner, py, branch, id, ids, name, names)? {
+        let sc = py
+            .detach(|| inner.read_columns(branch, var, &sel.cols))
+            .map_err(lsda_err)?;
+        return columns_to_py(py, &sc, sel.single);
+    }
+    let m = py.detach(|| inner.read_states(branch, var)).map_err(lsda_err)?;
+    if m.n_channels <= 1 {
+        return Ok(m.values.into_pyarray(py).into_any());
+    }
+    let values = numpy::ndarray::Array2::from_shape_vec((m.n_steps, m.n_channels), m.values)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(values.into_pyarray(py).into_any())
+}
+
 /// LS-DYNA binout reader: walk the LSDA tree by path, read channels as numpy.
 #[pyclass(name = "Binout")]
 pub struct PyBinout {
@@ -118,14 +244,74 @@ impl PyBinout {
         self.inner.filelist.clone()
     }
 
-    /// Read at `path` (list of segments). A leaf returns a numpy array of
-    /// the channel's native dtype; a directory returns `list[str]` of child
-    /// names. Empty path returns the top-level datasets.
-    #[pyo3(signature = (path=Vec::new()))]
-    fn read<'py>(&self, py: Python<'py>, path: Vec<String>) -> PyResult<Bound<'py, pyo3::PyAny>> {
-        let segs: Vec<&str> = path.iter().map(String::as_str).collect();
-        let r = py.detach(|| self.inner.read(&segs)).map_err(lsda_err)?;
-        readresult_to_py(py, r)
+    /// Read from the binout (lasso-style). Segments may be separate args or one
+    /// list: `read("nodout", …)` or `read(["nodout", …])`.
+    ///
+    /// - `read()` / `read("nodout")` → `list[str]` of children (a branch lists
+    ///   its variable names).
+    /// - `read("nodout", "x_acceleration")` → the variable aggregated across all
+    ///   output states: `float64[T, nodes]` (or `[T]` for a scalar-per-state
+    ///   channel such as `time`).
+    /// - `read("nodout", "x_acceleration", id=1000001)` → one entity's history
+    ///   `float64[T]`; `ids=[…]` → `float64[T, k]`. Select by entity name (from
+    ///   the branch `legend`) instead with `name=` / `names=[…]`. Selectors decode
+    ///   only the requested column(s) — no full matrix. `KeyError` if absent.
+    /// - A literal leaf path — `read("nodout", "d000001", "x_acceleration")` —
+    ///   returns that single state's raw array.
+    ///
+    /// For the structured form (time + ids together) use `read_states`; for the
+    /// raw child listing of any directory use `channels`.
+    #[pyo3(signature = (*path, id=None, ids=None, name=None, names=None))]
+    fn read<'py>(
+        &self,
+        py: Python<'py>,
+        path: Vec<Bound<'py, pyo3::PyAny>>,
+        id: Option<i64>,
+        ids: Option<Vec<i64>>,
+        name: Option<String>,
+        names: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, pyo3::PyAny>> {
+        let segs = norm_segs(&path)?;
+        let has_selector =
+            id.is_some() || ids.is_some() || name.is_some() || names.is_some();
+        if has_selector {
+            if segs.len() != 2 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "read(branch, var, id=/name=...) needs a branch and a variable",
+                ));
+            }
+            return aggregate(&self.inner, py, &segs[0], &segs[1], id, ids, name, names);
+        }
+        let seg_refs: Vec<&str> = segs.iter().map(String::as_str).collect();
+        match py.detach(|| self.inner.read(&seg_refs)) {
+            Ok(ReadResult::Directory(keys)) => {
+                let names: Vec<String> = keys
+                    .iter()
+                    .map(|k| String::from_utf8_lossy(k).into_owned())
+                    .collect();
+                // A state-bearing branch lists its variable names (peek a state
+                // dir), not the raw dNNNNNN records — the lasso view. Use
+                // `channels` for the raw children.
+                if let Some(state) = names.iter().find(|k| is_state_dir(k)) {
+                    let mut vpath: Vec<&str> = seg_refs.clone();
+                    vpath.push(state);
+                    let vars = py
+                        .detach(|| self.inner.channels(&vpath))
+                        .map_err(lsda_err)?;
+                    return Ok(vars.into_pyobject(py)?.into_any());
+                }
+                Ok(names.into_pyobject(py)?.into_any())
+            }
+            Ok(leaf) => readresult_to_py(py, leaf),
+            // Not a literal node: a branch+var pair aggregates across states.
+            Err(e) => {
+                if segs.len() == 2 {
+                    aggregate(&self.inner, py, &segs[0], &segs[1], None, None, None, None)
+                } else {
+                    Err(lsda_err(e))
+                }
+            }
+        }
     }
 
     /// Read many paths concurrently (lock-free, GIL released), returning a
@@ -186,24 +372,56 @@ impl PyBinout {
         py.detach(|| self.inner.channels(&segs)).map_err(lsda_err)
     }
 
-    /// Aggregate a per-state variable across all state dirs into a dense matrix:
-    /// `{"time": float64[T], "values": float64[T, C], "ids": int64[C],
-    /// "n_steps": int, "n_channels": int}`. One node's history by ID:
-    /// `values[:, np.nonzero(ids == node_id)[0][0]]`.
-    #[pyo3(signature = (branch, var))]
+    /// Aggregate a per-state variable across all state dirs, as a dict.
+    ///
+    /// Full matrix (default): `{"time": float64[T], "values": float64[T, C],
+    /// "ids": int64[C], "n_steps": int, "n_channels": int}`.
+    ///
+    /// With a selector — `id`/`ids` (by entity id) or `name`/`names` (by the
+    /// branch `legend`) — only those columns are decoded (no full matrix):
+    /// `{"time": float64[T], "values": float64[T] or [T, k], "ids": int64[k]}`,
+    /// where `values` is 1-D for a single `id`/`name`. `KeyError` if absent,
+    /// `ValueError` if more than one selector is given. The bare-array
+    /// counterpart is `read(branch, var, …)`.
+    #[pyo3(signature = (branch, var, id=None, ids=None, name=None, names=None))]
+    #[allow(clippy::too_many_arguments)]
     fn read_states<'py>(
         &self,
         py: Python<'py>,
         branch: String,
         var: String,
+        id: Option<i64>,
+        ids: Option<Vec<i64>>,
+        name: Option<String>,
+        names: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+
+        // Selector: decode only the chosen columns from each state (no full matrix).
+        if let Some(sel) = resolve_cols(&self.inner, py, &branch, id, ids, name, names)? {
+            let sc = py
+                .detach(|| self.inner.read_columns(&branch, &var, &sel.cols))
+                .map_err(lsda_err)?;
+            let all_ids = py.detach(|| self.inner.ids(&branch)).unwrap_or_default();
+            let sel_ids: Vec<i64> = sel
+                .cols
+                .iter()
+                .map(|&c| all_ids.get(c).copied().unwrap_or(0))
+                .collect();
+            let values = columns_to_py(py, &sc, sel.single)?;
+            d.set_item("time", sc.time.into_pyarray(py))?;
+            d.set_item("values", values)?;
+            d.set_item("ids", sel_ids.into_pyarray(py))?;
+            return Ok(d);
+        }
+
+        // Full matrix.
         let m = py
             .detach(|| self.inner.read_states(&branch, &var))
             .map_err(lsda_err)?;
         let (nt, nc) = (m.n_steps, m.n_channels);
         let values = numpy::ndarray::Array2::from_shape_vec((nt, nc), m.values)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        let d = PyDict::new(py);
         d.set_item("time", m.time.into_pyarray(py))?;
         d.set_item("values", values.into_pyarray(py))?;
         d.set_item("ids", m.ids.into_pyarray(py))?;

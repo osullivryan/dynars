@@ -19,7 +19,7 @@ pub fn cfc<'py>(
     cfc: f64,
     dt: f64,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let y = signal::cfc(values.as_slice()?, cfc, dt);
+    let y = signal::cfc(&crate::python::f64_slice(&values), cfc, dt);
     Ok(y.into_pyarray(py).into_any())
 }
 
@@ -33,7 +33,7 @@ pub fn filtfilt<'py>(
     a: Vec<f64>,
     values: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let y = signal::filtfilt(&b, &a, values.as_slice()?);
+    let y = signal::filtfilt(&b, &a, &crate::python::f64_slice(&values));
     Ok(y.into_pyarray(py).into_any())
 }
 
@@ -58,7 +58,7 @@ pub fn butterworth<'py>(
             )));
         }
     };
-    let y = signal::butterworth(values.as_slice()?, order, cutoff, fs, band)
+    let y = signal::butterworth(&crate::python::f64_slice(&values), order, cutoff, fs, band)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
     Ok(y.into_pyarray(py).into_any())
 }
@@ -72,7 +72,7 @@ pub fn integrate<'py>(
     values: PyReadonlyArray1<'py, f64>,
     dt: f64,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let y = signal::integrate(values.as_slice()?, dt);
+    let y = signal::integrate(&crate::python::f64_slice(&values), dt);
     Ok(y.into_pyarray(py).into_any())
 }
 
@@ -85,7 +85,7 @@ pub fn differentiate<'py>(
     values: PyReadonlyArray1<'py, f64>,
     dt: f64,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let y = signal::differentiate(values.as_slice()?, dt);
+    let y = signal::differentiate(&crate::python::f64_slice(&values), dt);
     Ok(y.into_pyarray(py).into_any())
 }
 
@@ -99,7 +99,7 @@ pub fn decimate<'py>(
     values: PyReadonlyArray1<'py, f64>,
     factor: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let y = signal::decimate(values.as_slice()?, factor);
+    let y = signal::decimate(&crate::python::f64_slice(&values), factor);
     Ok(y.into_pyarray(py).into_any())
 }
 
@@ -112,6 +112,6 @@ pub fn resample_linear<'py>(
     dt_in: f64,
     dt_out: f64,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let y = signal::resample_linear(values.as_slice()?, dt_in, dt_out);
+    let y = signal::resample_linear(&crate::python::f64_slice(&values), dt_in, dt_out);
     Ok(y.into_pyarray(py).into_any())
 }

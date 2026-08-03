@@ -119,20 +119,37 @@ for the full set.
 
 ## Reading a binout
 
-`binout` is a tree of channels addressed by path — descend from the root, then
-read a variable. Continuation files (`binout0000`, `binout0001`, …) are picked up
-from a glob pattern automatically.
+`binout` is a tree of channels addressed by path. Continuation files
+(`binout0000`, `binout0001`, …) are picked up from a glob pattern automatically.
+
+In **Python** `read` is lasso-style: `read(branch, var)` aggregates a variable
+across all output states for you (segments may be separate args or one list).
 
 === "Python"
 
     ```python
     b = dynars.parse_binout("binout*")     # or dynars.Binout("binout*")
-    print(b.read())                        # top-level branches, e.g. ['glstat', 'matsum', …]
-    print(b.channels(["glstat"]))          # variables under a branch
+    print(b.read())                        # top-level branches: ['glstat', 'nodout', …]
+    print(b.read("glstat"))                # a branch lists its variable names
 
-    ke   = b.read(["glstat", "kinetic_energy"])   # NumPy array over states
-    time = b.read(["glstat", "time"])
+    # read(branch, var) stacks the variable over every state:
+    ke  = b.read("glstat", "kinetic_energy")     # [T]        (a global scalar over time)
+    acc = b.read("nodout", "x_acceleration")     # [T, nodes]
+
+    # One entity's history — by LS-DYNA id, or by legend name:
+    n101  = b.read("nodout", "x_acceleration", id=101)          # [T]  (contiguous)
+    head  = b.read("nodout", "x_acceleration", name="left_head") # [T]
+    subset= b.read("nodout", "x_acceleration", ids=[101, 102])   # [T, 2]
+
+    # The raw tree is still there: channels() lists a directory's children, and a
+    # literal path (with the state) reads one raw record.
+    print(b.channels(["nodout"]))          # ['d000001', …, 'metadata']
+    snap = b.read("nodout", "d000001", "x_acceleration")   # [nodes] at one state
+    print(b.ids("nodout")[:5], b.legend("nodout")[:2], b.title("nodout"))
     ```
+
+In **Rust** `read` is the raw tree walker (returns a `ReadResult`); aggregate
+with `read_states` (full matrix) or `read_columns` (chosen columns only).
 
 === "Rust"
 
@@ -140,48 +157,22 @@ from a glob pattern automatically.
     use dynars::results::Binout;
 
     let b = Binout::new("binout*").unwrap();
-    let top = b.read(&[]).unwrap();                 // top-level branches
-    let ke = b.read(&["glstat", "kinetic_energy"]); // then descend
-    let _ = (top, ke);
+    let top = b.read(&[]).unwrap();                          // raw tree: top-level branches
+
+    let st = b.read_states("nodout", "x_acceleration").unwrap();  // dense (T, C) + ids + time
+    let n101 = st.column_by_id(101);                        // one node's history (Vec<f64>)
+
+    let ke = b.read_time_series(&["glstat", "kinetic_energy"]).unwrap(); // {time, values, ..}
+    let _ = (top, st, n101, ke);
     ```
 
-### Time histories and per-state matrices
+### The structured reader
 
-Two convenience readers save you the manual assembly:
-
-- **`read_time_series(path)`** pairs a channel with its sibling `time` array —
-  `{"time", "values", "channel"}`.
-- **`read_states(branch, var)`** aggregates a per-entity variable across every
-  state directory into a dense `(T, C)` matrix, plus the entity `ids` and
-  `time` — one node's history is a column.
-
-=== "Python"
-
-    ```python
-    # A single global channel over time:
-    ts = b.read_time_series(["glstat", "kinetic_energy"])
-    plt_x, plt_y = ts["time"], ts["values"]
-
-    # Every node's x-acceleration as a (T, C) matrix:
-    st = b.read_states("nodout", "x_acceleration")
-    time, values, ids = st["time"], st["values"], st["ids"]
-
-    # Pull one node's history by its LS-DYNA id:
-    import numpy as np
-    col = np.nonzero(ids == 101)[0][0]
-    node_101 = values[:, col]
-
-    # Entity metadata for a branch:
-    print(b.ids("nodout")[:5], b.legend("nodout")[:2], b.title("nodout"))
-    ```
-
-=== "Rust"
-
-    ```rust
-    let ts = b.read_time_series(&["glstat", "kinetic_energy"]).unwrap();
-    let st = b.read_states("nodout", "x_acceleration").unwrap();
-    let _ = (ts, st);
-    ```
+`read_states(branch, var)` (both languages) returns the aggregation as a struct
+/ dict — `{time, values (T×C), ids, n_steps, n_channels}` — one node's history
+is a column. In Python it also takes the same `id`/`ids`/`name`/`names`
+selectors as `read`, returning `{time, values, ids}` for just those columns.
+`read_time_series(path)` pairs a single channel with its sibling `time` array.
 
 ### Reading many channels at once
 
@@ -205,25 +196,38 @@ implemented in the Rust core and verified bit-exact against SciPy.
 
     ```python
     import numpy as np, dynars
+    from dynars import signal, injury
 
     b = dynars.parse_binout("binout*")
-    dt = 1e-4  # s
 
-    # A 3-axis acceleration from three channels, filtered and integrated:
-    ax = b.read(["nodout", "d000001", "x_acceleration"])
-    ay = b.read(["nodout", "d000001", "y_acceleration"])
-    az = b.read(["nodout", "d000001", "z_acceleration"])
+    # A node's 3-axis acceleration history. read(branch, var) aggregates a
+    # variable across all output states; `id=` returns one node's contiguous [T].
+    node = 1000001
+    t   = b.read("nodout", "time")                    # [T]
+    dt  = t[1] - t[0]                                 # s
+    ax  = b.read("nodout", "x_acceleration", id=node)
+    ay  = b.read("nodout", "y_acceleration", id=node)
+    az  = b.read("nodout", "z_acceleration", id=node)
 
-    a    = dynars.resultant(ax, ay, az)  # sqrt(x^2 + y^2 + z^2)
-    a60  = dynars.cfc(a, 60, dt)         # SAE J211 CFC-60 (zero-phase)
-    low  = dynars.butterworth(a, 4, 300.0, 1/dt, "low")  # 4-pole, 300 Hz
-    v    = dynars.integrate(a, dt)       # cumulative integral (accel -> velocity)
+    a    = injury.resultant(ax, ay, az)  # sqrt(x^2 + y^2 + z^2)
+    a60  = signal.cfc(a, 60, dt)         # SAE J211 CFC-60 (zero-phase)
+    low  = signal.butterworth(a, 4, 300.0, 1/dt, "low")  # 4-pole, 300 Hz
+    v    = signal.integrate(a, dt)       # cumulative integral (accel -> velocity)
 
     # Occupant injury criteria (acceleration in g):
-    hic36 = dynars.hic36(a, dt)          # HIC over a 36 ms window (also hic15, hic)
-    a3ms  = dynars.clip(a, dt)           # 3 ms clip
-    csi   = dynars.severity_index(a, dt) # Gadd severity index
+    hic36 = injury.hic36(a, dt)          # HIC over a 36 ms window (also hic15, hic)
+    a3ms  = injury.clip(a, dt)           # 3 ms clip
+    csi   = injury.severity_index(a, dt) # Gadd severity index
     ```
+
+    `read(branch, var)` is the time-history path — it walks the per-state
+    `dNNNNNN` records and returns the full dense `[T, nodes]` matrix (or `[T]`
+    for a scalar-per-state channel like `time`); `id=`/`ids=` decode one/several
+    entities by id, and `name=`/`names=` by the branch `legend` (e.g.
+    `read("nodout", "x_acceleration", name="left_head")`) — each without building
+    the full matrix. A literal `read("nodout", "d000001", …)` still gives one raw
+    state; `channels([...])` lists a directory's raw children; and
+    `read_states(...)` is the structured `{time, values, ids}` form.
 
     *(Filtering and injury criteria ship in the published wheels.)*
 

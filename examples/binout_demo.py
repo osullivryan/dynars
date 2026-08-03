@@ -27,14 +27,16 @@ print("wrote", path)
 
 # --- 2. READ it back ---------------------------------------------------------
 b = dynars.parse_binout(path)
-print("top-level:", b.read())
-states = sorted(k for k in b.read(["mycurve"]) if k.startswith("d"))
-energy = np.array([b.read(["mycurve", s, "energy"])[0] for s in states])
+print("top-level:", b.read())               # branches
+print("mycurve variables:", b.read("mycurve"))          # a branch lists its vars
+energy = b.read("mycurve", "energy")         # aggregated across all states -> [T]
 print("energy curve:", energy.round(3))
 
-# Read many channels in parallel (lock-free, GIL released).
-vals = b.read_many([["mycurve", s, "energy"] for s in states])
-print("read_many:", len(vals), "channels")
+# The raw tree is still there: channels() lists a directory's children (the
+# dNNNNNN state records), and an explicit state path reads one state.
+states = sorted(s for s in b.channels(["mycurve"]) if s.startswith("d"))
+vals = b.read_many([["mycurve", s, "energy"] for s in states])   # parallel, lock-free
+print("read_many:", len(vals), "state records")
 
 # --- 3. build_series: the LS-DYNA time-series convention ---------------------
 # One value per entity per state (metadata `ids` + dNNNNNN state dirs).
@@ -50,7 +52,8 @@ w = dynars.build_series(
 series_path = path + "_series"
 w.write(series_path)
 b2 = dynars.parse_binout(series_path)
-print("series nodout states:", [k for k in b2.read(["nodout"]) if k.startswith("d")])
+disp = b2.read("nodout", "x_displacement")          # [n_states, n_ids]
+print("series x_displacement:", disp.shape, "| node 101:", b2.read("nodout", "x_displacement", id=101).round(3))
 
 # --- 4. EDIT an existing binout ----------------------------------------------
 ed = dynars.BinoutEditor(path)

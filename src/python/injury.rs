@@ -16,7 +16,7 @@ pub fn resultant<'py>(
     y: PyReadonlyArray1<'py, f64>,
     z: PyReadonlyArray1<'py, f64>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let r = injury::resultant(x.as_slice()?, y.as_slice()?, z.as_slice()?);
+    let r = injury::resultant(&crate::python::f64_slice(&x), &crate::python::f64_slice(&y), &crate::python::f64_slice(&z));
     Ok(r.into_pyarray(py).into_any())
 }
 
@@ -25,21 +25,21 @@ pub fn resultant<'py>(
 #[pyfunction]
 #[pyo3(name = "hic", signature = (a, dt, window=0.036))]
 pub fn hic(a: PyReadonlyArray1<'_, f64>, dt: f64, window: f64) -> PyResult<f64> {
-    Ok(injury::hic(a.as_slice()?, dt, window))
+    Ok(injury::hic(&crate::python::f64_slice(&a), dt, window))
 }
 
 /// HIC15 — [`hic`] over a 15 ms window.
 #[pyfunction]
 #[pyo3(name = "hic15", signature = (a, dt))]
 pub fn hic15(a: PyReadonlyArray1<'_, f64>, dt: f64) -> PyResult<f64> {
-    Ok(injury::hic15(a.as_slice()?, dt))
+    Ok(injury::hic15(&crate::python::f64_slice(&a), dt))
 }
 
 /// HIC36 — [`hic`] over a 36 ms window.
 #[pyfunction]
 #[pyo3(name = "hic36", signature = (a, dt))]
 pub fn hic36(a: PyReadonlyArray1<'_, f64>, dt: f64) -> PyResult<f64> {
-    Ok(injury::hic36(a.as_slice()?, dt))
+    Ok(injury::hic36(&crate::python::f64_slice(&a), dt))
 }
 
 /// The "3 ms clip": highest acceleration (g) sustained for `window` seconds
@@ -47,14 +47,14 @@ pub fn hic36(a: PyReadonlyArray1<'_, f64>, dt: f64) -> PyResult<f64> {
 #[pyfunction]
 #[pyo3(name = "clip", signature = (a, dt, window=0.003))]
 pub fn clip(a: PyReadonlyArray1<'_, f64>, dt: f64, window: f64) -> PyResult<f64> {
-    Ok(injury::clip(a.as_slice()?, dt, window))
+    Ok(injury::clip(&crate::python::f64_slice(&a), dt, window))
 }
 
 /// Gadd Severity Index (CSI on a chest resultant): ∫ a^2.5 dt over the pulse.
 #[pyfunction]
 #[pyo3(name = "severity_index", signature = (a, dt))]
 pub fn severity_index(a: PyReadonlyArray1<'_, f64>, dt: f64) -> PyResult<f64> {
-    Ok(injury::severity_index(a.as_slice()?, dt))
+    Ok(injury::severity_index(&crate::python::f64_slice(&a), dt))
 }
 
 // ── Tier 2 criteria (SI units: N, N·m, rad/s, rad/s², m/s²) ──────────────────
@@ -71,7 +71,7 @@ pub fn bric(
     crit_y: f64,
     crit_z: f64,
 ) -> PyResult<f64> {
-    Ok(injury::bric(wx.as_slice()?, wy.as_slice()?, wz.as_slice()?, crit_x, crit_y, crit_z))
+    Ok(injury::bric(&crate::python::f64_slice(&wx), &crate::python::f64_slice(&wy), &crate::python::f64_slice(&wz), crit_x, crit_y, crit_z))
 }
 
 /// Universal Brain Injury Criterion (uBRIC) from angular velocity + acceleration
@@ -97,12 +97,12 @@ pub fn ubric(
     crit_az: f64,
 ) -> PyResult<f64> {
     Ok(injury::ubric(
-        wx.as_slice()?,
-        wy.as_slice()?,
-        wz.as_slice()?,
-        ax.as_slice()?,
-        ay.as_slice()?,
-        az.as_slice()?,
+        &crate::python::f64_slice(&wx),
+        &crate::python::f64_slice(&wy),
+        &crate::python::f64_slice(&wz),
+        &crate::python::f64_slice(&ax),
+        &crate::python::f64_slice(&ay),
+        &crate::python::f64_slice(&az),
         crit_wx,
         crit_wy,
         crit_wz,
@@ -121,7 +121,7 @@ pub fn vc(
     scaling_factor: f64,
     deformation_constant: f64,
 ) -> PyResult<f64> {
-    Ok(injury::vc(y.as_slice()?, dt, scaling_factor, deformation_constant))
+    Ok(injury::vc(&crate::python::f64_slice(&y), dt, scaling_factor, deformation_constant))
 }
 
 /// Neck Injury Criterion Nij (max) — see the Rust docs for the signed-critical
@@ -140,9 +140,9 @@ pub fn nij(
     myc_ex: f64,
 ) -> PyResult<f64> {
     Ok(injury::nij(
-        fx.as_slice()?,
-        fz.as_slice()?,
-        my.as_slice()?,
+        &crate::python::f64_slice(&fx),
+        &crate::python::f64_slice(&fz),
+        &crate::python::f64_slice(&my),
         distance,
         fzc_te,
         fzc_co,
@@ -159,7 +159,7 @@ pub fn nic(
     a_head: PyReadonlyArray1<'_, f64>,
     dt: f64,
 ) -> PyResult<f64> {
-    Ok(injury::nic(a_t1.as_slice()?, a_head.as_slice()?, dt))
+    Ok(injury::nic(&crate::python::f64_slice(&a_t1), &crate::python::f64_slice(&a_head), dt))
 }
 
 /// Tibia Index (max) from bending moments (N·m) and axial force (N).
@@ -173,9 +173,9 @@ pub fn tibia_index(
     critical_compression_force: f64,
 ) -> PyResult<f64> {
     Ok(injury::tibia_index(
-        mx.as_slice()?,
-        my.as_slice()?,
-        fz.as_slice()?,
+        &crate::python::f64_slice(&mx),
+        &crate::python::f64_slice(&my),
+        &crate::python::f64_slice(&fz),
         critical_bending_moment,
         critical_compression_force,
     ))

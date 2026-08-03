@@ -212,15 +212,22 @@ back as NumPy arrays in Python, typed `Vec`s in Rust.
     d = dynars.open_d3plot("d3plot")           # opens the whole family
     print(d.num_nodes, d.num_states)
     print("peak displacement:", d.max_displacement_final())
+
+    b = dynars.parse_binout("binout*")         # time histories
+    ax = b.read("nodout", "x_acceleration", id=101)   # one node's history -> [T]
     ```
 
 === "Rust"
 
     ```rust
-    use dynars::results::D3plot;
+    use dynars::results::{Binout, D3plot};
 
     let d = D3plot::open("d3plot").unwrap();
     println!("{} nodes, {} states", d.num_nodes(), d.num_states());
+
+    let b = Binout::new("binout*").unwrap();
+    let st = b.read_states("nodout", "x_acceleration").unwrap();  // (T, C) + ids
+    let _ = st;
     ```
 
 That is the whole surface in miniature: **parse → inspect → navigate → validate →
@@ -257,6 +264,9 @@ mental model — deck vs. keyword file, global ids, includes and transforms.
 - **Signal / injury functions missing in Rust.** They live behind the `signal`
   feature: `dynars = { version = "1.0", features = ["signal"] }`. The Python
   wheels already include it.
+- **`dynars.cfc` / `dynars.hic36` raise `AttributeError` in Python.** Post-
+  processing moved into submodules: `from dynars import signal, injury`, then
+  `signal.cfc(...)` / `injury.hic36(...)`.
 
 ## Next steps
 

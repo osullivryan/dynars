@@ -28,3 +28,20 @@ pub use results::{
 #[cfg(feature = "signal")]
 pub use signal::{butterworth, cfc, decimate, differentiate, filtfilt, integrate, resample_linear};
 pub use validate::{PyFinding, PyPredicate, PyReport, PyRule};
+
+use std::borrow::Cow;
+
+use numpy::PyReadonlyArray1;
+
+/// A contiguous `&[f64]` view of a 1-D numpy array, copying **only** when the
+/// array is strided — e.g. a column slice `values[:, i]` out of the `[T, nodes]`
+/// matrix `Binout.read_states` returns. Lets the signal / injury kernels accept
+/// any 1-D `float64` array, not just C-contiguous ones, so the natural
+/// "one entity's history" indexing feeds straight in without an
+/// `np.ascontiguousarray` dance.
+pub(crate) fn f64_slice<'a>(a: &'a PyReadonlyArray1<'_, f64>) -> Cow<'a, [f64]> {
+    match a.as_slice() {
+        Ok(s) => Cow::Borrowed(s),
+        Err(_) => Cow::Owned(a.as_array().to_vec()),
+    }
+}

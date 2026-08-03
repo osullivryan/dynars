@@ -34,11 +34,26 @@ class Binout:
         """
         Per-entity legend/name strings for a state branch (trimmed).
         """
-    def read(self, /, path: Sequence[str] = ...) -> Any:
+    def read(self, /, *path: str | Sequence[str], id: int | None = None, ids: Sequence[int] | None = None, name: str | None = None, names: Sequence[str] | None = None) -> Any:
         """
-        Read at `path` (list of segments). A leaf returns a numpy array of
-        the channel's native dtype; a directory returns `list[str]` of child
-        names. Empty path returns the top-level datasets.
+        Read from the binout (lasso-style). Segments may be separate args or one
+        list: `read("nodout", ...)` or `read(["nodout", ...])`.
+
+        - `read()` / `read("nodout")` -> `list[str]` of children (a branch lists
+          its variable names).
+        - `read("nodout", "x_acceleration")` -> the variable aggregated across all
+          output states: `float64[T, nodes]` (or `[T]` for a scalar-per-state
+          channel such as `time`).
+        - `read("nodout", "x_acceleration", id=1000001)` -> one entity's history
+          `float64[T]`; `ids=[...]` -> `float64[T, k]`. Select by entity name
+          (from the branch `legend`) instead with `name=` / `names=[...]`.
+          Selectors decode only the requested column(s) — no full matrix.
+          `KeyError` if absent; `ValueError` if more than one selector is given.
+        - A literal leaf path — `read("nodout", "d000001", "x_acceleration")` —
+          returns that single state's raw array.
+
+        For the structured form (time + ids together) use `read_states`; for the
+        raw child listing of any directory use `channels`.
         """
     def read_f64(self, /, path: Sequence[str]) -> Any:
         """
@@ -50,12 +65,19 @@ class Binout:
         list aligned with `paths`. Faster than a Python loop when pulling
         many channels: the reads run in parallel across cores.
         """
-    def read_states(self, /, branch: str, var: str) -> dict:
+    def read_states(self, /, branch: str, var: str, id: int | None = None, ids: Sequence[int] | None = None, name: str | None = None, names: Sequence[str] | None = None) -> dict:
         """
-        Aggregate a per-state variable across all state dirs into a dense matrix:
-        `{"time": float64[T], "values": float64[T, C], "ids": int64[C],
-        "n_steps": int, "n_channels": int}`. One node's history by ID:
-        `values[:, np.nonzero(ids == node_id)[0][0]]`.
+        Aggregate a per-state variable across all state dirs, as a dict.
+
+        Full matrix (default): `{"time": float64[T], "values": float64[T, C],
+        "ids": int64[C], "n_steps": int, "n_channels": int}`.
+
+        With a selector — `id`/`ids` (by entity id) or `name`/`names` (by the
+        branch `legend`) — only those columns are decoded (no full matrix):
+        `{"time": float64[T], "values": float64[T] or [T, k], "ids": int64[k]}`,
+        where `values` is 1-D for a single `id`/`name`. `KeyError` if absent,
+        `ValueError` if more than one selector is given. The bare-array
+        counterpart is `read(branch, var, ...)`.
         """
     def read_time_series(self, /, path: Sequence[str]) -> dict:
         """

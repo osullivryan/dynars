@@ -198,13 +198,19 @@ concepts behind them, see [Concepts](concepts.md); for full APIs, the
 === "Python"
 
     ```python
+    from dynars import signal, injury
     b = dynars.parse_binout("binout*")
-    dt = 1e-4
-    ax = b.read(["nodout", "d000001", "x_acceleration"])
-    ay = b.read(["nodout", "d000001", "y_acceleration"])
-    az = b.read(["nodout", "d000001", "z_acceleration"])
-    a = dynars.cfc(dynars.resultant(ax, ay, az), 1000, dt)   # CFC1000
-    print("HIC36 =", dynars.hic36(a, dt), " 3ms clip =", dynars.clip(a, dt))
+
+    # One node's acceleration history, by node id (read(..., id=) -> [T]):
+    node = 1000001
+    t   = b.read("nodout", "time")
+    dt  = t[1] - t[0]
+    ax  = b.read("nodout", "x_acceleration", id=node)
+    ay  = b.read("nodout", "y_acceleration", id=node)
+    az  = b.read("nodout", "z_acceleration", id=node)
+
+    a = signal.cfc(injury.resultant(ax, ay, az), 1000, dt)   # CFC1000
+    print("HIC36 =", injury.hic36(a, dt), " 3ms clip =", injury.clip(a, dt))
     ```
 
 ## Read one node's displacement history across all states (d3plot)

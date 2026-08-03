@@ -21,25 +21,14 @@ from dynars._dynars import (
     Severity,
     StateBlock,
     Workspace,
-    butterworth,
-    cfc,
-    clip,
-    differentiate,
-    filtfilt,
-    hic,
-    hic15,
-    hic36,
-    integrate,
     open_d3plot,
-    resultant,
-    severity_index,
     parse_binout,
     parse_deck,
     parse_include_tree,
     parse_keyword_file,
     write_keyword,
 )
-from dynars import kw  # keyword-name constants (dynars.kw.MAT_ELASTIC)
+from dynars import injury, kw, signal  # submodules: dynars.signal.*, dynars.injury.*
 from dynars.binout import build_series
 
 # Friendly alias for the result-block enum (dynars.Block.Displacement).
@@ -90,19 +79,9 @@ __all__ = [
     "build_series",
     "parse_binout",
     "open_d3plot",
-    # signal post-processing
-    "cfc",
-    "filtfilt",
-    "butterworth",
-    "integrate",
-    "differentiate",
-    # occupant injury criteria
-    "resultant",
-    "hic",
-    "hic15",
-    "hic36",
-    "clip",
-    "severity_index",
+    # post-processing submodules: dynars.signal.*, dynars.injury.*
+    "signal",
+    "injury",
     # schema authoring
     "keyword",
     "parse_keyword",

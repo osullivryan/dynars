@@ -28,6 +28,48 @@ impl SymNode {
         }
     }
 
+    /// Decode only the elements at `cols` of a leaf dataset into `out`, as f64,
+    /// straight from the memory map — the targeted counterpart to [`read`](Self::read).
+    ///
+    /// Reads one entity's history (or a few) without materializing the whole
+    /// per-state record: only the bytes of the requested elements are touched,
+    /// so on a wide record the OS faults in ~one page per column instead of the
+    /// entire array. Out-of-range columns yield `0.0` (a short/ragged record).
+    pub fn read_cols_f64(
+        &self,
+        files: &[Diskfile],
+        cols: &[usize],
+        out: &mut Vec<f64>,
+    ) -> Result<(), LsdaError> {
+        match self {
+            SymNode::Dir(_) => Err(LsdaError::Conversion(
+                "expected a dataset, got a directory".into(),
+            )),
+            SymNode::Leaf(meta) => {
+                let file = files
+                    .get(meta.file_index)
+                    .ok_or_else(|| LsdaError::SymbolNotFound("file index out of bounds".into()))?;
+                let count = meta.length as usize;
+                let elem = type_elem_size(meta.type_);
+                let base = (meta.offset + file.comp2 as u64 + meta.name_len as u64) as usize;
+                let bytes = file.bytes();
+                for &j in cols {
+                    let v = if j < count {
+                        let at = base + j * elem;
+                        bytes
+                            .get(at..at + elem)
+                            .map(|b| decode_one_f64(b, meta.type_, file.is_little_endian))
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    out.push(v);
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Read this node: a directory yields its (sorted) child names; a leaf reads
     /// its data straight from the memory map (no syscalls, no locks).
     pub fn read(&self, files: &[Diskfile]) -> Result<ReadResult, LsdaError> {
@@ -143,6 +185,36 @@ macro_rules! decode {
         }
         v
     }};
+}
+
+/// Decode a single LSDA scalar (the type codes of [`read_typed`]) to f64. `buf`
+/// must be at least the element's byte width; a short buffer yields `0.0`.
+fn decode_one_f64(buf: &[u8], type_: u8, le: bool) -> f64 {
+    macro_rules! d {
+        ($ty:ty, $n:expr) => {{
+            match buf.get(..$n).and_then(|s| <[u8; $n]>::try_from(s).ok()) {
+                Some(b) => (if le {
+                    <$ty>::from_le_bytes(b)
+                } else {
+                    <$ty>::from_be_bytes(b)
+                }) as f64,
+                None => 0.0,
+            }
+        }};
+    }
+    match type_ {
+        1 => buf.first().map_or(0.0, |&b| b as i8 as f64),
+        2 => d!(i16, 2),
+        3 => d!(i32, 4),
+        4 => d!(i64, 8),
+        5 => buf.first().map_or(0.0, |&b| b as f64),
+        6 => d!(u16, 2),
+        7 => d!(u32, 4),
+        8 => d!(u64, 8),
+        9 => d!(f32, 4),
+        10 => d!(f64, 8),
+        _ => 0.0,
+    }
 }
 
 fn read_typed(buf: &[u8], type_: u8, count: usize, le: bool) -> Result<ReadResult, LsdaError> {
