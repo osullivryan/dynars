@@ -61,6 +61,8 @@ the one you use and the rest of the page follows:
 - **[Schemas](schemas.md)** — teach dynars a keyword it doesn't ship, then read
   it like any built-in.
 - **[Recipes](recipes.md)** — short, task-oriented "how do I…" snippets.
+- **[Performance](performance.md)** — results-reader benchmarks vs lasso, and the
+  mental model behind the numbers.
 - **[Command line](cli.md)** — the `dynars` CLI: parse a deck, scan its include
   tree, generate test decks.
 - **[API reference](reference.md)** — the complete Rust and Python API.

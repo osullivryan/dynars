@@ -323,6 +323,12 @@ Filtering (`cfc`, `filtfilt`, `butterworth`) is behind the `signal` feature,
 which the published wheels include. CFC and the injury criteria are always
 available. Generic array math (FFT, resampling) is left to numpy and SciPy.
 
+The `binout` / `d3plot` readers are memory-mapped and lazy — reading one node,
+one state, or a streamed reduction is often 30–500× faster than lasso, since
+they move only the bytes you ask for. See
+[Performance](https://osullivryan.github.io/dynars/performance/) for benchmarks
+and the reproducible `examples/bench_vs_lasso.py`.
+
 ## Custom keywords
 
 Decks carry vendor, rare, or newer-than-our-snapshot keywords. Describe one with

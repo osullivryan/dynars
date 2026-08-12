@@ -57,5 +57,6 @@ nav:
     - Results: results.md
     - Schemas: schemas.md
   - Recipes: recipes.md
+  - Performance: performance.md
   - Command line: cli.md
   - API reference: reference.md

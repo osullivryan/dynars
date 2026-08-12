@@ -105,6 +105,20 @@ layout, which you reshape by integration points/layers as needed.
     disp = d.block(StateBlock.Displacement)  # (n_states, N, 3)
     ```
 
+=== "Rust"
+
+    ```rust
+    use dynars::results::{element, StateBlock};
+
+    // The whole block as f64: (data, [n_states, count, vars], entity_ids).
+    let (data, [n_states, count, vars], _ids) =
+        d.element_block_f64(StateBlock::Solid).unwrap();
+
+    // Or stream a per-part reduction straight off the mmap — no materialization:
+    let vm = d.part_max_history(StateBlock::Solid, part, element::von_mises_stress);
+    let _ = (data, n_states, count, vars, vm);
+    ```
+
 The column meanings are the solver's standard packing (6 stress components, then
 effective plastic strain, then any history variables you requested). See the
 [API reference](reference.md) for the layout per block.
@@ -184,6 +198,18 @@ Pulling a lot of channels? `read_many` runs the reads in parallel across cores
     ```python
     paths = [["nodout", f"d{ i+1 :06d}", "x_acceleration"] for i in range(200)]
     arrays = b.read_many(paths)            # list aligned with `paths`
+    ```
+
+=== "Rust"
+
+    ```rust
+    let states: Vec<String> = (1..=200).map(|i| format!("d{i:06}")).collect();
+    let paths: Vec<Vec<&str>> = states
+        .iter()
+        .map(|s| vec!["nodout", s.as_str(), "x_acceleration"])
+        .collect();
+    let results = b.read_many(&paths);     // Vec<Result<ReadResult>>, aligned with paths
+    let _ = results;
     ```
 
 ## Signal processing & injury criteria
@@ -279,6 +305,28 @@ open.
     print(d.num_states, d.solid_connectivity()[0].tolist())
     ```
 
+=== "Rust"
+
+    ```rust
+    use dynars::results::D3plotWriter;
+
+    // 8 nodes as flat x,y,z; one hex solid + one quad shell.
+    let coords: Vec<f64> = vec![
+        0.,0.,0., 1.,0.,0., 1.,1.,0., 0.,1.,0.,
+        0.,0.,1., 1.,0.,1., 1.,1.,1., 0.,1.,1.,
+    ];
+    let mut w = D3plotWriter::new(coords.clone()).unwrap();
+    w.add_solid([1, 2, 3, 4, 5, 6, 7, 8], 1);   // 1-based node ids, part index 1
+    w.add_shell([1, 2, 3, 4], 2);
+    w.set_part_ids(vec![10, 20]);
+    for s in 0..4 {
+        let disp: Vec<f64> = coords.iter().enumerate()
+            .map(|(i, &c)| if i % 3 == 2 { c + 0.1 * s as f64 } else { c }).collect();
+        w.add_state(s as f64 * 1e-3, disp, None, None).unwrap();
+    }
+    w.write("demo.d3plot").unwrap();
+    ```
+
 Editing an existing family in place is `D3plotEditor` — overwrite node
 coordinates or a result block at chosen states and `save()`; everything else is
 preserved byte-for-byte. A full end-to-end walk-through (write → read → edit →
@@ -312,6 +360,26 @@ as proper histories in dynars and LS-PrePost.
                             times=np.linspace(0, 1, 5), labels=[f"node {i}" for i in ids])
     w.write("series.binout")
     ```
+
+=== "Rust"
+
+    ```rust
+    use dynars::results::{BinoutEditor, Data};
+
+    // Low-level: an arbitrary curve (one value per dNNNNNN state + a `time`).
+    let mut e = BinoutEditor::new();
+    for i in 0..12 {
+        let t = i as f64 / 11.0;
+        let d = format!("d{:06}", i + 1);
+        e.set(&["mycurve", &d, "time"], Data::F64(vec![t])).unwrap();
+        e.set(&["mycurve", &d, "energy"], Data::F32(vec![(6.0 * t).sin() as f32])).unwrap();
+    }
+    e.write("out.binout").unwrap();
+    ```
+
+    The `build_series` time-series helper (metadata + per-state dirs) is a Python
+    convenience; in Rust, write the `metadata/{ids,legend}` and `dNNNNNN` entries
+    with `BinoutEditor` directly.
 
 `examples/binout_demo.py` / `examples/binout_demo.rs` are the runnable versions
 (create → read → build series → edit).
