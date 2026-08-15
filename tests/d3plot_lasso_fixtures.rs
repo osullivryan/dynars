@@ -68,8 +68,9 @@ fn order_family_globals_parts_and_deletion() {
     assert!(ie[6] > ie[0]); // internal energy grows
 
     // Per-part energy matrix (n_states, n_parts).
-    let (mass, dims) = d.part_field_history(PartField::Mass).unwrap();
-    assert_eq!(dims, [7, 4]);
+    let mass_block = d.part_field_history(PartField::Mass).unwrap();
+    assert_eq!(mass_block.dims(), [7, 4]);
+    let mass = mass_block.data();
     // Mass is constant over time.
     for s in 1..7 {
         for p in 0..4 {

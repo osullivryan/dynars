@@ -6,7 +6,7 @@
 //! nodal results (displacement/velocity), element results with **custom history
 //! variables**, generic block extraction, and in-place editing.
 
-use dynars::results::{BlockArray, D3plot, D3plotEditor, D3plotWriter, StateBlock};
+use dynars::results::{BlockArray, D3plot, D3plotEditor, D3plotWriter, ResultBlock, StateBlock};
 
 fn main() {
     let path = std::env::temp_dir().join("dynars_demo.d3plot");
@@ -45,7 +45,7 @@ fn main() {
             10.0 * s as f64, // custom field #2 (grows with time)
         ]);
     }
-    w.set_solid_results(9, solid);
+    w.set_solid_results(ResultBlock::new([n_states, 1, 9], solid));
 
     // States: time + deformed coordinates (+ optional velocity/acceleration).
     for s in 0..n_states {

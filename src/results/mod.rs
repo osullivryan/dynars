@@ -41,7 +41,7 @@ pub use binout::{Binout, StateColumns, StateMatrix};
 pub use d3plot::{
     AirbagState, BlockArray, D3plot, D3plotEditor, D3plotError, D3plotWriter, FsiforField,
     GlobalField, InterfaceField, InterfaceFields, IntforWriter, NodeField, NodeFields, PartField,
-    StateBlock,
+    ResultBlock, StateBlock,
 };
 pub use edit::{BinoutEditor, Data};
 pub use symbol::ReadResult;

@@ -11,8 +11,8 @@ use pyo3::types::{PyDict, PyList};
 use crate::results::{
     Binout as RustBinout, BinoutEditor as RustBinoutEditor, BlockArray, D3plot as RustD3plot,
     D3plotEditor as RustD3plotEditor, D3plotError, D3plotWriter as RustD3plotWriter, Data,
-    FsiforField, InterfaceField, IntforWriter as RustIntforWriter, LsdaError, ReadResult,
-    StateBlock,
+    FsiforField, GlobalField, InterfaceField, IntforWriter as RustIntforWriter, LsdaError,
+    NodeField, PartField, ReadResult, ResultBlock, StateBlock,
 };
 use numpy::{PyReadonlyArray2, PyReadonlyArrayDyn};
 
@@ -42,18 +42,19 @@ fn f64_vec(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<f64>> {
     ))
 }
 
-/// Like [`f64_vec`], also returning the array's last-axis length.
-fn f64_vec_lastdim(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<(Vec<f64>, usize)> {
-    let vars = if let Ok(a) = obj.extract::<PyReadonlyArrayDyn<f64>>() {
-        a.as_array().shape().last().copied().unwrap_or(0)
+/// Build a [`ResultBlock`] from a numpy array, preserving its full shape as the
+/// block dims (row-major) — e.g. `(n_states, n_elem, vars)`.
+fn result_block(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<ResultBlock> {
+    let dims: Vec<usize> = if let Ok(a) = obj.extract::<PyReadonlyArrayDyn<f64>>() {
+        a.as_array().shape().to_vec()
     } else if let Ok(a) = obj.extract::<PyReadonlyArrayDyn<f32>>() {
-        a.as_array().shape().last().copied().unwrap_or(0)
+        a.as_array().shape().to_vec()
     } else {
         return Err(pyo3::exceptions::PyTypeError::new_err(
             "expected a float32 or float64 numpy array",
         ));
     };
-    Ok((f64_vec(obj)?, vars))
+    Ok(ResultBlock::new(dims, f64_vec(obj)?))
 }
 
 /// Reshape flat connectivity into `(rows, cols)` + a 1-D parts array.
@@ -902,20 +903,224 @@ impl PyD3plotWriter {
             .map_err(d3_err)
     }
 
+    /// Emit double-precision (8-byte word) output when `double` is true (default
+    /// single precision). Values are stored as f64, so this is lossless.
+    #[pyo3(signature = (double))]
+    fn set_double_precision(&mut self, double: bool) {
+        self.inner.set_double_precision(double);
+    }
+
+    /// Number of through-thickness integration points packed into each shell
+    /// result record (MAXINT). `set_shell_results`' innermost dim must be
+    /// `n_layers * per_layer`.
+    #[pyo3(signature = (n_layers))]
+    fn set_shell_layers(&mut self, n_layers: usize) {
+        self.inner.set_shell_layers(n_layers);
+    }
+
+    /// Add beam elements: `conn` is `(M, 3)` one-based node ids (end, end,
+    /// orientation); `parts` optional `(M,)` part id (default 1).
+    #[pyo3(signature = (conn, parts=None))]
+    fn add_beams(&mut self, conn: PyReadonlyArray2<'_, i64>, parts: Option<Vec<i64>>) -> PyResult<()> {
+        let a = conn.as_array();
+        if a.ncols() != 3 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "beam conn must have shape (M, 3)",
+            ));
+        }
+        for (i, row) in a.rows().into_iter().enumerate() {
+            let part = parts.as_ref().and_then(|p| p.get(i)).copied().unwrap_or(1) as i32;
+            self.inner
+                .add_beam([row[0] as i32, row[1] as i32, row[2] as i32], part);
+        }
+        Ok(())
+    }
+
+    /// Add thick-shell elements: `conn` is `(M, 8)` one-based node ids; `parts`
+    /// optional `(M,)` part id (default 1).
+    #[pyo3(signature = (conn, parts=None))]
+    fn add_tshells(&mut self, conn: PyReadonlyArray2<'_, i64>, parts: Option<Vec<i64>>) -> PyResult<()> {
+        let a = conn.as_array();
+        if a.ncols() != 8 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "tshell conn must have shape (M, 8)",
+            ));
+        }
+        for (i, row) in a.rows().into_iter().enumerate() {
+            let part = parts.as_ref().and_then(|p| p.get(i)).copied().unwrap_or(1) as i32;
+            let mut nodes = [0i32; 8];
+            for (d, &v) in nodes.iter_mut().zip(row.iter()) {
+                *d = v as i32;
+            }
+            self.inner.add_tshell(nodes, part);
+        }
+        Ok(())
+    }
+
     /// Per-solid result block, `(n_states, n_solids, vars)` — the same raw
-    /// layout `D3plot.block(StateBlock.Solid)` returns. Sets NV3D.
+    /// layout `D3plot.solid_results()` returns. Sets NV3D.
     #[pyo3(signature = (results))]
     fn set_solid_results(&mut self, results: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
-        let (data, vars) = f64_vec_lastdim(&results)?;
-        self.inner.set_solid_results(vars, data);
+        self.inner.set_solid_results(result_block(&results)?);
         Ok(())
     }
 
     /// Per-shell result block, `(n_states, n_shells, vars)`. Sets NV2D.
     #[pyo3(signature = (results))]
     fn set_shell_results(&mut self, results: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
-        let (data, vars) = f64_vec_lastdim(&results)?;
-        self.inner.set_shell_results(vars, data);
+        self.inner.set_shell_results(result_block(&results)?);
+        Ok(())
+    }
+
+    /// Per-beam result block, `(n_states, n_beams, vars)`. Sets NV1D.
+    #[pyo3(signature = (results))]
+    fn set_beam_results(&mut self, results: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_beam_results(result_block(&results)?);
+        Ok(())
+    }
+
+    /// Per-thick-shell result block, `(n_states, n_tshells, vars)`. Sets NV3DT.
+    #[pyo3(signature = (results))]
+    fn set_tshell_results(&mut self, results: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_tshell_results(result_block(&results)?);
+        Ok(())
+    }
+
+    /// A whole-model global scalar history (one value per state) at `field`'s slot.
+    #[pyo3(signature = (field, data))]
+    fn set_global_history(&mut self, field: GlobalField, data: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_global_history(field, f64_vec(&data)?);
+        Ok(())
+    }
+
+    /// A per-part scalar history `(n_states, n_parts)` at `field`.
+    #[pyo3(signature = (field, data))]
+    fn set_part_field(&mut self, field: PartField, data: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_part_field(field, f64_vec(&data)?);
+        Ok(())
+    }
+
+    /// Per-part velocity history `(n_states, n_parts, 3)`.
+    #[pyo3(signature = (data))]
+    fn set_part_velocity(&mut self, data: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_part_velocity(f64_vec(&data)?);
+        Ok(())
+    }
+
+    /// A per-node thermal/auxiliary field history at `field`. See
+    /// `D3plotWriter.set_node_field` (Rust) for the per-node widths.
+    #[pyo3(signature = (field, data))]
+    fn set_node_field(&mut self, field: NodeField, data: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_node_field(field, f64_vec(&data)?);
+        Ok(())
+    }
+
+    /// Per-element deletion flags for one family (`block`): `(n_states, n_elem)`,
+    /// 1 = alive, 0 = deleted (mdlopt 2).
+    #[pyo3(signature = (block, alive))]
+    fn set_element_deletion(&mut self, block: StateBlock, alive: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_element_deletion(block, f64_vec(&alive)?);
+        Ok(())
+    }
+
+    /// Per-node deletion flags: `(n_states, numnp)`, 1 = alive (mdlopt 1).
+    #[pyo3(signature = (alive))]
+    fn set_node_deletion(&mut self, alive: Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        self.inner.set_node_deletion(f64_vec(&alive)?);
+        Ok(())
+    }
+
+    /// User beam / thick-shell element IDs for the NARBS numbering section.
+    #[pyo3(signature = (beam_ids=None, tshell_ids=None))]
+    fn set_element_ids(&mut self, beam_ids: Option<Vec<i64>>, tshell_ids: Option<Vec<i64>>) {
+        if let Some(v) = beam_ids {
+            self.inner.set_beam_ids(v);
+        }
+        if let Some(v) = tshell_ids {
+            self.inner.set_tshell_ids(v);
+        }
+    }
+
+    /// SPH particles: `materials` `(P,)`, `n_vars` per particle, `results`
+    /// `(n_states, P, n_vars)`.
+    #[pyo3(signature = (materials, n_vars, results))]
+    fn set_sph(
+        &mut self,
+        materials: Vec<i64>,
+        n_vars: usize,
+        results: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<()> {
+        self.inner.set_sph(materials, n_vars, f64_vec(&results)?);
+        Ok(())
+    }
+
+    /// Airbag / CPM: geometry `(n_airbags, n_geom_vars)`, chamber state
+    /// `(n_states, n_airbags, n_airbag_vars)`, particle state `(n_states,
+    /// n_particles, n_particle_vars)`.
+    #[pyo3(signature = (n_airbags, n_particles, n_geom_vars, n_airbag_vars, n_particle_vars, geom, airbag_state, particle_state))]
+    #[allow(clippy::too_many_arguments)]
+    fn set_airbag(
+        &mut self,
+        n_airbags: usize,
+        n_particles: usize,
+        n_geom_vars: usize,
+        n_airbag_vars: usize,
+        n_particle_vars: usize,
+        geom: Bound<'_, pyo3::PyAny>,
+        airbag_state: Bound<'_, pyo3::PyAny>,
+        particle_state: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<()> {
+        self.inner.set_airbag(
+            n_airbags,
+            n_particles,
+            n_geom_vars,
+            n_airbag_vars,
+            n_particle_vars,
+            f64_vec(&geom)?,
+            f64_vec(&airbag_state)?,
+            f64_vec(&particle_state)?,
+        );
+        Ok(())
+    }
+
+    /// Rigid bodies: `bodies` is a list of `(part_id, node_ids, active_node_ids)`;
+    /// `motion` is `(n_states, n_bodies, k)` (k = 12 with a rigid road, else 24).
+    #[pyo3(signature = (bodies, motion))]
+    fn set_rigid_bodies(
+        &mut self,
+        bodies: Vec<(i64, Vec<i64>, Vec<i64>)>,
+        motion: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<()> {
+        self.inner.set_rigid_bodies(bodies, f64_vec(&motion)?);
+        Ok(())
+    }
+
+    /// Rigid road: node ids `(P,)`, node coords `(P, 3)`, `segments` a list of
+    /// `(road_id, [4 node ids per segment])`, motion `(n_states, n_roads, 6)`.
+    #[pyo3(signature = (node_ids, node_coords, segments, motion))]
+    fn set_rigid_road(
+        &mut self,
+        node_ids: Vec<i64>,
+        node_coords: Bound<'_, pyo3::PyAny>,
+        segments: Vec<(i64, Vec<i64>)>,
+        motion: Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<()> {
+        self.inner
+            .set_rigid_road(node_ids, f64_vec(&node_coords)?, segments, f64_vec(&motion)?);
+        Ok(())
+    }
+
+    /// Rigid walls: `force` `(n_states, n_walls)`, optional `position`
+    /// `(n_states, n_walls, 3)`.
+    #[pyo3(signature = (n_walls, force, position=None))]
+    fn set_rigid_walls(
+        &mut self,
+        n_walls: usize,
+        force: Bound<'_, pyo3::PyAny>,
+        position: Option<Bound<'_, pyo3::PyAny>>,
+    ) -> PyResult<()> {
+        let position = position.map(|p| f64_vec(&p)).transpose()?;
+        self.inner.set_rigid_walls(n_walls, f64_vec(&force)?, position);
         Ok(())
     }
 

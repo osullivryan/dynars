@@ -7,7 +7,7 @@
 //! enough to be honest:
 //!   * `element_block_f64`  — copies the block into an f64 Vec, then reduces.
 //!   * `part_max_history`   — streams straight off the mmap, no materialization.
-use dynars::results::{element, D3plot, D3plotWriter, StateBlock};
+use dynars::results::{element, D3plot, D3plotWriter, ResultBlock, StateBlock};
 use std::time::Instant;
 
 fn main() {
@@ -31,7 +31,7 @@ fn main() {
     for (i, v) in data.iter_mut().enumerate() {
         *v = ((i * 2_654_435_761usize) % 997) as f64 / 7.0;
     }
-    w.set_solid_results(nv, data);
+    w.set_solid_results(ResultBlock::new([n_states, n_elem, nv], data));
     for s in 0..n_states {
         let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
         w.add_state(s as f64, disp, None, None).unwrap();

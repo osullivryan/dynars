@@ -156,6 +156,11 @@ pub struct Control {
     pub reduced_rigid: bool,
     pub n_roads: usize,
     pub nmmat: usize, // total number of materials/parts
+    // Rigid walls live in the global block after the 6 scalars + 7*nmmat part
+    // block; derived from NGLBV (assumes the modern 4-vars/wall layout when the
+    // tail is a multiple of 4, else 1 var/wall — force only).
+    pub n_rigid_walls: usize,
+    pub n_rigid_wall_vars: usize,
     pub extra: usize, // extra header words beyond the base 64 (word 57)
     // Interface-force (intfor) fields. `filetype == 4` marks an intfor file, in
     // which the "shell" slot (nel4) holds interface segments and nv2d their
@@ -528,6 +533,122 @@ pub enum FsiforField {
     VelocityZ,
 }
 
+/// A self-describing d3plot result array: a flat, row-major `data` buffer plus
+/// its `dims` (state-major for per-state blocks — `dims[0]` is the state count)
+/// and, when known, `components` naming the innermost axis (e.g. the six stress
+/// components). The buffer stays flat/columnar for throughput; this type only
+/// labels it, so bulk callers can read [`data`](Self::data) directly while
+/// convenience callers use [`state`](Self::state) / [`component`](Self::component).
+///
+/// It is the single currency of the d3plot results API: readers return it and
+/// the writer accepts it, so a read → edit → write round-trip needs no manual
+/// reshaping.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(name = "ResultBlock", skip_from_py_object)
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResultBlock {
+    data: Vec<f64>,
+    dims: Vec<usize>,
+    components: Vec<String>,
+}
+
+impl ResultBlock {
+    /// A block with the given row-major `dims` and no component labels.
+    pub fn new(dims: impl Into<Vec<usize>>, data: Vec<f64>) -> Self {
+        Self {
+            data,
+            dims: dims.into(),
+            components: Vec::new(),
+        }
+    }
+
+    /// A block whose innermost axis carries the given `components` labels.
+    pub fn named(
+        dims: impl Into<Vec<usize>>,
+        components: impl IntoIterator<Item = impl Into<String>>,
+        data: Vec<f64>,
+    ) -> Self {
+        Self {
+            data,
+            dims: dims.into(),
+            components: components.into_iter().map(Into::into).collect(),
+        }
+    }
+
+    /// The flat, row-major data buffer.
+    pub fn data(&self) -> &[f64] {
+        &self.data
+    }
+    /// Consume the block, yielding the flat buffer.
+    pub fn into_data(self) -> Vec<f64> {
+        self.data
+    }
+    /// The shape, outermost axis first.
+    pub fn dims(&self) -> &[usize] {
+        &self.dims
+    }
+    /// Labels for the innermost axis, or empty when unlabeled.
+    pub fn components(&self) -> &[String] {
+        &self.components
+    }
+    /// Total element count of the flat buffer.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+    /// Number of states (the outermost dimension), or 0 if the block is scalar-rank.
+    pub fn n_states(&self) -> usize {
+        self.dims.first().copied().unwrap_or(0)
+    }
+
+    /// The row-major slice for outermost index `i` (one state, when state-major):
+    /// `dims[1..].product()` values. `None` if out of range or scalar-rank.
+    pub fn state(&self, i: usize) -> Option<&[f64]> {
+        if self.dims.len() < 2 {
+            return None;
+        }
+        let stride: usize = self.dims[1..].iter().product();
+        self.data.get(i * stride..(i + 1) * stride)
+    }
+
+    /// Gather a named innermost-axis component across the whole block: one value
+    /// per (all-but-last-axis) entry. `None` if the name is unknown.
+    pub fn component(&self, name: &str) -> Option<Vec<f64>> {
+        let idx = self.components.iter().position(|c| c == name)?;
+        let last = *self.dims.last()?;
+        if last == 0 {
+            return Some(Vec::new());
+        }
+        Some(self.data.iter().skip(idx).step_by(last).copied().collect())
+    }
+}
+
+/// Standard component labels for a raw element result record of `vars` values:
+/// the 6 stress components, effective plastic strain, then `hist_k`. Truncated or
+/// extended to exactly `vars` entries so it always matches the innermost axis.
+fn element_component_names(vars: usize) -> Vec<String> {
+    const BASE: [&str; 7] = [
+        "sigma_xx",
+        "sigma_yy",
+        "sigma_zz",
+        "sigma_xy",
+        "sigma_yz",
+        "sigma_zx",
+        "eff_plastic_strain",
+    ];
+    (0..vars)
+        .map(|i| {
+            BASE.get(i)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("hist_{}", i - BASE.len()))
+        })
+        .collect()
+}
+
 /// Where one state lives: which family file, and the byte offset of its start.
 struct StateLoc {
     file: usize,
@@ -781,7 +902,7 @@ impl D3plot {
     /// global-variables section, laid out internal-energy, kinetic-energy,
     /// velocity(3), mass, hourglass-energy — each `n_parts` wide. `None` if the
     /// global block is too small to contain it.
-    pub fn part_field_history(&self, field: PartField) -> Option<(Vec<f64>, [usize; 2])> {
+    pub fn part_field_history(&self, field: PartField) -> Option<ResultBlock> {
         const GLOBAL_SCALARS: usize = 6; // kinetic, internal, total, vel x/y/z
         let np = self.ctrl.nmmat;
         if np == 0 {
@@ -807,7 +928,7 @@ impl D3plot {
             let row = read_floats_at(&self.files[loc.file], base, np, ws).ok()?;
             out[s * np..(s + 1) * np].copy_from_slice(&row);
         }
-        Some((out, [self.states.len(), np]))
+        Some(ResultBlock::new([self.states.len(), np], out))
     }
 
     /// Element deletion ("is alive") flags for a block at `state`: one value per
@@ -836,6 +957,19 @@ impl D3plot {
         read_floats_at(&self.files[loc.file], base, count, self.ctrl.wordsize).ok()
     }
 
+    /// Node deletion ("is alive") flags for `state`: one value per node (0 =
+    /// deleted). Present only when the file carries **node** deletion (mdlopt 1);
+    /// returns `None` for element deletion (mdlopt 2) or no deletion data. The
+    /// block sits at the end of the state, before any SPH/airbag/rigid tail.
+    pub fn node_alive(&self, state: usize) -> Option<Vec<f64>> {
+        if self.ctrl.mdlopt() != 1 {
+            return None;
+        }
+        let loc = self.states.get(state)?;
+        let base = loc.offset + self.ctrl.deletion_off() as u64 * self.ctrl.wordsize;
+        read_floats_at(&self.files[loc.file], base, self.ctrl.numnp, self.ctrl.wordsize).ok()
+    }
+
     /// **SPH** per-state block: `NMSPH × n_sph_vars` row-major (raw solver words;
     /// the per-particle layout is set by the ISPHFG flags — typically material,
     /// then radius/pressure/stress(6)/plastic-strain/density/energy/…). `None` if
@@ -844,14 +978,14 @@ impl D3plot {
     /// ⚠ Not yet validated against a real SPH d3plot (no such test file available);
     /// the state *sizing* is correct (files with SPH step right), but treat the
     /// per-variable interpretation as provisional.
-    pub fn sph_state(&self, state: usize) -> Option<(Vec<f64>, [usize; 2])> {
+    pub fn sph_state(&self, state: usize) -> Option<ResultBlock> {
         if self.ctrl.nmsph == 0 {
             return None;
         }
         let loc = self.states.get(state)?;
         let base = loc.offset + self.ctrl.sph_off() as u64 * self.ctrl.wordsize;
         let v = read_floats_at(&self.files[loc.file], base, self.ctrl.sph_words(), self.ctrl.wordsize).ok()?;
-        Some((v, [self.ctrl.nmsph, self.ctrl.n_sph_vars]))
+        Some(ResultBlock::new([self.ctrl.nmsph, self.ctrl.n_sph_vars], v))
     }
 
     /// **Airbag/CPM** per-state data (see [`AirbagState`]): airbag chamber state
@@ -886,7 +1020,7 @@ impl D3plot {
     ///
     /// ⚠ Not yet validated against a real rigid-body d3plot; sizing is correct, the
     /// per-variable interpretation is provisional.
-    pub fn rigid_body_motion(&self, state: usize) -> Option<(Vec<f64>, [usize; 2])> {
+    pub fn rigid_body_motion(&self, state: usize) -> Option<ResultBlock> {
         if self.ctrl.n_rigids == 0 {
             return None;
         }
@@ -894,31 +1028,77 @@ impl D3plot {
         let base = loc.offset + self.ctrl.rigid_off() as u64 * self.ctrl.wordsize;
         let k = self.ctrl.rigid_vars();
         let v = read_floats_at(&self.files[loc.file], base, self.ctrl.n_rigids * k, self.ctrl.wordsize).ok()?;
-        Some((v, [self.ctrl.n_rigids, k]))
+        Some(ResultBlock::new([self.ctrl.n_rigids, k], v))
     }
 
     /// **Rigid-road** per-state motion block: `n_roads × 6` row-major. `None` if
     /// the file has no rigid road surfaces.
     ///
     /// ⚠ Not yet validated against a real rigid-road d3plot; sizing is correct.
-    pub fn rigid_road_state(&self, state: usize) -> Option<(Vec<f64>, [usize; 2])> {
+    pub fn rigid_road_state(&self, state: usize) -> Option<ResultBlock> {
         if self.ctrl.n_roads == 0 {
             return None;
         }
         let loc = self.states.get(state)?;
         let base = loc.offset + self.ctrl.road_off() as u64 * self.ctrl.wordsize;
         let v = read_floats_at(&self.files[loc.file], base, self.ctrl.n_roads * 6, self.ctrl.wordsize).ok()?;
-        Some((v, [self.ctrl.n_roads, 6]))
+        Some(ResultBlock::new([self.ctrl.n_roads, 6], v))
     }
 
-    /// A thermal/auxiliary per-node field at `state`: `NUMNP × k` row-major, where
-    /// `k` is the per-node width (1, or 3 for vectors / temperature layers). `None`
-    /// if the field is absent (per IT/IDTDT) or the state is out of range.
-    pub fn node_field(&self, field: NodeField, state: usize) -> Option<Vec<f64>> {
+    /// Rigid-wall per-state data from the global-variables block: the force per
+    /// wall (`ResultBlock` of dims `[n_walls]`), or `None` if the file has none.
+    /// See [`rigid_wall_position`](Self::rigid_wall_position). Assumes the modern
+    /// 971 layout (4 vars/wall) when the global tail is a multiple of 4.
+    pub fn rigid_wall_force(&self, state: usize) -> Option<ResultBlock> {
+        let (nw, base) = self.rigid_wall_layout(state)?;
+        let v = read_floats_at(&self.files[self.states[state].file], base, nw, self.ctrl.wordsize).ok()?;
+        Some(ResultBlock::new([nw], v))
+    }
+
+    /// Rigid-wall position per wall (`ResultBlock` of dims `[n_walls, 3]`), or
+    /// `None` if the file carries force only (1 var/wall) or has no rigid walls.
+    pub fn rigid_wall_position(&self, state: usize) -> Option<ResultBlock> {
+        let (nw, base) = self.rigid_wall_layout(state)?;
+        let ws = self.ctrl.wordsize;
+        // Positions (if present) follow the force block; 4 vars/wall total.
+        if self.ctrl.n_rigid_walls == 0 || self.ctrl.n_rigid_wall_vars != 4 {
+            return None;
+        }
+        let pos_base = base + nw as u64 * ws;
+        let v = read_floats_at(&self.files[self.states[state].file], pos_base, 3 * nw, ws).ok()?;
+        Some(ResultBlock::named([nw, 3], ["x", "y", "z"], v))
+    }
+
+    /// `(n_walls, byte offset of the force block)` for `state`, or `None` if the
+    /// file has no rigid walls / the state is out of range.
+    fn rigid_wall_layout(&self, state: usize) -> Option<(usize, u64)> {
+        let nw = self.ctrl.n_rigid_walls;
+        if nw == 0 {
+            return None;
+        }
+        let loc = self.states.get(state)?;
+        // force block sits after the 6 global scalars + the 7*nmmat part block.
+        let off_words = TIME_WORDS + 6 + 7 * self.ctrl.nmmat;
+        Some((nw, loc.offset + off_words as u64 * self.ctrl.wordsize))
+    }
+
+    /// A thermal/auxiliary per-node field at `state` as a [`ResultBlock`] of dims
+    /// `[NUMNP, k]`, where `k` is the per-node width (1, or 3 for vectors /
+    /// temperature layers; 3-vectors are labeled `x`/`y`/`z`). `None` if the field
+    /// is absent (per IT/IDTDT) or the state is out of range.
+    pub fn node_field(&self, field: NodeField, state: usize) -> Option<ResultBlock> {
         let (off_words, per) = self.ctrl.node_field_spec(field)?;
         let loc = self.states.get(state)?;
         let byte = loc.offset + off_words as u64 * self.ctrl.wordsize;
-        read_floats_at(&self.files[loc.file], byte, self.ctrl.numnp * per, self.ctrl.wordsize).ok()
+        let v =
+            read_floats_at(&self.files[loc.file], byte, self.ctrl.numnp * per, self.ctrl.wordsize)
+                .ok()?;
+        let block = if per == 3 {
+            ResultBlock::named([self.ctrl.numnp, per], ["x", "y", "z"], v)
+        } else {
+            ResultBlock::new([self.ctrl.numnp, per], v)
+        };
+        Some(block)
     }
 
     /// Deformed node coordinates for **every** state in one pass: a flat
@@ -1291,6 +1471,42 @@ impl D3plot {
         Some((arr.to_f64(), dims, part_ids))
     }
 
+    /// A per-element result `block` for the given `states` as a [`ResultBlock`]
+    /// shaped `[n_states, n_elem, vars]`, with the innermost axis labeled
+    /// `sigma_xx…sigma_zx`, `eff_plastic_strain`, then `hist_k`. The ergonomic,
+    /// self-describing form of [`block_data`](Self::block_data).
+    pub fn element_results(&self, block: StateBlock, states: &[usize]) -> Option<ResultBlock> {
+        let (arr, dims) = self.block_data(block, states)?;
+        Some(ResultBlock::named(
+            dims.to_vec(),
+            element_component_names(dims[2]),
+            arr.to_f64(),
+        ))
+    }
+
+    /// All-states solid result block as a [`ResultBlock`] (`[n_states, n_solids,
+    /// nv3d]`). See [`element_results`](Self::element_results).
+    pub fn solid_results(&self) -> Option<ResultBlock> {
+        self.element_results(StateBlock::Solid, &self.all_states())
+    }
+    /// All-states shell result block as a [`ResultBlock`] (`[n_states, n_shells, nv2d]`).
+    pub fn shell_results(&self) -> Option<ResultBlock> {
+        self.element_results(StateBlock::Shell, &self.all_states())
+    }
+    /// All-states beam result block as a [`ResultBlock`] (`[n_states, n_beams, nv1d]`).
+    pub fn beam_results(&self) -> Option<ResultBlock> {
+        self.element_results(StateBlock::Beam, &self.all_states())
+    }
+    /// All-states thick-shell result block as a [`ResultBlock`] (`[n_states, n_tshells, nv3dt]`).
+    pub fn tshell_results(&self) -> Option<ResultBlock> {
+        self.element_results(StateBlock::ThickShell, &self.all_states())
+    }
+
+    /// `0..n_states` — the default selection for the whole-history accessors.
+    fn all_states(&self) -> Vec<usize> {
+        (0..self.states.len()).collect()
+    }
+
     /// Column indices of `part`'s elements for a `Solid`/`Shell` block.
     fn part_element_indices(&self, block: StateBlock, part: i64) -> Option<Vec<usize>> {
         let parts = match block {
@@ -1652,36 +1868,90 @@ impl D3plotEditor {
 /// materials. IDs default to `1..=N` when not supplied. Returns the section's
 /// word count (= `NARBS`).
 #[allow(clippy::too_many_arguments)]
+/// Append one little-endian float as a `ws`-byte word (f32 for ws==4, f64 for 8).
+fn push_word_f(buf: &mut Vec<u8>, v: f64, ws: usize) {
+    if ws == 8 {
+        buf.extend_from_slice(&v.to_le_bytes());
+    } else {
+        buf.extend_from_slice(&(v as f32).to_le_bytes());
+    }
+}
+/// Append one little-endian integer as a `ws`-byte word (i32 for ws==4, i64 for 8).
+fn push_word_i(buf: &mut Vec<u8>, v: i64, ws: usize) {
+    if ws == 8 {
+        buf.extend_from_slice(&v.to_le_bytes());
+    } else {
+        buf.extend_from_slice(&(v as i32).to_le_bytes());
+    }
+}
+/// Append a slice of floats as `ws`-byte words.
+fn push_word_fs(buf: &mut Vec<u8>, s: &[f64], ws: usize) {
+    for &c in s {
+        push_word_f(buf, c, ws);
+    }
+}
+/// Append state `si`'s `count`-wide slice of a whole-history optional block,
+/// filling `fill` when the block is absent (0.0 for results, 1.0 for "alive").
+fn push_opt_block(
+    buf: &mut Vec<u8>,
+    opt: &Option<Vec<f64>>,
+    si: usize,
+    count: usize,
+    fill: f64,
+    ws: usize,
+) {
+    match opt {
+        Some(d) => push_word_fs(buf, &d[si * count..(si + 1) * count], ws),
+        None => {
+            for _ in 0..count {
+                push_word_f(buf, fill, ws);
+            }
+        }
+    }
+}
+
+/// NARBS arbitrary node/element/material numbering section. IDs are laid out
+/// nodes, solids, beams, shells, thick-shells, then materials — matching the
+/// skips the [`D3plot`] reader computes. Returns the number of words written
+/// (== the NARBS header value).
+#[allow(clippy::too_many_arguments)]
 fn write_narbs(
     buf: &mut Vec<u8>,
     numnp: usize,
     nel8: usize,
+    nel2: usize,
     nel4: usize,
+    nelth: usize,
     nmmat: usize,
     node_ids: Option<&[i32]>,
     solid_ids: Option<&[i32]>,
+    beam_ids: Option<&[i32]>,
     shell_ids: Option<&[i32]>,
+    tshell_ids: Option<&[i32]>,
     part_ids: Option<&[i32]>,
+    ws: usize,
 ) -> usize {
-    let put = |buf: &mut Vec<u8>, v: i32| buf.extend_from_slice(&v.to_le_bytes());
+    let put = |buf: &mut Vec<u8>, v: i32| push_word_i(buf, v as i64, ws);
     let seq = |n: usize| -> Vec<i32> { (1..=n as i32).collect() };
-    let (nel8i, nel4i, nmmi) = (nel8 as i32, nel4 as i32, nmmat as i32);
-    // numbering header (part-id form, 16 words)
+    let (nel8i, nel2i, nel4i, nelthi, nmmi) =
+        (nel8 as i32, nel2 as i32, nel4 as i32, nelth as i32, nmmat as i32);
+    // numbering header (part-id form, 16 words). Pointers are 1-based offsets to
+    // each id block in node, solid, beam, shell, tshell order.
     put(buf, -1); // NSORT (negative: material numbering present)
-    let nsrh = 1 + numnp as i32;
+    let nsrh = 1 + numnp as i32; // solids
     put(buf, nsrh);
-    let nsrb = nsrh + nel8i;
+    let nsrb = nsrh + nel8i; // beams
     put(buf, nsrb);
-    let nsrs = nsrb; // + nel2 (=0)
+    let nsrs = nsrb + nel2i; // shells
     put(buf, nsrs);
-    let nsrt = nsrs + nel4i;
+    let nsrt = nsrs + nel4i; // thick shells
     put(buf, nsrt);
     put(buf, numnp as i32); // NSORTD
     put(buf, nel8i); // NSRHD
-    put(buf, 0); // NSRBD
+    put(buf, nel2i); // NSRBD
     put(buf, nel4i); // NSRSD
-    put(buf, 0); // NSRTD
-    let nsrmu = nsrt;
+    put(buf, nelthi); // NSRTD
+    let nsrmu = nsrt + nelthi;
     let nsrma = nsrmu + nmmi;
     let nsrmp = nsrma + nmmi;
     put(buf, nsrma);
@@ -1690,14 +1960,20 @@ fn write_narbs(
     put(buf, nmmi);
     put(buf, 0); // NUMRBS
     put(buf, nmmi);
-    // ID arrays
+    // ID arrays, in the same order the reader skips them.
     for &v in &node_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(numnp)) {
         put(buf, v);
     }
     for &v in &solid_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nel8)) {
         put(buf, v);
     }
+    for &v in &beam_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nel2)) {
+        put(buf, v);
+    }
     for &v in &shell_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nel4)) {
+        put(buf, v);
+    }
+    for &v in &tshell_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nelth)) {
         put(buf, v);
     }
     let parts = part_ids.map(<[i32]>::to_vec).unwrap_or_else(|| seq(nmmat));
@@ -1710,7 +1986,7 @@ fn write_narbs(
     for _ in 0..nmmat {
         put(buf, 0); // material cross-references
     }
-    numnp + nel8 + nel4 + 3 * nmmat + NARBS_PART_HEADER
+    numnp + nel8 + nel2 + nel4 + nelth + 3 * nmmat + NARBS_PART_HEADER
 }
 
 /// The LS-DYNA end-of-file marker is the float -999999 (exactly representable in
@@ -1909,6 +2185,8 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         nelth: geti(word::NELTH)?.max(0) as usize,
         nv3dt: geti(word::NV3DT)?.max(0) as usize,
         nmmat: geti(word::NMMAT)?.max(0) as usize,
+        n_rigid_walls: 0,     // derived below from NGLBV
+        n_rigid_wall_vars: 0, // derived below from NGLBV
         extra: geti(word::EXTRA)?.max(0) as usize,
         filetype: geti(word::FILETYPE)?,
         fsifor: geti(word::NV2D)? < 0,
@@ -1918,6 +2196,19 @@ fn read_control_bytes(bytes: &[u8]) -> Result<Control, D3plotError> {
         nforce: geti(word::NFORCE)?.max(0) as usize,
         ngapc: geti(word::NGAPC)?.max(0) as usize,
     };
+    // Rigid walls occupy the NGLBV tail after the 6 global scalars + 7*nmmat part
+    // block. Their per-wall width isn't in the header, so infer the modern 971
+    // layout (4 vars/wall) when the tail divides by 4, else force-only (1).
+    let rw_tail = ctrl.nglbv.saturating_sub(6 + 7 * ctrl.nmmat);
+    ctrl.n_rigid_wall_vars = if rw_tail == 0 {
+        0
+    } else if rw_tail.is_multiple_of(4) {
+        4
+    } else {
+        1
+    };
+    ctrl.n_rigid_walls = rw_tail.checked_div(ctrl.n_rigid_wall_vars).unwrap_or(0);
+
     walk_geometry(&mut ctrl, bytes);
     Ok(ctrl)
 }
@@ -2050,40 +2341,202 @@ pub struct InterfaceFields {
     pub gap: usize,
 }
 
-/// Builds a single-precision d3plot from a mesh (nodes + shell/solid
-/// connectivity) and per-state nodal results (deformed coordinates, and
-/// optionally velocity/acceleration).
+/// Per-part-per-state fields packed into the global-variables block after the 6
+/// global scalars, in LS-DYNA order (each `n_parts` wide unless noted). Set via
+/// [`D3plotWriter::set_part_field`] / [`D3plotWriter::set_part_velocity`]; any
+/// set part field forces the full `7*n_parts` block to be written (unset ones
+/// zero-filled) so the reader's fixed offsets line up.
+#[derive(Default)]
+struct PartBlock {
+    internal_energy: Option<Vec<f64>>, // n_states*n_parts
+    kinetic_energy: Option<Vec<f64>>,  // n_states*n_parts
+    velocity: Option<Vec<f64>>,        // n_states*n_parts*3
+    mass: Option<Vec<f64>>,            // n_states*n_parts
+    hourglass_energy: Option<Vec<f64>>, // n_states*n_parts
+}
+
+impl PartBlock {
+    fn any(&self) -> bool {
+        self.internal_energy.is_some()
+            || self.kinetic_energy.is_some()
+            || self.velocity.is_some()
+            || self.mass.is_some()
+            || self.hourglass_energy.is_some()
+    }
+}
+
+/// Whole-model global scalars and the per-part block that together form the
+/// per-state global-variables section (NGLBV). The 6 scalars are indexed exactly
+/// as the reader expects them: 0 kinetic, 1 internal, 2 total, 3/4/5 velocity
+/// x/y/z. Any set scalar forces all 6 to be written (unset ones zero).
+#[derive(Default)]
+struct Globals {
+    scalars: [Option<Vec<f64>>; 6], // each len n_states
+    parts: PartBlock,
+    /// Rigid-wall force (`n_states*n_walls`) and optional position
+    /// (`n_states*n_walls*3`); modern 971 layout keeps 4 vars/wall.
+    rigid_wall: Option<RigidWall>,
+}
+
+impl Globals {
+    fn any_scalar(&self) -> bool {
+        self.scalars.iter().any(Option::is_some)
+    }
+    fn any(&self) -> bool {
+        self.any_scalar() || self.parts.any() || self.rigid_wall.is_some()
+    }
+}
+
+/// Rigid-wall per-state data living in the global-variables block after the
+/// per-part block. `force` is `n_states*n_walls`; `position`, when present, is
+/// `n_states*n_walls*3`. The writer emits the modern 971 layout (4 vars/wall)
+/// whenever positions are given, else 1 var/wall (force only).
+struct RigidWall {
+    n_walls: usize,
+    force: Vec<f64>,
+    position: Option<Vec<f64>>,
+}
+
+impl RigidWall {
+    /// Words per wall in the global block: 4 with positions, else 1.
+    fn vars(&self) -> usize {
+        if self.position.is_some() {
+            4
+        } else {
+            1
+        }
+    }
+}
+
+/// Per-node thermal / auxiliary fields that sit between displacement and velocity
+/// in the node stream, gated by the IT and IDTDT header flags. Set via
+/// [`D3plotWriter::set_node_field`]; the writer derives IT/IDTDT from which of
+/// these are present (see [`Control::node_field_spec`] for the inverse layout).
+#[derive(Default)]
+struct NodeThermal {
+    temperature: Option<Vec<f64>>,     // n_states*numnp*{1|3}
+    heat_flux: Option<Vec<f64>>,       // n_states*numnp*3
+    mass_scaling: Option<Vec<f64>>,    // n_states*numnp
+    temp_gradient: Option<Vec<f64>>,   // n_states*numnp
+    residual_force: Option<Vec<f64>>,  // n_states*numnp*3
+    residual_moment: Option<Vec<f64>>, // n_states*numnp*3
+}
+
+/// Element/node deletion ("is alive") state, terminating each state block. Only
+/// one mode may be active (it is encoded in the sign/magnitude of MAXINT).
+enum Deletion {
+    /// mdlopt 1: one flag per node (`n_states*numnp`).
+    Node(Vec<f64>),
+    /// mdlopt 2: one flag per element, written in block order solid, thick-shell,
+    /// shell, beam (unset blocks zero-filled to 1.0 = alive). Each `n_states*count`.
+    Element {
+        solid: Option<Vec<f64>>,
+        tshell: Option<Vec<f64>>,
+        shell: Option<Vec<f64>>,
+        beam: Option<Vec<f64>>,
+    },
+}
+
+/// SPH (smoothed-particle hydrodynamics) geometry + per-state results. The
+/// per-particle variable count is carried in an ISPHFG flag section the writer
+/// synthesizes so the reader recomputes exactly `n_vars` (see `walk_geometry`).
+struct Sph {
+    materials: Vec<i32>, // len = n particles; per-particle material number
+    n_vars: usize,       // per-particle state var count (incl. material word)
+    results: Vec<f64>,   // n_states * n_particles * n_vars, row-major
+}
+
+/// Airbag / CPM particle geometry + per-state results. `geom` is `n_airbags *
+/// n_geom_vars` (written once, in geometry); the per-state block is the airbag
+/// chamber state (`n_airbags*n_airbag_vars`) followed by particle state
+/// (`n_particles*n_particle_vars`).
+struct Airbag {
+    n_airbags: usize,
+    n_particles: usize,
+    n_geom_vars: usize,          // ngeom
+    n_airbag_vars: usize,        // nstgeom (per airbag, per state)
+    n_particle_vars: usize,      // nvar (per particle, per state)
+    geom: Vec<f64>,              // n_airbags * n_geom_vars
+    airbag_state: Vec<f64>,      // n_states * n_airbags * n_airbag_vars
+    particle_state: Vec<f64>,    // n_states * n_particles * n_particle_vars
+}
+
+/// A single rigid body's geometry (a part index plus its node index lists).
+struct RigidBody {
+    part: i32,
+    nodes: Vec<i32>,        // all nodes (1-based)
+    active_nodes: Vec<i32>, // active subset (1-based)
+}
+
+/// Rigid-body geometry + per-state motion. The per-body motion width is fixed by
+/// the file layout: 12 vars (coords + 3x3 rotation) when a rigid road is also
+/// present (NDIM=9), else the full 24 vars (adds translational/rotational
+/// velocity and acceleration, NDIM=8).
+struct RigidBodies {
+    bodies: Vec<RigidBody>,
+    motion: Vec<f64>, // n_states * n_bodies * (12|24), row-major
+}
+
+/// Rigid-road surface geometry + per-state motion (`n_roads*6` per state).
+struct RigidRoad {
+    node_ids: Vec<i32>,
+    node_coords: Vec<f64>,           // n_road_nodes * 3
+    segments: Vec<(i32, Vec<i32>)>,  // per surface: (road id, flat 4-node segment ids)
+    motion: Vec<f64>,                // n_states * n_roads * 6
+}
+
+/// Builds a single-precision d3plot from a mesh (nodes + element connectivity)
+/// and per-state results. Beyond nodal motion, it supports the full complement
+/// of LS-DYNA state arrays — element results for every family (solid, thick
+/// shell, beam, shell), global & per-part energies, nodal thermal/residual
+/// fields, element/node deletion, and the SPH / airbag / rigid-body / rigid-road
+/// blocks — each set through a strongly-typed method (no magic strings). Which
+/// header flags and state layout get emitted is *derived* from which arrays were
+/// populated, so callers only pay for what they set.
 ///
-/// Scope (v1): NDIM=4 structural layout, implicit 1..N numbering (NARBS=0), no
-/// global variables, and no per-element result fields — a mesh you can display
-/// and animate by nodal motion. Output is a single file: header + block-aligned
-/// geometry + states, terminated by the `-999999` marker. Reads back through
-/// [`D3plot`] and open-lasso-python (node data bit-exact).
+/// Output is single precision (f32): header + geometry + states, terminated by
+/// the `-999999` marker. It reads back through [`D3plot`] and open-lasso-python
+/// (node data bit-exact).
 pub struct D3plotWriter {
     numnp: usize,
-    x0: Vec<f32>,          // numnp*3, row-major x,y,z
-    solids: Vec<[i32; 9]>, // 8 node connectivity indices (1-based) + part index
-    shells: Vec<[i32; 5]>, // 4 node connectivity indices (1-based) + part index
+    wordsize: usize,        // 4 (single, default) or 8 (double) precision output
+    x0: Vec<f64>,           // numnp*3, row-major x,y,z
+    solids: Vec<[i32; 9]>,  // 8 node connectivity indices (1-based) + part index
+    tshells: Vec<[i32; 9]>, // 8 node connectivity indices (1-based) + part index
+    beams: Vec<[i32; 6]>,   // 5 connectivity slots (1-based) + part index
+    shells: Vec<[i32; 5]>,  // 4 node connectivity indices (1-based) + part index
     states: Vec<StateData>,
     fields: NodeFields,
     title: String,
     // Optional user IDs for the NARBS numbering section (default 1..N).
     node_ids: Option<Vec<i32>>,
     solid_ids: Option<Vec<i32>>,
+    beam_ids: Option<Vec<i32>>,
     shell_ids: Option<Vec<i32>>,
+    tshell_ids: Option<Vec<i32>>,
     part_ids: Option<Vec<i32>>,
     // Optional per-element result blocks: (vars_per_element, flat
     // n_states*count*vars, row-major). Written raw after node data each state.
-    solid_results: Option<(usize, Vec<f32>)>,
-    shell_results: Option<(usize, Vec<f32>)>,
+    solid_results: Option<(usize, Vec<f64>)>,
+    tshell_results: Option<(usize, Vec<f64>)>,
+    beam_results: Option<(usize, Vec<f64>)>,
+    shell_results: Option<(usize, Vec<f64>)>,
     shell_layers: usize, // shell through-thickness integration points (MAXINT)
+    // Whole-model / auxiliary state arrays, all derived into header flags.
+    globals: Globals,
+    node_thermal: NodeThermal,
+    deletion: Option<Deletion>,
+    sph: Option<Sph>,
+    airbag: Option<Airbag>,
+    rigid_bodies: Option<RigidBodies>,
+    rigid_road: Option<RigidRoad>,
 }
 
 struct StateData {
-    time: f32,
-    disp: Vec<f32>, // numnp*3 current coordinates
-    vel: Vec<f32>,  // numnp*3 or empty
-    acc: Vec<f32>,  // numnp*3 or empty
+    time: f64,
+    disp: Vec<f64>, // numnp*3 current coordinates
+    vel: Vec<f64>,  // numnp*3 or empty
+    acc: Vec<f64>,  // numnp*3 or empty
 }
 
 impl D3plotWriter {
@@ -2096,24 +2549,45 @@ impl D3plotWriter {
         }
         Ok(Self {
             numnp: node_coords.len() / 3,
-            x0: node_coords.iter().map(|&c| c as f32).collect(),
+            wordsize: 4,
+            x0: node_coords,
             solids: Vec::new(),
+            tshells: Vec::new(),
+            beams: Vec::new(),
             shells: Vec::new(),
             states: Vec::new(),
             fields: NodeFields::default(),
             title: String::new(),
             node_ids: None,
             solid_ids: None,
+            beam_ids: None,
             shell_ids: None,
+            tshell_ids: None,
             part_ids: None,
             solid_results: None,
+            tshell_results: None,
+            beam_results: None,
             shell_results: None,
             shell_layers: 1,
+            globals: Globals::default(),
+            node_thermal: NodeThermal::default(),
+            deletion: None,
+            sph: None,
+            airbag: None,
+            rigid_bodies: None,
+            rigid_road: None,
         })
     }
 
     pub fn num_nodes(&self) -> usize {
         self.numnp
+    }
+
+    /// Emit double-precision (8-byte word) output when `double` is true; the
+    /// default is single precision (f32). Values are stored as f64 internally, so
+    /// double-precision output is lossless.
+    pub fn set_double_precision(&mut self, double: bool) {
+        self.wordsize = if double { 8 } else { 4 };
     }
 
     /// Set the 40-char run title.
@@ -2138,17 +2612,19 @@ impl D3plotWriter {
         self.part_ids = Some(ids.into_iter().map(|x| x as i32).collect());
     }
 
-    /// Per-solid result block: `vars` values per solid, flat row-major
-    /// `n_states * n_solids * vars` (the same raw layout [`D3plot::block_data`]
-    /// returns). Sets NV3D.
-    pub fn set_solid_results(&mut self, vars: usize, data: Vec<f64>) {
-        self.solid_results = Some((vars, data.into_iter().map(|x| x as f32).collect()));
+    /// Per-solid result block as a [`ResultBlock`] shaped `[n_states, n_solids,
+    /// vars]` (state-major, row-major; `vars` = the innermost axis). Sets NV3D.
+    pub fn set_solid_results(&mut self, block: ResultBlock) {
+        let vars = block.dims().last().copied().unwrap_or(0);
+        self.solid_results = Some((vars, block.into_data()));
     }
 
-    /// Per-shell result block: `vars` values per shell, flat row-major
-    /// `n_states * n_shells * vars`. Sets NV2D.
-    pub fn set_shell_results(&mut self, vars: usize, data: Vec<f64>) {
-        self.shell_results = Some((vars, data.into_iter().map(|x| x as f32).collect()));
+    /// Per-shell result block as a [`ResultBlock`] shaped `[n_states, n_shells,
+    /// vars]`. `vars` packs the through-thickness layers (see
+    /// [`set_shell_layers`](Self::set_shell_layers)). Sets NV2D.
+    pub fn set_shell_results(&mut self, block: ResultBlock) {
+        let vars = block.dims().last().copied().unwrap_or(0);
+        self.shell_results = Some((vars, block.into_data()));
     }
 
     /// Number of through-thickness integration points (layers) packed into each
@@ -2171,6 +2647,222 @@ impl D3plotWriter {
         c[..8].copy_from_slice(&nodes);
         c[8] = part;
         self.solids.push(c);
+    }
+
+    /// Add a thick shell (8 one-based node ids).
+    pub fn add_tshell(&mut self, nodes: [i32; 8], part: i32) {
+        let mut c = [0i32; 9];
+        c[..8].copy_from_slice(&nodes);
+        c[8] = part;
+        self.tshells.push(c);
+    }
+
+    /// Add a beam: two end nodes plus an orientation node (`[n1, n2, n3]`, all
+    /// one-based; pass 0 for an unused orientation node). The two extra
+    /// connectivity slots LS-DYNA reserves are written as 0.
+    pub fn add_beam(&mut self, nodes: [i32; 3], part: i32) {
+        self.beams
+            .push([nodes[0], nodes[1], nodes[2], 0, 0, part]);
+    }
+
+    /// User beam element IDs (length = number of beams).
+    pub fn set_beam_ids(&mut self, ids: Vec<i64>) {
+        self.beam_ids = Some(ids.into_iter().map(|x| x as i32).collect());
+    }
+    /// User thick-shell element IDs (length = number of thick shells).
+    pub fn set_tshell_ids(&mut self, ids: Vec<i64>) {
+        self.tshell_ids = Some(ids.into_iter().map(|x| x as i32).collect());
+    }
+
+    /// Per-thick-shell result block as a [`ResultBlock`] shaped `[n_states,
+    /// n_tshells, vars]`. Sets NV3DT.
+    pub fn set_tshell_results(&mut self, block: ResultBlock) {
+        let vars = block.dims().last().copied().unwrap_or(0);
+        self.tshell_results = Some((vars, block.into_data()));
+    }
+
+    /// Per-beam result block as a [`ResultBlock`] shaped `[n_states, n_beams,
+    /// vars]`. Sets NV1D.
+    pub fn set_beam_results(&mut self, block: ResultBlock) {
+        let vars = block.dims().last().copied().unwrap_or(0);
+        self.beam_results = Some((vars, block.into_data()));
+    }
+
+    /// A whole-model global scalar history (one value per state), written into the
+    /// global-variables block at this field's fixed slot. Setting any global
+    /// scalar or part field makes the writer emit the block (NGLBV > 0).
+    pub fn set_global_history(&mut self, field: GlobalField, data: Vec<f64>) {
+        let idx = match field {
+            GlobalField::KineticEnergy => 0,
+            GlobalField::InternalEnergy => 1,
+            GlobalField::TotalEnergy => 2,
+            GlobalField::VelocityX => 3,
+            GlobalField::VelocityY => 4,
+            GlobalField::VelocityZ => 5,
+        };
+        self.globals.scalars[idx] = Some(data);
+    }
+
+    /// A per-part scalar history (`n_states * n_parts`, row-major, part index
+    /// matching the material/part order). Lives in the per-part portion of the
+    /// global-variables block; setting any part field forces the full per-part
+    /// block to be written.
+    pub fn set_part_field(&mut self, field: PartField, data: Vec<f64>) {
+        match field {
+            PartField::InternalEnergy => self.globals.parts.internal_energy = Some(data),
+            PartField::KineticEnergy => self.globals.parts.kinetic_energy = Some(data),
+            PartField::Mass => self.globals.parts.mass = Some(data),
+            PartField::HourglassEnergy => self.globals.parts.hourglass_energy = Some(data),
+        }
+    }
+
+    /// Per-part velocity history (`n_states * n_parts * 3`, row-major). Occupies
+    /// the velocity slot of the per-part global block.
+    pub fn set_part_velocity(&mut self, data: Vec<f64>) {
+        self.globals.parts.velocity = Some(data);
+    }
+
+    /// Rigid-wall per-state data: `force` is `n_states * n_walls` (row-major);
+    /// `position`, when given, is `n_states * n_walls * 3`. Providing positions
+    /// selects the modern 971 layout (4 vars/wall). Lives in the global block, so
+    /// setting it also forces the per-part block to be emitted.
+    pub fn set_rigid_walls(&mut self, n_walls: usize, force: Vec<f64>, position: Option<Vec<f64>>) {
+        self.globals.rigid_wall = Some(RigidWall {
+            n_walls,
+            force,
+            position,
+        });
+    }
+
+    /// A per-node thermal / auxiliary field history. Data length fixes the per-node
+    /// width the writer records into IT/IDTDT: `Temperature` is `n_states*numnp`
+    /// (single) or `n_states*numnp*3` (through-thickness layers); `HeatFlux`,
+    /// `ResidualForce`, `ResidualMoment` are ×3; `MassScaling` and
+    /// `TemperatureGradient` are ×1. `HeatFlux` requires `Temperature` (LS-DYNA's
+    /// IT encoding has no flux-without-temperature form).
+    pub fn set_node_field(&mut self, field: NodeField, data: Vec<f64>) {
+        match field {
+            NodeField::Temperature => self.node_thermal.temperature = Some(data),
+            NodeField::HeatFlux => self.node_thermal.heat_flux = Some(data),
+            NodeField::MassScaling => self.node_thermal.mass_scaling = Some(data),
+            NodeField::TemperatureGradient => self.node_thermal.temp_gradient = Some(data),
+            NodeField::ResidualForce => self.node_thermal.residual_force = Some(data),
+            NodeField::ResidualMoment => self.node_thermal.residual_moment = Some(data),
+        }
+    }
+
+    /// Per-element deletion ("is alive") flags for one element family (mdlopt 2):
+    /// `n_states * n_elements`, 1.0 = alive, 0.0 = deleted. Element and node
+    /// deletion are mutually exclusive; the last mode set wins.
+    pub fn set_element_deletion(&mut self, block: StateBlock, alive: Vec<f64>) {
+        let v = alive;
+        let del = match self.deletion.take() {
+            Some(Deletion::Element {
+                solid,
+                tshell,
+                shell,
+                beam,
+            }) => (solid, tshell, shell, beam),
+            _ => (None, None, None, None),
+        };
+        let (mut solid, mut tshell, mut shell, mut beam) = del;
+        match block {
+            StateBlock::Solid => solid = Some(v),
+            StateBlock::ThickShell => tshell = Some(v),
+            StateBlock::Shell => shell = Some(v),
+            StateBlock::Beam => beam = Some(v),
+            _ => return,
+        }
+        self.deletion = Some(Deletion::Element {
+            solid,
+            tshell,
+            shell,
+            beam,
+        });
+    }
+
+    /// Per-node deletion flags (mdlopt 1): `n_states * numnp`, 1.0 = alive. Note
+    /// the [`D3plot`] reader exposes only element deletion, so node deletion is
+    /// write-only for round-tripping purposes. Mutually exclusive with element
+    /// deletion.
+    pub fn set_node_deletion(&mut self, alive: Vec<f64>) {
+        self.deletion = Some(Deletion::Node(alive));
+    }
+
+    /// SPH particle geometry + per-state results. `materials` (length = particle
+    /// count) gives each particle's material number; `n_vars` is the per-particle
+    /// state width and `results` is `n_states * n_particles * n_vars` row-major.
+    pub fn set_sph(&mut self, materials: Vec<i64>, n_vars: usize, results: Vec<f64>) {
+        self.sph = Some(Sph {
+            materials: materials.into_iter().map(|x| x as i32).collect(),
+            n_vars,
+            results,
+        });
+    }
+
+    /// Airbag / CPM geometry + per-state results. `geom` is `n_airbags *
+    /// n_geom_vars`; `airbag_state` is `n_states * n_airbags * n_airbag_vars` and
+    /// `particle_state` is `n_states * n_particles * n_particle_vars`, all
+    /// row-major.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_airbag(
+        &mut self,
+        n_airbags: usize,
+        n_particles: usize,
+        n_geom_vars: usize,
+        n_airbag_vars: usize,
+        n_particle_vars: usize,
+        geom: Vec<f64>,
+        airbag_state: Vec<f64>,
+        particle_state: Vec<f64>,
+    ) {
+        self.airbag = Some(Airbag {
+            n_airbags,
+            n_particles,
+            n_geom_vars,
+            n_airbag_vars,
+            n_particle_vars,
+            geom,
+            airbag_state,
+            particle_state,
+        });
+    }
+
+    /// Rigid-body geometry + per-state motion. Each body is `(part_id, node_ids,
+    /// active_node_ids)`. `motion` is `n_states * n_bodies * k` row-major, where
+    /// `k` is 12 when a rigid road is also set (coords + rotation) or 24
+    /// otherwise (adds translational/rotational velocity and acceleration).
+    pub fn set_rigid_bodies(&mut self, bodies: Vec<(i64, Vec<i64>, Vec<i64>)>, motion: Vec<f64>) {
+        let bodies = bodies
+            .into_iter()
+            .map(|(part, nodes, active)| RigidBody {
+                part: part as i32,
+                nodes: nodes.into_iter().map(|x| x as i32).collect(),
+                active_nodes: active.into_iter().map(|x| x as i32).collect(),
+            })
+            .collect();
+        self.rigid_bodies = Some(RigidBodies { bodies, motion });
+    }
+
+    /// Rigid-road surface geometry + per-state motion. `segments` is one
+    /// `(road_id, [4 node ids per segment])` per road surface; `motion` is
+    /// `n_states * n_roads * 6` row-major.
+    pub fn set_rigid_road(
+        &mut self,
+        node_ids: Vec<i64>,
+        node_coords: Vec<f64>,
+        segments: Vec<(i64, Vec<i64>)>,
+        motion: Vec<f64>,
+    ) {
+        self.rigid_road = Some(RigidRoad {
+            node_ids: node_ids.into_iter().map(|x| x as i32).collect(),
+            node_coords,
+            segments: segments
+                .into_iter()
+                .map(|(id, seg)| (id as i32, seg.into_iter().map(|x| x as i32).collect()))
+                .collect(),
+            motion,
+        });
     }
 
     /// Append a state: `time` and deformed node coordinates (`numnp*3`), plus
@@ -2212,67 +2904,296 @@ impl D3plotWriter {
                 "velocity/acceleration presence must match across states".into(),
             ));
         }
-        let f32v = |v: Vec<f64>| v.into_iter().map(|c| c as f32).collect();
         self.states.push(StateData {
-            time: time as f32,
-            disp: f32v(disp),
-            vel: vel.map(f32v).unwrap_or_default(),
-            acc: acc.map(f32v).unwrap_or_default(),
+            time,
+            disp,
+            vel: vel.unwrap_or_default(),
+            acc: acc.unwrap_or_default(),
         });
         Ok(())
     }
 
-    /// Serialize to a complete single-precision d3plot byte image.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let nel8 = self.solids.len();
-        let nel4 = self.shells.len();
-        let nmmat = self
-            .shells
+    /// The material/part count: the max part id across every element family and
+    /// rigid-body part (clamped to ≥ 0). This is NUMMAT / the per-part block width.
+    fn part_count(&self) -> usize {
+        self.solids
             .iter()
-            .map(|s| s[4])
-            .chain(self.solids.iter().map(|s| s[8]))
+            .map(|s| s[8])
+            .chain(self.tshells.iter().map(|s| s[8]))
+            .chain(self.beams.iter().map(|s| s[5]))
+            .chain(self.shells.iter().map(|s| s[4]))
+            .chain(
+                self.rigid_bodies
+                    .iter()
+                    .flat_map(|rb| rb.bodies.iter().map(|b| b.part)),
+            )
             .max()
             .unwrap_or(0)
-            .max(0);
+            .max(0) as usize
+    }
+
+    /// Check every whole-history array's length against the state count and its
+    /// entity count, returning a clear error instead of letting
+    /// [`to_bytes`](Self::to_bytes) panic on an out-of-range slice. Called by
+    /// [`write`](Self::write).
+    pub fn validate(&self) -> Result<(), D3plotError> {
+        let ns = self.states.len();
+        let numnp = self.numnp;
+        let np = self.part_count();
+        let bad = |what: &str, got: usize, want: usize| {
+            Err(D3plotError::Unsupported(format!(
+                "{what}: length {got} != expected {want}"
+            )))
+        };
+        let chk = |what: &str, got: usize, want: usize| {
+            if got == want {
+                Ok(())
+            } else {
+                bad(what, got, want)
+            }
+        };
+        // element results (vars, flat): n_states * count * vars
+        for (label, count, res) in [
+            ("solid_results", self.solids.len(), &self.solid_results),
+            ("tshell_results", self.tshells.len(), &self.tshell_results),
+            ("beam_results", self.beams.len(), &self.beam_results),
+            ("shell_results", self.shells.len(), &self.shell_results),
+        ] {
+            if let Some((vars, data)) = res {
+                chk(label, data.len(), ns * count * vars)?;
+            }
+        }
+        // globals + part block
+        for (i, s) in self.globals.scalars.iter().enumerate() {
+            if let Some(d) = s {
+                chk(&format!("global scalar {i}"), d.len(), ns)?;
+            }
+        }
+        let p = &self.globals.parts;
+        for (label, opt, w) in [
+            ("part internal_energy", &p.internal_energy, np),
+            ("part kinetic_energy", &p.kinetic_energy, np),
+            ("part velocity", &p.velocity, 3 * np),
+            ("part mass", &p.mass, np),
+            ("part hourglass_energy", &p.hourglass_energy, np),
+        ] {
+            if let Some(d) = opt {
+                chk(label, d.len(), ns * w)?;
+            }
+        }
+        if let Some(w) = &self.globals.rigid_wall {
+            chk("rigid_wall force", w.force.len(), ns * w.n_walls)?;
+            if let Some(pos) = &w.position {
+                chk("rigid_wall position", pos.len(), ns * 3 * w.n_walls)?;
+            }
+        }
+        // node thermal fields
+        let nt = &self.node_thermal;
+        if let Some(t) = &nt.temperature {
+            let unit = ns * numnp;
+            if unit == 0 || (t.len() != unit && t.len() != 3 * unit) {
+                return bad("node Temperature", t.len(), unit);
+            }
+        }
+        for (label, opt, per) in [
+            ("node HeatFlux", &nt.heat_flux, 3),
+            ("node MassScaling", &nt.mass_scaling, 1),
+            ("node TemperatureGradient", &nt.temp_gradient, 1),
+            ("node ResidualForce", &nt.residual_force, 3),
+            ("node ResidualMoment", &nt.residual_moment, 3),
+        ] {
+            if let Some(d) = opt {
+                chk(label, d.len(), ns * numnp * per)?;
+            }
+        }
+        // deletion
+        match &self.deletion {
+            Some(Deletion::Node(d)) => chk("node deletion", d.len(), ns * numnp)?,
+            Some(Deletion::Element {
+                solid,
+                tshell,
+                shell,
+                beam,
+            }) => {
+                for (label, opt, count) in [
+                    ("solid deletion", solid, self.solids.len()),
+                    ("tshell deletion", tshell, self.tshells.len()),
+                    ("shell deletion", shell, self.shells.len()),
+                    ("beam deletion", beam, self.beams.len()),
+                ] {
+                    if let Some(d) = opt {
+                        chk(label, d.len(), ns * count)?;
+                    }
+                }
+            }
+            None => {}
+        }
+        // sph / airbag / rigid
+        if let Some(s) = &self.sph {
+            if s.n_vars == 0 {
+                return Err(D3plotError::Unsupported("sph n_vars must be ≥ 1".into()));
+            }
+            chk("sph results", s.results.len(), ns * s.materials.len() * s.n_vars)?;
+        }
+        if let Some(a) = &self.airbag {
+            chk("airbag geom", a.geom.len(), a.n_airbags * a.n_geom_vars)?;
+            chk(
+                "airbag state",
+                a.airbag_state.len(),
+                ns * a.n_airbags * a.n_airbag_vars,
+            )?;
+            chk(
+                "particle state",
+                a.particle_state.len(),
+                ns * a.n_particles * a.n_particle_vars,
+            )?;
+        }
+        if let Some(rb) = &self.rigid_bodies {
+            let k = if self.rigid_road.is_some() { 12 } else { 24 };
+            chk("rigid_body motion", rb.motion.len(), ns * rb.bodies.len() * k)?;
+        }
+        if let Some(rr) = &self.rigid_road {
+            chk("rigid_road node_coords", rr.node_coords.len(), 3 * rr.node_ids.len())?;
+            for (i, (_, seg)) in rr.segments.iter().enumerate() {
+                if !seg.len().is_multiple_of(4) {
+                    return Err(D3plotError::Unsupported(format!(
+                        "rigid_road segment {i}: {} node ids not a multiple of 4",
+                        seg.len()
+                    )));
+                }
+            }
+            chk("rigid_road motion", rr.motion.len(), ns * rr.segments.len() * 6)?;
+        }
+        Ok(())
+    }
+
+    /// Serialize to a complete d3plot byte image (single or double precision per
+    /// [`set_double_precision`](Self::set_double_precision)). Panics on malformed
+    /// inputs; call [`validate`](Self::validate) (or [`write`](Self::write)) first
+    /// for a checked path.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let n_states = self.states.len();
+        let nel8 = self.solids.len();
+        let nelth = self.tshells.len();
+        let nel2 = self.beams.len();
+        let nel4 = self.shells.len();
+        let nmmat = self.part_count() as i32;
+        let nmmat_u = nmmat as usize;
+        let ws = self.wordsize;
+
+        // --- element result var counts ---
+        let nv3d = self.solid_results.as_ref().map_or(0, |(v, _)| *v);
+        let nv3dt = self.tshell_results.as_ref().map_or(0, |(v, _)| *v);
+        let nv1d = self.beam_results.as_ref().map_or(0, |(v, _)| *v);
+        let nv2d = self.shell_results.as_ref().map_or(0, |(v, _)| *v);
+
+        // --- node thermal / auxiliary fields → IT / IDTDT ---
+        let nt = &self.node_thermal;
+        let per_node = |d: &[f64]| if n_states > 0 && self.numnp > 0 { d.len() / (n_states * self.numnp) } else { 0 };
+        let temp_w = nt.temperature.as_deref().map_or(0, per_node); // 1 or 3
+        let want_flux = nt.heat_flux.is_some();
+        // IT ones digit: 1 = temp(1); 2 = temp(1)+flux(3); 3 = temp(3)+flux(3).
+        let (it0, tw) = if temp_w == 3 {
+            (3, 3)
+        } else if nt.temperature.is_some() && want_flux {
+            (2, 1)
+        } else if nt.temperature.is_some() {
+            (1, 1)
+        } else if want_flux {
+            (2, 1) // flux implies a (zero) temperature slot in LS-DYNA's encoding
+        } else {
+            (0, 0)
+        };
+        let has_temp = it0 >= 1;
+        let has_flux = it0 >= 2;
+        let has_mass = nt.mass_scaling.is_some();
+        let has_grad = nt.temp_gradient.is_some();
+        let has_resid = nt.residual_force.is_some() || nt.residual_moment.is_some();
+        let it = it0 + if has_mass { 10 } else { 0 };
+        let idtdt = if has_grad { 1 } else { 0 } + if has_resid { 10 } else { 0 };
+
+        // --- global-variables block (NGLBV) ---
+        // Rigid-wall data sits after the per-part block, so any rigid wall forces
+        // the full per-part block to be emitted (zero-filled if no part fields).
+        let rw = self.globals.rigid_wall.as_ref();
+        let rw_words = rw.map_or(0, |w| w.n_walls * w.vars());
+        let has_part_block = self.globals.parts.any() || rw.is_some();
+        let nglbv = if self.globals.any() {
+            6 + if has_part_block { 7 * nmmat_u } else { 0 } + rw_words
+        } else {
+            0
+        };
+
+        // --- deletion (mdlopt sign packed into MAXINT) ---
+        let shell_layers = self.shell_layers.max(1);
+        let maxint: i32 = match &self.deletion {
+            None => shell_layers as i32,
+            Some(Deletion::Node(_)) => -(shell_layers as i32),
+            Some(Deletion::Element { .. }) => {
+                -((shell_layers + MDLOPT_ELEMENT_DELETION as usize) as i32)
+            }
+        };
+
+        // --- SPH / airbag / rigid-body / rigid-road presence and sizing ---
+        let nmsph = self.sph.as_ref().map_or(0, |s| s.materials.len());
+        let n_sph_vars = self.sph.as_ref().map_or(0, |s| s.n_vars);
+        let npefg = self.airbag.as_ref().map_or(0, |a| a.n_airbags as i32);
+        let has_rb = self.rigid_bodies.is_some();
+        let has_road = self.rigid_road.is_some();
+        // NDIM is a flag word: 8 = rigid body, 6 = rigid road, 9 = both (reduced
+        // 12-var rigid motion), else 4 (plain structural).
+        let ndim = if has_rb && has_road {
+            9
+        } else if has_rb {
+            8
+        } else if has_road {
+            6
+        } else {
+            NDIM_STRUCTURAL
+        };
+        let rigid_k = if ndim == 9 { 12 } else { 24 };
 
         // --- control block ---
         let mut words = [0i32; CONTROL_WORDS];
-        // title (first TITLE_WORDS words), space-padded
-        let mut title = [b' '; TITLE_BYTES];
-        for (i, b) in self.title.bytes().take(TITLE_BYTES).enumerate() {
+        // Title occupies TITLE_WORDS words (space-padded), so its byte width
+        // follows the word size (40 bytes single, 80 double).
+        let title_bytes = TITLE_WORDS * ws;
+        let mut title = vec![b' '; title_bytes];
+        for (i, b) in self.title.bytes().take(title_bytes).enumerate() {
             title[i] = b;
         }
         let set = |w: &mut [i32; CONTROL_WORDS], i: usize, v: i32| w[i] = v;
         set(&mut words, word::FILETYPE, FILETYPE_D3PLOT);
-        set(&mut words, word::NDIM, NDIM_STRUCTURAL); // flag word; coords are 3-D
+        set(&mut words, word::NDIM, ndim);
         set(&mut words, word::NUMNP, self.numnp as i32);
         set(&mut words, word::ICODE, ICODE_LSDYNA);
-        set(&mut words, word::NGLBV, 0); // no global vars
+        set(&mut words, word::NGLBV, nglbv as i32);
+        set(&mut words, word::IT, it);
         set(&mut words, word::IU, 1);
         set(&mut words, word::IV, i32::from(self.fields.velocity));
         set(&mut words, word::IA, i32::from(self.fields.acceleration));
-        let nmmat_u = nmmat.max(0) as usize;
-        // NARBS numbering section size (we always emit it, with a part-id header).
-        let narbs = self.numnp + nel8 + nel4 + 3 * nmmat_u + NARBS_PART_HEADER;
-        let nv3d = self.solid_results.as_ref().map_or(0, |(v, _)| *v);
-        let nv2d = self.shell_results.as_ref().map_or(0, |(v, _)| *v);
         set(&mut words, word::NEL8, nel8 as i32);
         set(&mut words, word::NV3D, nv3d as i32);
+        set(&mut words, word::NELTH, nelth as i32);
+        set(&mut words, word::NV3DT, nv3dt as i32);
+        set(&mut words, word::NEL2, nel2 as i32);
+        set(&mut words, word::NV1D, nv1d as i32);
         set(&mut words, word::NEL4, nel4 as i32);
         set(&mut words, word::NUMMAT4, nmmat);
         set(&mut words, word::NV2D, nv2d as i32);
-        // Shells pack MAXINT through-thickness layers; each layer holds the same
-        // per-layer vars. NEIPH/NEIPS are the *per-layer* history counts.
-        let shell_layers = self.shell_layers.max(1);
-        let shell_per_layer = if nv2d > 0 { nv2d / shell_layers } else { 0 };
-        set(&mut words, word::MAXINT, shell_layers as i32);
-        set(&mut words, word::NARBS, narbs as i32);
+        set(&mut words, word::MAXINT, maxint);
+        set(&mut words, word::NMSPH, nmsph as i32);
+        set(&mut words, word::NPEFG, npefg);
+        set(&mut words, word::IDTDT, idtdt);
         set(&mut words, word::NMMAT, nmmat);
+        // NARBS numbering section size (always emitted, part-id header form).
+        let narbs = self.numnp + nel8 + nel2 + nel4 + nelth + 3 * nmmat_u + NARBS_PART_HEADER;
+        set(&mut words, word::NARBS, narbs as i32);
 
-        // Result-field flags so LS-PrePost/lasso *name* the raw element vars.
-        // Per layer, solver order: 6 stress, 1 plastic strain, then history.
-        // ioshl1/ioshl2 are shared by solids and shells (lasso derives
-        // has_solid_stress from ioshl1), so set them from whichever is present.
+        // Result-field flags so LS-PrePost/lasso name the raw element vars. Per
+        // layer, solver order is 6 stress, 1 plastic strain, then history.
+        // ioshl1/ioshl2 are shared by solids and shells.
+        let shell_per_layer = if nv2d > 0 { nv2d / shell_layers } else { 0 };
         if nv3d > 0 || nv2d > 0 {
             let has_stress = nv3d >= ELEM_STRESS_VARS || shell_per_layer >= ELEM_STRESS_VARS;
             let has_pstrain = nv3d >= ELEM_BASE_VARS || shell_per_layer >= ELEM_BASE_VARS;
@@ -2288,78 +3209,244 @@ impl D3plotWriter {
                 if has_pstrain { IOSHL_PRESENT } else { 0 },
             );
             if nv3d > 0 {
-                set(&mut words, word::NEIPH, nv3d.saturating_sub(base) as i32); // solid history
+                set(&mut words, word::NEIPH, nv3d.saturating_sub(base) as i32);
             }
             if nv2d > 0 {
-                set(&mut words, word::NEIPS, shell_per_layer.saturating_sub(base) as i32); // per-layer shell history
+                set(&mut words, word::NEIPS, shell_per_layer.saturating_sub(base) as i32);
             }
         }
 
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(&title);
         for w in &words[TITLE_WORDS..] {
-            buf.extend_from_slice(&w.to_le_bytes());
+            push_word_i(&mut buf, *w as i64, ws);
         }
 
-        // --- geometry ---
-        for &c in &self.x0 {
-            buf.extend_from_slice(&c.to_le_bytes());
+        // ================= geometry (LS-DYNA walk order) =================
+        // 3. SPH element-data flags (ISPHFG): 11 words. We synthesize a layout the
+        //    reader decodes back to exactly n_sph_vars (see `walk_geometry`).
+        if nmsph > 0 {
+            push_word_i(&mut buf, 11, ws); // isphfg1 = flag-word count
+            push_word_i(&mut buf, n_sph_vars.max(1) as i64 - 1, ws); // f1: all but the material word
+            for _ in 2..11 {
+                push_word_i(&mut buf, 0, ws);
+            }
         }
+        // 4. airbag / particle flags: ngeom, nvar, npart, nstgeom, then 9 words
+        //    (type + 8 name) per airbag variable.
+        if let Some(a) = &self.airbag {
+            push_word_i(&mut buf, a.n_geom_vars as i64, ws);
+            push_word_i(&mut buf, a.n_particle_vars as i64, ws);
+            push_word_i(&mut buf, a.n_particles as i64, ws);
+            push_word_i(&mut buf, a.n_airbag_vars as i64, ws);
+            let n_vars = a.n_geom_vars + a.n_particle_vars + a.n_airbag_vars;
+            for _ in 0..9 * n_vars {
+                push_word_i(&mut buf, 0, ws);
+            }
+        }
+        // 5. node coordinates + element connectivity (solids, tshells, beams, shells).
+        push_word_fs(&mut buf, &self.x0, ws);
         for s in &self.solids {
             for &w in s {
-                buf.extend_from_slice(&w.to_le_bytes());
+                push_word_i(&mut buf, w as i64, ws);
+            }
+        }
+        for s in &self.tshells {
+            for &w in s {
+                push_word_i(&mut buf, w as i64, ws);
+            }
+        }
+        for b in &self.beams {
+            for &w in b {
+                push_word_i(&mut buf, w as i64, ws);
             }
         }
         for s in &self.shells {
             for &w in s {
-                buf.extend_from_slice(&w.to_le_bytes());
+                push_word_i(&mut buf, w as i64, ws);
             }
         }
-
-        // --- NARBS: arbitrary node/element/material numbering ---
+        // 6. NARBS arbitrary numbering.
         write_narbs(
             &mut buf,
             self.numnp,
             nel8,
+            nel2,
             nel4,
+            nelth,
             nmmat_u,
             self.node_ids.as_deref(),
             self.solid_ids.as_deref(),
+            self.beam_ids.as_deref(),
             self.shell_ids.as_deref(),
+            self.tshell_ids.as_deref(),
             self.part_ids.as_deref(),
+            ws,
         );
-
-        // States follow the exact geometry (LS-DYNA does not block-pad it).
-
-        // --- states: time + node data (IU/IV/IA) + element data (solids, shells) ---
-        let per_solid = nv3d * self.solids.len();
-        let per_shell = nv2d * self.shells.len();
-        for (si, st) in self.states.iter().enumerate() {
-            buf.extend_from_slice(&st.time.to_le_bytes());
-            for v in [&st.disp, &st.vel, &st.acc] {
-                for &c in v {
-                    buf.extend_from_slice(&c.to_le_bytes());
+        // 7. rigid-body description: nrigid, then per body (part, numnodr, node
+        //    list, numnoda, active-node list).
+        if let Some(rb) = &self.rigid_bodies {
+            push_word_i(&mut buf, rb.bodies.len() as i64, ws);
+            for body in &rb.bodies {
+                push_word_i(&mut buf, body.part as i64, ws);
+                push_word_i(&mut buf, body.nodes.len() as i64, ws);
+                for &n in &body.nodes {
+                    push_word_i(&mut buf, n as i64, ws);
                 }
-            }
-            // element results (order matches the reader: solids, then shells)
-            if let Some((_, data)) = &self.solid_results {
-                for &c in &data[si * per_solid..(si + 1) * per_solid] {
-                    buf.extend_from_slice(&c.to_le_bytes());
-                }
-            }
-            if let Some((_, data)) = &self.shell_results {
-                for &c in &data[si * per_shell..(si + 1) * per_shell] {
-                    buf.extend_from_slice(&c.to_le_bytes());
+                push_word_i(&mut buf, body.active_nodes.len() as i64, ws);
+                for &n in &body.active_nodes {
+                    push_word_i(&mut buf, n as i64, ws);
                 }
             }
         }
+        // 8. SPH node & material list: 2 words per particle (node number, material).
+        if let Some(s) = &self.sph {
+            for (i, &m) in s.materials.iter().enumerate() {
+                push_word_i(&mut buf, i as i64 + 1, ws);
+                push_word_i(&mut buf, m as i64, ws);
+            }
+        }
+        // 9. airbag particle geometry: ngeom words per airbag.
+        if let Some(a) = &self.airbag {
+            push_word_fs(&mut buf, &a.geom, ws);
+        }
+        // 10. rigid-road surface: header (nnode, nseg_total, nsurf, motion) +
+        //     node ids + node coords + per surface (id, nseg, 4 ids per segment).
+        if let Some(rr) = &self.rigid_road {
+            let nnode = rr.node_ids.len();
+            let total_seg: usize = rr.segments.iter().map(|(_, s)| s.len() / 4).sum();
+            push_word_i(&mut buf, nnode as i64, ws);
+            push_word_i(&mut buf, total_seg as i64, ws);
+            push_word_i(&mut buf, rr.segments.len() as i64, ws);
+            push_word_i(&mut buf, 1, ws);
+            for &n in &rr.node_ids {
+                push_word_i(&mut buf, n as i64, ws);
+            }
+            push_word_fs(&mut buf, &rr.node_coords, ws);
+            for (id, seg) in &rr.segments {
+                push_word_i(&mut buf, *id as i64, ws);
+                push_word_i(&mut buf, (seg.len() / 4) as i64, ws);
+                for &n in seg {
+                    push_word_i(&mut buf, n as i64, ws);
+                }
+            }
+        }
+
+        // ================= states =================
+        // Per-node thermal words in stream order (temp, flux, mass, grad,
+        // residual-force, residual-moment), used to walk each state's node block.
+        let numnp = self.numnp;
+        let per_solid = nv3d * nel8;
+        let per_tshell = nv3dt * nelth;
+        let per_beam = nv1d * nel2;
+        let per_shell = nv2d * nel4;
+        for (si, st) in self.states.iter().enumerate() {
+            push_word_f(&mut buf, st.time, ws);
+            // global variables
+            if nglbv > 0 {
+                for s in &self.globals.scalars {
+                    push_word_f(&mut buf, s.as_ref().map_or(0.0, |d| d[si]), ws);
+                }
+                if has_part_block {
+                    let p = &self.globals.parts;
+                    push_opt_block(&mut buf, &p.internal_energy, si, nmmat_u, 0.0, ws);
+                    push_opt_block(&mut buf, &p.kinetic_energy, si, nmmat_u, 0.0, ws);
+                    push_opt_block(&mut buf, &p.velocity, si, 3 * nmmat_u, 0.0, ws);
+                    push_opt_block(&mut buf, &p.mass, si, nmmat_u, 0.0, ws);
+                    push_opt_block(&mut buf, &p.hourglass_energy, si, nmmat_u, 0.0, ws);
+                }
+                // rigid-wall block: force per wall, then optional 3-vector position.
+                if let Some(w) = rw {
+                    let nw = w.n_walls;
+                    push_word_fs(&mut buf, &w.force[si * nw..(si + 1) * nw], ws);
+                    if let Some(pos) = &w.position {
+                        let per = 3 * nw;
+                        push_word_fs(&mut buf, &pos[si * per..(si + 1) * per], ws);
+                    }
+                }
+            }
+            // node data: displacement, thermal block, velocity, acceleration.
+            push_word_fs(&mut buf, &st.disp, ws);
+            if has_temp {
+                push_opt_block(&mut buf, &nt.temperature, si, tw * numnp, 0.0, ws);
+            }
+            if has_flux {
+                push_opt_block(&mut buf, &nt.heat_flux, si, 3 * numnp, 0.0, ws);
+            }
+            if has_mass {
+                push_opt_block(&mut buf, &nt.mass_scaling, si, numnp, 0.0, ws);
+            }
+            if has_grad {
+                push_opt_block(&mut buf, &nt.temp_gradient, si, numnp, 0.0, ws);
+            }
+            if has_resid {
+                push_opt_block(&mut buf, &nt.residual_force, si, 3 * numnp, 0.0, ws);
+                push_opt_block(&mut buf, &nt.residual_moment, si, 3 * numnp, 0.0, ws);
+            }
+            push_word_fs(&mut buf, &st.vel, ws);
+            push_word_fs(&mut buf, &st.acc, ws);
+            // element results: solids, thick shells, beams, shells.
+            if let Some((_, data)) = &self.solid_results {
+                push_word_fs(&mut buf, &data[si * per_solid..(si + 1) * per_solid], ws);
+            }
+            if let Some((_, data)) = &self.tshell_results {
+                push_word_fs(&mut buf, &data[si * per_tshell..(si + 1) * per_tshell], ws);
+            }
+            if let Some((_, data)) = &self.beam_results {
+                push_word_fs(&mut buf, &data[si * per_beam..(si + 1) * per_beam], ws);
+            }
+            if let Some((_, data)) = &self.shell_results {
+                push_word_fs(&mut buf, &data[si * per_shell..(si + 1) * per_shell], ws);
+            }
+            // deletion (mdlopt). Element order: solid, tshell, shell, beam.
+            match &self.deletion {
+                Some(Deletion::Node(d)) => {
+                    push_word_fs(&mut buf, &d[si * numnp..(si + 1) * numnp], ws)
+                }
+                Some(Deletion::Element {
+                    solid,
+                    tshell,
+                    shell,
+                    beam,
+                }) => {
+                    push_opt_block(&mut buf, solid, si, nel8, 1.0, ws);
+                    push_opt_block(&mut buf, tshell, si, nelth, 1.0, ws);
+                    push_opt_block(&mut buf, shell, si, nel4, 1.0, ws);
+                    push_opt_block(&mut buf, beam, si, nel2, 1.0, ws);
+                }
+                None => {}
+            }
+            // SPH state.
+            if let Some(s) = &self.sph {
+                let per = nmsph * n_sph_vars;
+                push_word_fs(&mut buf, &s.results[si * per..(si + 1) * per], ws);
+            }
+            // airbag state: chamber block then particle block.
+            if let Some(a) = &self.airbag {
+                let per_a = a.n_airbags * a.n_airbag_vars;
+                let per_p = a.n_particles * a.n_particle_vars;
+                push_word_fs(&mut buf, &a.airbag_state[si * per_a..(si + 1) * per_a], ws);
+                push_word_fs(&mut buf, &a.particle_state[si * per_p..(si + 1) * per_p], ws);
+            }
+            // rigid-road motion.
+            if let Some(rr) = &self.rigid_road {
+                let per = rr.segments.len() * 6;
+                push_word_fs(&mut buf, &rr.motion[si * per..(si + 1) * per], ws);
+            }
+            // rigid-body motion.
+            if let Some(rb) = &self.rigid_bodies {
+                let per = rb.bodies.len() * rigid_k;
+                push_word_fs(&mut buf, &rb.motion[si * per..(si + 1) * per], ws);
+            }
+        }
         // end-of-file marker
-        buf.extend_from_slice(&(EOF_MARKER as f32).to_le_bytes());
+        push_word_f(&mut buf, EOF_MARKER, ws);
         buf
     }
 
-    /// Write the d3plot to `path`.
+    /// Validate the configured arrays, then write the d3plot to `path`.
     pub fn write(&self, path: impl AsRef<std::path::Path>) -> Result<(), D3plotError> {
+        self.validate()?;
         std::fs::write(path, self.to_bytes())?;
         Ok(())
     }
@@ -2570,12 +3657,17 @@ impl IntforWriter {
             &mut buf,
             self.numnp,
             0,
+            0,
             numsg,
+            0,
             nmmat,
             self.node_ids.as_deref(),
             None,
+            None,
             Some(&seg_ids),
             None,
+            None,
+            4, // intfor writer is single precision
         );
 
         // states: time + disp + vel + per-segment values
@@ -2924,7 +4016,7 @@ mod tests {
         w.set_node_ids((0..8).map(|i| 100 + i).collect());
         w.set_part_ids(vec![7]);
         // 2 states × 1 solid × 5 raw result vars
-        w.set_solid_results(5, (0..2 * 5).map(|i| i as f64).collect());
+        w.set_solid_results(ResultBlock::new([2, 1, 5], (0..2 * 5).map(|i| i as f64).collect()));
         for s in 0..2 {
             let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
             w.add_state(s as f64, disp, None, None).unwrap();
@@ -2974,13 +4066,13 @@ mod tests {
         let mut w = D3plotWriter::new(nodes.clone()).unwrap();
         w.add_solid([1, 2, 3, 4, 5, 6, 7, 8], 1);
         w.set_part_ids(vec![7]);
-        w.set_solid_results(
-            7,
+        w.set_solid_results(ResultBlock::new(
+            [2, 1, 7],
             vec![
                 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, // state 0: uniaxial 100, eps 0.1
                 0.0, 0.0, 0.0, 50.0, 0.0, 0.0, 0.3, // state 1: pure shear 50, eps 0.3
             ],
-        );
+        ));
         for s in 0..2 {
             let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
             w.add_state(s as f64, disp, None, None).unwrap();
@@ -3060,7 +4152,7 @@ mod tests {
         for lay in [(400.0, 0.04), (150.0, 0.015), (200.0, 0.02)] {
             data.extend_from_slice(&uni(lay.0, lay.1)); // shell 1
         }
-        w.set_shell_results(21, data);
+        w.set_shell_results(ResultBlock::new([1, 2, 21], data));
         let disp: Vec<f64> = nodes.iter().map(|&c| c + 1.0).collect();
         w.add_state(0.0, disp, None, None).unwrap();
         let p = tmp();
@@ -3104,7 +4196,7 @@ mod tests {
         for &sxx in &[100.0, 10.0, 150.0, 30.0, 200.0, 20.0, 50.0, 40.0] {
             data.extend_from_slice(&uni(sxx));
         }
-        w.set_solid_results(7, data);
+        w.set_solid_results(ResultBlock::new([2, 4, 7], data));
         for s in 0..2 {
             let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
             w.add_state(s as f64, disp, None, None).unwrap();
@@ -3294,6 +4386,395 @@ mod tests {
         assert_eq!(d.fsifor_field_span(FsiforField::Pressure), (0, 1));
         assert_eq!(d.fsifor_field_span(FsiforField::VelocityY), (6, 1));
         assert_eq!(d.fsifor_field_span(FsiforField::VelocityZ), (7, 0)); // absent (only 7)
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// f32 round-trip of a flat block through the reader.
+    fn assert_block_eq(got: &BlockArray, expect: &[f64]) {
+        if let BlockArray::F32(v) = got {
+            assert_eq!(v.len(), expect.len());
+            for (i, (&a, &b)) in v.iter().zip(expect).enumerate() {
+                assert!((a as f64 - b).abs() < 1e-4, "idx {i}: {a} != {b}");
+            }
+        } else {
+            panic!("expected single-precision block");
+        }
+    }
+
+    #[test]
+    fn beams_and_tshells_round_trip() {
+        let nodes: Vec<f64> = (0..8 * 3).map(|i| i as f64 * 0.1).collect();
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_beam([1, 2, 3], 1);
+        w.add_tshell([1, 2, 3, 4, 5, 6, 7, 8], 2);
+        let beam: Vec<f64> = (0..2 * 6).map(|i| i as f64).collect(); // 2 states, 1 beam, nv1d=6
+        let tsh: Vec<f64> = (0..2 * 8).map(|i| 100.0 + i as f64).collect(); // nv3dt=8
+        w.set_beam_results(ResultBlock::new([2, 1, 6], beam.clone()));
+        w.set_tshell_results(ResultBlock::new([2, 1, 8], tsh.clone()));
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        // read back through the ResultBlock accessors
+        let bl = d.beam_results().unwrap();
+        assert_eq!(bl.dims(), [2, 1, 6]);
+        assert_eq!(bl.data(), beam.as_slice());
+        let ts = d.tshell_results().unwrap();
+        assert_eq!(ts.dims(), [2, 1, 8]);
+        assert_eq!(ts.data(), tsh.as_slice());
+        // component naming + per-state slicing on the object
+        assert_eq!(bl.component("sigma_xx").unwrap(), vec![0.0, 6.0]);
+        assert_eq!(ts.state(1).unwrap(), &tsh[8..]);
+        // nodal motion still aligned with the extra element blocks present.
+        let c1 = d.node_coordinates(1).unwrap();
+        assert!((c1[0] - 1.0).abs() < 1e-6);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn globals_and_part_fields_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_shell([1, 2, 3, 4], 1);
+        w.add_shell([1, 2, 3, 4], 2); // two parts
+        w.set_global_history(GlobalField::KineticEnergy, vec![1., 2., 3.]);
+        w.set_global_history(GlobalField::TotalEnergy, vec![10., 11., 12.]);
+        w.set_part_field(PartField::InternalEnergy, vec![1., 2., 3., 4., 5., 6.]);
+        w.set_part_field(PartField::Mass, vec![10., 20., 30., 40., 50., 60.]);
+        for s in 0..3 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        assert_eq!(d.global_history(GlobalField::KineticEnergy).unwrap(), vec![1., 2., 3.]);
+        assert_eq!(d.global_history(GlobalField::TotalEnergy).unwrap(), vec![10., 11., 12.]);
+        // unset scalar reads back as zeros (slot still written).
+        assert_eq!(d.global_history(GlobalField::InternalEnergy).unwrap(), vec![0., 0., 0.]);
+        let ie = d.part_field_history(PartField::InternalEnergy).unwrap();
+        assert_eq!(ie.dims(), [3, 2]);
+        assert_eq!(ie.data(), &[1., 2., 3., 4., 5., 6.]);
+        assert_eq!(ie.state(1).unwrap(), &[3., 4.]); // state 1 row
+        let mass = d.part_field_history(PartField::Mass).unwrap();
+        assert_eq!(mass.data(), &[10., 20., 30., 40., 50., 60.]);
+        // unset part field reads back as zeros.
+        let ke = d.part_field_history(PartField::KineticEnergy).unwrap();
+        assert!(ke.data().iter().all(|&x| x == 0.0));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn node_thermal_fields_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let numnp = 4;
+        let ns = 2;
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_shell([1, 2, 3, 4], 1);
+        let temp: Vec<f64> = (0..ns * numnp).map(|i| i as f64).collect();
+        let flux: Vec<f64> = (0..ns * numnp * 3).map(|i| 100.0 + i as f64).collect();
+        let mass: Vec<f64> = (0..ns * numnp).map(|i| 200.0 + i as f64).collect();
+        let grad: Vec<f64> = (0..ns * numnp).map(|i| 300.0 + i as f64).collect();
+        let rf: Vec<f64> = (0..ns * numnp * 3).map(|i| 400.0 + i as f64).collect();
+        let rm: Vec<f64> = (0..ns * numnp * 3).map(|i| 500.0 + i as f64).collect();
+        w.set_node_field(NodeField::Temperature, temp.clone());
+        w.set_node_field(NodeField::HeatFlux, flux.clone());
+        w.set_node_field(NodeField::MassScaling, mass.clone());
+        w.set_node_field(NodeField::TemperatureGradient, grad.clone());
+        w.set_node_field(NodeField::ResidualForce, rf.clone());
+        w.set_node_field(NodeField::ResidualMoment, rm.clone());
+        for s in 0..ns {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        assert_eq!(d.node_field(NodeField::Temperature, 0).unwrap().data(), &temp[..numnp]);
+        assert_eq!(d.node_field(NodeField::HeatFlux, 1).unwrap().data(), &flux[numnp * 3..]);
+        assert_eq!(d.node_field(NodeField::MassScaling, 0).unwrap().data(), &mass[..numnp]);
+        assert_eq!(d.node_field(NodeField::TemperatureGradient, 1).unwrap().data(), &grad[numnp..]);
+        assert_eq!(d.node_field(NodeField::ResidualForce, 0).unwrap().data(), &rf[..numnp * 3]);
+        assert_eq!(d.node_field(NodeField::ResidualMoment, 1).unwrap().data(), &rm[numnp * 3..]);
+        // 3-vector fields are component-labeled
+        assert_eq!(d.node_field(NodeField::HeatFlux, 1).unwrap().components(), &["x", "y", "z"]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn element_deletion_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_shell([1, 2, 3, 4], 1);
+        w.add_shell([1, 2, 3, 4], 1);
+        // state 0: both alive; state 1: shell 2 deleted.
+        w.set_element_deletion(StateBlock::Shell, vec![1., 1., 1., 0.]);
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        assert_eq!(d.element_alive(StateBlock::Shell, 0).unwrap(), vec![1., 1.]);
+        assert_eq!(d.element_alive(StateBlock::Shell, 1).unwrap(), vec![1., 0.]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn sph_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        // 3 particles, 4 vars each, 2 states.
+        let results: Vec<f64> = (0..2 * 3 * 4).map(|i| i as f64).collect();
+        w.set_sph(vec![11, 12, 13], 4, results.clone());
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let v0 = d.sph_state(0).unwrap();
+        assert_eq!(v0.dims(), [3, 4]);
+        assert_eq!(v0.data(), &results[..12]);
+        assert_eq!(d.sph_state(1).unwrap().data(), &results[12..]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn airbag_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        let (na, npart, ngeom, nav, npv) = (2usize, 3usize, 2usize, 2usize, 4usize);
+        let geom: Vec<f64> = (0..na * ngeom).map(|i| i as f64).collect();
+        let ab: Vec<f64> = (0..2 * na * nav).map(|i| 10.0 + i as f64).collect();
+        let pt: Vec<f64> = (0..2 * npart * npv).map(|i| 100.0 + i as f64).collect();
+        w.set_airbag(na, npart, ngeom, nav, npv, geom, ab.clone(), pt.clone());
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let st = d.airbag_state(1).unwrap();
+        assert_eq!(st.airbag_dims, [na, nav]);
+        assert_eq!(st.particle_dims, [npart, npv]);
+        assert_eq!(st.airbag, ab[na * nav..]);
+        assert_eq!(st.particle, pt[npart * npv..]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn rigid_body_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        // no rigid road ⇒ full 24-var motion.
+        let motion: Vec<f64> = (0..2 * 2 * 24).map(|i| i as f64).collect();
+        w.set_rigid_bodies(
+            vec![(1, vec![1, 2], vec![1]), (2, vec![3, 4], vec![4])],
+            motion.clone(),
+        );
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let m0 = d.rigid_body_motion(0).unwrap();
+        assert_eq!(m0.dims(), [2, 24]);
+        assert_eq!(m0.data(), &motion[..48]);
+        assert_eq!(d.rigid_body_motion(1).unwrap().data(), &motion[48..]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn rigid_road_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        let road_nodes: Vec<f64> = (0..3 * 3).map(|i| i as f64 * 0.5).collect();
+        let motion: Vec<f64> = (0..2 * 1 * 6).map(|i| i as f64).collect();
+        w.set_rigid_road(
+            vec![1, 2, 3],
+            road_nodes,
+            vec![(5, vec![1, 2, 3, 3])],
+            motion.clone(),
+        );
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let r0 = d.rigid_road_state(0).unwrap();
+        assert_eq!(r0.dims(), [1, 6]);
+        assert_eq!(r0.data(), &motion[..6]);
+        assert_eq!(d.rigid_road_state(1).unwrap().data(), &motion[6..]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn rigid_body_and_road_reduced_round_trip() {
+        // rigid body + rigid road ⇒ NDIM=9, reduced 12-var rigid motion.
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        let rb_motion: Vec<f64> = (0..2 * 1 * 12).map(|i| i as f64).collect();
+        let road_motion: Vec<f64> = (0..2 * 1 * 6).map(|i| 100.0 + i as f64).collect();
+        w.set_rigid_bodies(vec![(1, vec![1, 2], vec![1])], rb_motion.clone());
+        w.set_rigid_road(
+            vec![1, 2],
+            vec![0., 0., 0., 1., 0., 0.],
+            vec![(7, vec![1, 2, 2, 2])],
+            road_motion.clone(),
+        );
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let rb = d.rigid_body_motion(1).unwrap();
+        assert_eq!(rb.dims(), [1, 12]);
+        assert_eq!(rb.data(), &rb_motion[12..]);
+        let rr = d.rigid_road_state(1).unwrap();
+        assert_eq!(rr.dims(), [1, 6]);
+        assert_eq!(rr.data(), &road_motion[6..]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn combined_blocks_keep_state_offsets_aligned() {
+        // globals + node thermal + beams + element deletion together: every block
+        // offset must still line up when the whole stack is present.
+        let nodes: Vec<f64> = (0..4 * 3).map(|i| i as f64).collect();
+        let numnp = 4;
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_beam([1, 2, 3], 1);
+        w.set_global_history(GlobalField::TotalEnergy, vec![5., 6.]);
+        w.set_node_field(NodeField::Temperature, (0..2 * numnp).map(|i| i as f64).collect());
+        w.set_beam_results(ResultBlock::new([2, 1, 3], (0..2 * 3).map(|i| 9.0 + i as f64).collect()));
+        w.set_element_deletion(StateBlock::Beam, vec![1., 1.]);
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, Some(vec![7.0; numnp * 3]), None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        assert_eq!(d.global_history(GlobalField::TotalEnergy).unwrap(), vec![5., 6.]);
+        assert_eq!(d.node_field(NodeField::Temperature, 1).unwrap().data(), &[4., 5., 6., 7.]);
+        let all = d.resolve_states(None).unwrap();
+        let (vel, _) = d.block_data(StateBlock::Velocity, &all).unwrap();
+        assert_block_eq(&vel, &vec![7.0; 2 * numnp * 3]);
+        let (beam, bd) = d.block_data(StateBlock::Beam, &all).unwrap();
+        assert_eq!(bd, [2, 1, 3]);
+        assert_block_eq(&beam, &(0..2 * 3).map(|i| 9.0 + i as f64).collect::<Vec<_>>());
+        assert_eq!(d.element_alive(StateBlock::Beam, 1).unwrap(), vec![1.]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn node_deletion_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_shell([1, 2, 3, 4], 1);
+        // state 0 all alive; state 1 node 3 deleted.
+        w.set_node_deletion(vec![1., 1., 1., 1., 1., 1., 0., 1.]);
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        assert_eq!(d.node_alive(0).unwrap(), vec![1., 1., 1., 1.]);
+        assert_eq!(d.node_alive(1).unwrap(), vec![1., 1., 0., 1.]);
+        // node deletion (mdlopt 1) ⇒ no per-element flags.
+        assert!(d.element_alive(StateBlock::Shell, 0).is_none());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn rigid_wall_round_trip() {
+        let nodes: Vec<f64> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_shell([1, 2, 3, 4], 1); // one part ⇒ nmmat = 1
+        // 2 walls, force + position, 2 states.
+        let force: Vec<f64> = (0..2 * 2).map(|i| i as f64).collect();
+        let pos: Vec<f64> = (0..2 * 2 * 3).map(|i| 100.0 + i as f64).collect();
+        w.set_rigid_walls(2, force.clone(), Some(pos.clone()));
+        for s in 0..2 {
+            let disp: Vec<f64> = nodes.iter().map(|&c| c + s as f64).collect();
+            w.add_state(s as f64, disp, None, None).unwrap();
+        }
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        let f1 = d.rigid_wall_force(1).unwrap();
+        assert_eq!(f1.dims(), [2]);
+        assert_eq!(f1.data(), &force[2..4]);
+        let p1 = d.rigid_wall_position(1).unwrap();
+        assert_eq!(p1.dims(), [2, 3]);
+        assert_eq!(p1.components(), &["x", "y", "z"]);
+        assert_eq!(p1.data(), &pos[6..12]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn double_precision_preserves_f64() {
+        // 0.1 and 1/3 aren't exact in f32; double precision must round-trip them.
+        let coords: Vec<f64> = vec![0.1, 0.2, 0.3, 1.0 / 3.0, 0.7, 0.9, 1.1, 1.3, 1.7, 2.2, 2.4, 2.6];
+        let mut w = D3plotWriter::new(coords.clone()).unwrap();
+        w.set_double_precision(true);
+        w.add_solid([1, 2, 3, 4, 1, 2, 3, 4], 1);
+        let sres = vec![1.0 / 3.0; 7]; // 1 state, 1 solid, 7 vars
+        w.set_solid_results(ResultBlock::new([1, 1, 7], sres.clone()));
+        w.add_state(0.25, coords.clone(), None, None).unwrap();
+        let p = tmp();
+        w.write(&p).unwrap();
+
+        let d = D3plot::open(&p).unwrap();
+        assert_eq!(d.control().wordsize, 8); // reader detected double precision
+        // bit-exact: no f32 rounding.
+        assert_eq!(d.node_coordinates(0).unwrap(), coords);
+        let solid = d.solid_results().unwrap();
+        assert_eq!(solid.data(), sres.as_slice());
+        assert_eq!(solid.component("eff_plastic_strain").unwrap(), vec![1.0 / 3.0]);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn validate_rejects_wrong_length() {
+        let nodes: Vec<f64> = (0..8 * 3).map(|i| i as f64).collect();
+        let mut w = D3plotWriter::new(nodes.clone()).unwrap();
+        w.add_solid([1, 2, 3, 4, 5, 6, 7, 8], 1);
+        // 2 states × 1 solid × 5 vars ⇒ 10 values expected, provide 9.
+        w.set_solid_results(ResultBlock::new([2, 1, 5], vec![0.0; 9]));
+        for s in 0..2 {
+            w.add_state(s as f64, nodes.clone(), None, None).unwrap();
+        }
+        assert!(w.validate().is_err());
+        let p = tmp();
+        assert!(w.write(&p).is_err()); // write validates first
         let _ = std::fs::remove_file(&p);
     }
 }
